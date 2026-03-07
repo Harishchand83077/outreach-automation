@@ -1,0 +1,18 @@
+# Full workflow: LLM, LangGraph, email
+# Use flexible versions so pip can pick builds compatible with your Python.
+langchain-core>=0.2.38
+langchain>=0.2.16
+langchain-groq>=0.1.9
+langgraph>=0.2.14
+
+# Database & data
+aiosqlite>=0.20.0
+openpyxl>=3.1.5
+
+# Email (SMTP send)
+aiosmtplib>=3.0.1
+
+# Environment & logging
+python-dotenv>=1.0.1
+rich>=13.7.1
+tenacity>=8.5.0
