@@ -87,11 +87,11 @@ If you keep SQLite only, skip this step; the app runs as-is with SQLite on Rende
    - **Build command:** `npm run build` (default).
    - **Output directory:** `dist` (default).
 4. **Environment variables:**
-   - `VITE_API_URL` = your backend API URL from Step 2, e.g. `https://funding-outreach-api.onrender.com`
+   - `VITE_API_URL` = your backend root URL from Step 2, e.g. `https://funding-outreach-api.onrender.com` (the app adds `/api` for routes)
    - (Your frontend will use this to call the API; see “Frontend API URL” below.)
 5. Deploy. Vercel gives you a URL like `https://your-project.vercel.app`.
 
-**Frontend API URL:** In production the frontend must call your backend URL. Ensure the app uses `VITE_API_URL` for API base (e.g. in `App.jsx`: `const API = import.meta.env.VITE_API_URL || '/api'`). For local dev, `/api` is proxied to localhost:8000; in production, `VITE_API_URL` should be the Render URL.
+**Frontend API URL:** Set `VITE_API_URL` to your Render backend root (e.g. `https://xxx.onrender.com`). The app will request `{VITE_API_URL}/api/leads`, `{VITE_API_URL}/api/upload`, etc. For local dev, `/api` is proxied to localhost:8000.
 
 ---
 

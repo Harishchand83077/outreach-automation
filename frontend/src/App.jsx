@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 
-const API = import.meta.env.VITE_API_URL || '/api'
+// When deployed, VITE_API_URL is the backend origin (e.g. https://xxx.onrender.com). We need /api for routes.
+const _base = import.meta.env.VITE_API_URL || ''
+const API = _base ? (_base.replace(/\/api\/?$/, '') + '/api') : '/api'
 
 // Simple toast: id, message, type ('success'|'error'|'info')
 function Toast({ toast, onDismiss }) {
