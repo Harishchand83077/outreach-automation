@@ -102,6 +102,7 @@ async def security_headers_and_rate_limit(request: Request, call_next):
 # Background task for current run + workers
 _run_task: Optional[asyncio.Task] = None
 _workers_task: Optional[asyncio.Task] = None
+_last_run_error: Optional[str] = None
 
 
 # ─── Pydantic models ───────────────────────────────────────────────────────
@@ -221,10 +222,13 @@ async def start_run(use_existing: bool = True):
 
 async def _run_outreach(leads: List[dict]):
     """Run workflows for given leads (called in background)."""
+    global _last_run_error
+    _last_run_error = None
     try:
         results = await run_all_leads(leads)
         logger.info("Background run finished: %d leads", len(results))
     except Exception as e:
+        _last_run_error = str(e)
         logger.error("Background run failed: %s", e, exc_info=True)
 
 
@@ -278,9 +282,12 @@ async def api_approve_question_reply(email: str, body: ApproveQuestionReplyBody 
 
 @app.get("/api/run/status")
 async def run_status():
-    """Whether a run is currently in progress."""
+    """Whether a run is currently in progress and optional last error."""
     running = _run_task is not None and not _run_task.done()
-    return {"running": running}
+    out = {"running": running}
+    if _last_run_error:
+        out["last_error"] = _last_run_error
+    return out
 
 
 @app.get("/api/stats")

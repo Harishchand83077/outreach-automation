@@ -23,6 +23,7 @@ export default function App() {
   const [leads, setLeads] = useState([])
   const [pending, setPending] = useState([])
   const [running, setRunning] = useState(false)
+  const [lastRunError, setLastRunError] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [rejectFeedback, setRejectFeedback] = useState({})
@@ -71,6 +72,7 @@ export default function App() {
       if (!r.ok) return
       const data = await r.json()
       setRunning(data.running === true)
+      setLastRunError(data.last_error || null)
     } catch (_) {}
   }, [])
 
@@ -132,7 +134,8 @@ export default function App() {
         return
       }
       setRunning(true)
-      addToast(`Run started for ${data.lead_count || 0} lead(s). Approve insights and emails when they appear.`, 'success')
+      setLastRunError(null)
+      addToast(`Run started for ${data.lead_count || 0} lead(s). Wait for "Pending your approval" cards below, or check the lead row for insights/draft.`, 'success')
       await fetchRunStatus()
     } catch (err) {
       setError(String(err.message))
@@ -258,6 +261,13 @@ export default function App() {
         </div>
       )}
 
+      {lastRunError && !running && (
+        <div style={styles.error}>
+          Last run failed: {lastRunError}
+          <button type="button" onClick={() => setLastRunError(null)} style={styles.dismiss}>Dismiss</button>
+        </div>
+      )}
+
       {stats != null && (
         <section style={styles.statsStrip}>
           <span>Total leads: <strong>{stats.total_leads}</strong></span>
@@ -282,6 +292,9 @@ export default function App() {
         >
           {running ? 'Run in progress…' : 'Run outreach'}
         </button>
+        {running && (
+          <span style={styles.muted}>Wait 15–30 s, then check &quot;Pending your approval&quot; or expand the lead row for insights/draft.</span>
+        )}
         <button type="button" onClick={handleExportCsv} style={styles.button} title="Download leads as CSV">
           Export CSV
         </button>
