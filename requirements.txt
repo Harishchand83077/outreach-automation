@@ -1,5 +1,9 @@
+# API server first (needed for deploy; Render must have uvicorn in the runtime env)
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.9
+
 # Full workflow: LLM, LangGraph, email
-# Use flexible versions so pip can pick builds compatible with your Python.
 langchain-core>=0.2.38
 langchain>=0.2.16
 langchain-groq>=0.1.9
