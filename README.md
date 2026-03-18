@@ -89,6 +89,3 @@ Save as `.xlsx` (or `.csv` with same column names).
 
 See `ARCHITECTURE.md` for flow diagrams and design rules (parallel execution, workflow ends after send_email, reply handling in separate workers).
 
-## Optional: Remove Old Venvs
-
-If you have multiple virtualenv folders (e.g. `.venv311`, `venv`) and want a clean tree, delete the ones you do not use. The app only needs one active venv with `pip install -r requirements.txt`. `.gitignore` already excludes `.venv/`, `.venv311/`, `venv/`.
