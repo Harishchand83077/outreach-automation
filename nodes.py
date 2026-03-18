@@ -120,6 +120,7 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
     # API/frontend mode: wait for approval from API (frontend buttons)
     if config.APPROVAL_MODE == "api":
         from approval_store import wait_approval
+        logger.info("[%s] Insights ready — waiting for dashboard approval (check 'Pending your approval' on the UI)", name)
         result = await wait_approval(
             email,
             "insights",
@@ -281,6 +282,7 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
     # API/frontend mode: wait for approval from API
     if config.APPROVAL_MODE == "api":
         from approval_store import wait_approval
+        logger.info("[%s] Email draft ready — waiting for dashboard approval", name)
         result = await wait_approval(
             email,
             "email",

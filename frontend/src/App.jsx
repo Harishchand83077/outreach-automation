@@ -24,6 +24,7 @@ export default function App() {
   const [pending, setPending] = useState([])
   const [running, setRunning] = useState(false)
   const [lastRunError, setLastRunError] = useState(null)
+  const [groqConfigured, setGroqConfigured] = useState(null)
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState(null)
   const [rejectFeedback, setRejectFeedback] = useState({})
@@ -85,19 +86,30 @@ export default function App() {
     } catch (_) {}
   }, [])
 
+  const fetchConfigCheck = useCallback(async () => {
+    try {
+      const r = await fetch(`${API}/config/check`)
+      if (!r.ok) return
+      const data = await r.json()
+      setGroqConfigured(data.groq_configured === true)
+    } catch (_) {}
+  }, [])
+
   useEffect(() => {
     fetchLeads()
     fetchPending()
     fetchRunStatus()
     fetchStats()
+    fetchConfigCheck()
     const t = setInterval(() => {
       fetchLeads()
       fetchPending()
       fetchRunStatus()
       fetchStats()
+      fetchConfigCheck()
     }, 2500)
     return () => clearInterval(t)
-  }, [fetchLeads, fetchPending, fetchRunStatus, fetchStats])
+  }, [fetchLeads, fetchPending, fetchRunStatus, fetchStats, fetchConfigCheck])
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0]
@@ -265,6 +277,18 @@ export default function App() {
         <div style={styles.error}>
           Last run failed: {lastRunError}
           <button type="button" onClick={() => setLastRunError(null)} style={styles.dismiss}>Dismiss</button>
+        </div>
+      )}
+
+      {groqConfigured === false && (
+        <div style={styles.configWarning}>
+          <div style={{ flex: 1 }}>
+            <strong>LLM not configured.</strong> Insights and emails will not generate until you set <code>GROQ_API_KEY</code> on the backend.
+            <span style={{ marginTop: 8, display: 'block', fontSize: 13 }}>
+              On Render: open your service → left sidebar click <strong>Environment</strong> → &quot;Add Environment Variable&quot; → Key: <code>GROQ_API_KEY</code>, Value: your key from <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>console.groq.com/keys</a> → Save and redeploy.
+            </span>
+          </div>
+          <button type="button" onClick={() => setGroqConfigured(null)} style={styles.dismiss}>Dismiss</button>
         </div>
       )}
 
@@ -511,6 +535,19 @@ const styles = {
     marginBottom: 24,
     display: 'flex',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  configWarning: {
+    background: 'rgba(210,153,34,0.15)',
+    border: '1px solid var(--warning)',
+    color: 'var(--warning)',
+    padding: '12px 16px',
+    borderRadius: 8,
+    marginBottom: 24,
+    display: 'flex',
+    flexWrap: 'wrap',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
   },

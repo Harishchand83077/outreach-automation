@@ -128,10 +128,10 @@ class ApproveQuestionReplyBody(BaseModel):
 @app.on_event("startup")
 async def startup():
     await init_db()
-    # Force API approval mode and human approval when using the server (no auto-approve)
     config.APPROVAL_MODE = "api"
     os.environ["AUTO_APPROVE"] = "0"
-    # Start reply monitor + decision engine so replies are detected when using dashboard
+    if not (config.GROQ_API_KEY and config.GROQ_API_KEY.strip()):
+        logger.warning("GROQ_API_KEY is not set. Insights and email generation will fail. Set it in Render → Environment.")
     asyncio.create_task(_workers_loop())
     logger.info("API server started. APPROVAL_MODE=api, AUTO_APPROVE=0, background workers started.")
 
@@ -153,6 +153,12 @@ async def root():
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config/check")
+async def config_check():
+    """Return whether LLM (Groq) is configured so the dashboard can show a hint."""
+    return {"groq_configured": bool(config.GROQ_API_KEY and config.GROQ_API_KEY.strip())}
 
 
 @app.get("/api/leads")

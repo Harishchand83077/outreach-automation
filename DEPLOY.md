@@ -45,8 +45,10 @@ Deploy the Funding Outreach Automation app using **100% free** services. No cred
      .venv/bin/python -m uvicorn api_server:app --host 0.0.0.0 --port $PORT
      ```
    - **Instance type:** **Free**.
-5. **Environment variables** (Add all from your local `.env`; never commit real keys):
-   - `GROQ_API_KEY`
+5. **Environment variables** (required for insights and email generation):
+   - **Where to add them:** In the Render dashboard, open your service (e.g. outreach-automation). In the **left sidebar**, click **Environment**. Click **"Add Environment Variable"** (or "Add from .env" to paste from a file). Add each key below; mark secrets (API keys, passwords) as **Secret** so they’re hidden.
+   - **Keys to add:**
+   - `GROQ_API_KEY` — Get a key at [console.groq.com/keys](https://console.groq.com/keys). Without this, the app will not generate insights or emails and the dashboard will show "LLM not configured."
    - `SMTP_HOST`, `SMTP_PORT`, `SMTP_EMAIL`, `SMTP_PASSWORD`
    - `IMAP_HOST`, `IMAP_PORT`, `IMAP_EMAIL`, `IMAP_PASSWORD`
    - `CALENDAR_LINK`
@@ -58,6 +60,10 @@ Deploy the Funding Outreach Automation app using **100% free** services. No cred
 **Render free tier:** Service sleeps after ~15 min idle; first request after sleep can take 30–60 s. No credit card needed.
 
 **If deploy fails with “uvicorn: command not found” (exit 127) or "No module named uvicorn":** Use the build/start in step 4 (create .venv in build; start with `.venv/bin/python -m uvicorn api_server:app --host 0.0.0.0 --port $PORT`).
+
+---
+
+**Troubleshoot "no approval / nothing generates":** Render → your service → **Logs**; click Run outreach and watch for `Generating insights` or errors (e.g. 429). After ~30 s, expand the lead row — it may show "Error generating insights: ...". In browser F12 → Network, check `POST /api/run` (should be 200) and `GET /api/leads/pending` (should get pending items when backend is waiting).
 
 ---
 
