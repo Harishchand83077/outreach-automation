@@ -137,6 +137,18 @@ async def startup():
 
 # ─── API routes ─────────────────────────────────────────────────────────────
 
+@app.get("/")
+async def root():
+    """Root path: point to API health and docs."""
+    return {
+        "service": "Funding Outreach Automation API",
+        "status": "running",
+        "health": "/api/health",
+        "docs": "/docs",
+        "message": "Use the dashboard (Vercel) or call /api/leads, /api/run, etc.",
+    }
+
+
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
