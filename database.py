@@ -125,6 +125,52 @@ async def get_all_leads() -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+async def get_stats() -> Dict[str, Any]:
+    """Return dashboard stats: total, by status, last_activity."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) as c FROM leads GROUP BY status"
+        )
+        rows = await cursor.fetchall()
+        by_status = {r["status"]: int(r["c"]) for r in rows}
+        cursor = await db.execute("SELECT MAX(updated_at) as last FROM leads")
+        row = await cursor.fetchone()
+        last_activity = row["last"] if row and row["last"] else None
+        cursor = await db.execute("SELECT COUNT(*) FROM leads WHERE meeting_booked = 1")
+        row = await cursor.fetchone()
+        meeting_count = int(row[0]) if row else 0
+    return {
+        "total_leads": sum(by_status.values()),
+        "emails_sent": by_status.get("EMAIL_SENT", 0),
+        "meeting_booked": meeting_count,
+        "by_status": by_status,
+        "last_activity": last_activity,
+    }
+
+
+async def reset_lead_status_to_init(email: str) -> bool:
+    """Set lead status to INIT so they can be re-run. Returns True if updated."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE leads SET status = 'INIT', updated_at = ? WHERE email = ? AND status IN ('EMAIL_FAILED', 'ERROR')",
+            (datetime.utcnow().isoformat(), email),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def reset_failed_leads_to_init() -> int:
+    """Reset all EMAIL_FAILED and ERROR leads to INIT. Returns count reset."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE leads SET status = 'INIT', updated_at = ? WHERE status IN ('EMAIL_FAILED', 'ERROR')",
+            (datetime.utcnow().isoformat(),),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
 async def print_leads_summary() -> None:
     """Print a summary table of all leads and their statuses."""
     leads = await get_all_leads()
