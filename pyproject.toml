@@ -34,6 +34,9 @@ dependencies = [
     # injectable resolver, so no test ever needs the network.
     "email-validator==2.3.0",
     "dnspython==2.9.0",
+    # Used directly rather than a vendor SDK: every provider in the chain speaks the same
+    # OpenAI-compatible endpoint, and we need control over error classification (issue E5).
+    "httpx==0.28.1",
 ]
 
 [dependency-groups]
@@ -44,6 +47,7 @@ dev = [
     "ruff==0.16.10",
     "mypy==1.18.2",
     "types-openpyxl==3.1.5.20260827",
+    "respx==0.23.1",
 ]
 
 [tool.uv]
