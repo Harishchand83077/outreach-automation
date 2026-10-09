@@ -22,9 +22,23 @@ _DECOMMISSIONED_MODELS = {"llama3-70b-8192", "llama3-8b-8192"}
 _CURRENT_MODEL = "llama-3.3-70b-versatile"
 
 _PLACEHOLDER_PREFIXES = (
-    "your_", "your-", "yourkey", "changeme", "change_me", "change-me",
-    "replace_me", "replace-me", "replaceme", "placeholder", "insert_",
-    "add_your", "dummy", "<", "xxx", "todo", "tbd",
+    "your_",
+    "your-",
+    "yourkey",
+    "changeme",
+    "change_me",
+    "change-me",
+    "replace_me",
+    "replace-me",
+    "replaceme",
+    "placeholder",
+    "insert_",
+    "add_your",
+    "dummy",
+    "<",
+    "xxx",
+    "todo",
+    "tbd",
 )
 _PLACEHOLDER_EXACT = {"none", "null", "n/a", "na", "-", "secret", "password", "apikey", "api_key"}
 

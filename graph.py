@@ -20,15 +20,16 @@ Reply monitoring is done by a SEPARATE background worker — NOT here.
 """
 
 try:
-    from langgraph.graph import StateGraph, END  # type: ignore
+    from langgraph.graph import END, StateGraph  # type: ignore
+
     _HAS_LANGGRAPH = True
 except Exception:
     StateGraph = None
     END = None
     _HAS_LANGGRAPH = False
 
-from state import LeadState
 from logger import get_logger
+from state import LeadState
 
 logger = get_logger("graph")
 
@@ -36,6 +37,7 @@ logger = get_logger("graph")
 # ─────────────────────────────────────────────
 # CONDITIONAL EDGE FUNCTIONS
 # ─────────────────────────────────────────────
+
 
 def route_insights(state: LeadState) -> str:
     """
@@ -67,6 +69,7 @@ def route_email(state: LeadState) -> str:
 # GRAPH CONSTRUCTION
 # ─────────────────────────────────────────────
 
+
 def build_outreach_graph():
     """Build and return the compiled LangGraph outreach graph.
     Requires langgraph and dependencies; fails with clear error if not installed.
@@ -78,12 +81,12 @@ def build_outreach_graph():
         )
 
     from nodes import (
-        generate_insights,
-        human_validate_insights,
-        generate_email,
-        human_validate_email,
-        send_email_node,
         end_node,
+        generate_email,
+        generate_insights,
+        human_validate_email,
+        human_validate_insights,
+        send_email_node,
     )
 
     workflow = StateGraph(LeadState)
@@ -98,14 +101,22 @@ def build_outreach_graph():
     workflow.add_edge("generate_email", "human_validate_email")
     workflow.add_edge("send_email", "end_node")
     workflow.add_edge("end_node", END)
-    workflow.add_conditional_edges("human_validate_insights", route_insights, {
-        "generate_email": "generate_email",
-        "generate_insights": "generate_insights",
-    })
-    workflow.add_conditional_edges("human_validate_email", route_email, {
-        "send_email": "send_email",
-        "generate_email": "generate_email",
-    })
+    workflow.add_conditional_edges(
+        "human_validate_insights",
+        route_insights,
+        {
+            "generate_email": "generate_email",
+            "generate_insights": "generate_insights",
+        },
+    )
+    workflow.add_conditional_edges(
+        "human_validate_email",
+        route_email,
+        {
+            "send_email": "send_email",
+            "generate_email": "generate_email",
+        },
+    )
     compiled = workflow.compile()
     logger.info("LangGraph outreach workflow compiled successfully")
     return compiled

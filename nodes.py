@@ -14,14 +14,14 @@ with only the fields it updates.
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Any, Dict
 
-from state import LeadState
-from llm_client import llm_call
-from email_utils import SendOutcome, send_email
-from logger import get_logger
 from config.config import config
 from database import update_lead
+from email_utils import SendOutcome, send_email
+from llm_client import llm_call
+from logger import get_logger
+from state import LeadState
 
 logger = get_logger("nodes")
 
@@ -34,6 +34,7 @@ def _is_auto_approve() -> bool:
 # ─────────────────────────────────────────────
 # 1. GENERATE INSIGHTS
 # ─────────────────────────────────────────────
+
 
 async def generate_insights(state: LeadState) -> Dict[str, Any]:
     """
@@ -50,7 +51,7 @@ async def generate_insights(state: LeadState) -> Dict[str, Any]:
     feedback_section = f"\nPrevious feedback to incorporate: {feedback}" if feedback else ""
 
     system_prompt = """You are an expert startup and venture capital analyst.
-Your job is to analyze a company and generate structured insights to help 
+Your job is to analyze a company and generate structured insights to help
 determine if they would be a good funding target or strategic partner.
 Be specific, concise, and actionable. Format output in clear sections."""
 
@@ -94,6 +95,7 @@ Be specific and actionable. Base analysis on the company name and industry."""
 # 2. HUMAN VALIDATE INSIGHTS
 # ─────────────────────────────────────────────
 
+
 async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
     """
     Human review of generated insights: CLI input() or API approval (when APPROVAL_MODE=api).
@@ -116,7 +118,11 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
     # API/frontend mode: wait for approval from API (frontend buttons)
     if config.APPROVAL_MODE == "api":
         from approval_store import wait_approval
-        logger.info("[%s] Insights ready — waiting for dashboard approval (check 'Pending your approval' on the UI)", name)
+
+        logger.info(
+            "[%s] Insights ready — waiting for dashboard approval (check 'Pending your approval' on the UI)",
+            name,
+        )
         result = await wait_approval(
             email,
             "insights",
@@ -124,7 +130,11 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
         )
         if result.get("approved"):
             logger.info("[%s] Insights approved via API", name)
-            approved_insights_text = result.get("edited_insights") if result.get("edited_insights") is not None else insights
+            approved_insights_text = (
+                result.get("edited_insights")
+                if result.get("edited_insights") is not None
+                else insights
+            )
             out = {
                 "approved_insights": True,
                 "insights_feedback": None,
@@ -133,7 +143,9 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
             if result.get("edited_insights") is not None:
                 out["insights"] = result["edited_insights"]
             # Persist so dashboard shows insights immediately after approval
-            await update_lead(email=email, status="INSIGHTS_APPROVED", insights=approved_insights_text)
+            await update_lead(
+                email=email, status="INSIGHTS_APPROVED", insights=approved_insights_text
+            )
             return out
         logger.info("[%s] Insights rejected via API. Feedback: %s", name, result.get("feedback"))
         return {
@@ -150,8 +162,7 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
     print("=" * 70)
     loop = asyncio.get_event_loop()
     decision = await loop.run_in_executor(
-        None,
-        lambda: input("\nApprove insights? (y/n): ").strip().lower()
+        None, lambda: input("\nApprove insights? (y/n): ").strip().lower()
     )
     if decision == "y":
         logger.info("[%s] Insights approved by human", name)
@@ -161,8 +172,7 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
             "status": "INSIGHTS_APPROVED",
         }
     feedback = await loop.run_in_executor(
-        None,
-        lambda: input("Provide feedback for regeneration: ").strip()
+        None, lambda: input("Provide feedback for regeneration: ").strip()
     )
     logger.info("[%s] Insights rejected. Feedback: %s", name, feedback)
     return {
@@ -175,6 +185,7 @@ async def human_validate_insights(state: LeadState) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 # 3. GENERATE EMAIL
 # ─────────────────────────────────────────────
+
 
 async def generate_email(state: LeadState) -> Dict[str, Any]:
     """
@@ -253,6 +264,7 @@ Keep it under 200 words. Sound human, not like a template."""
 # 4. HUMAN VALIDATE EMAIL
 # ─────────────────────────────────────────────
 
+
 async def human_validate_email(state: LeadState) -> Dict[str, Any]:
     """
     Human review of email draft: CLI input() or API approval (when APPROVAL_MODE=api).
@@ -274,6 +286,7 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
     # API/frontend mode: wait for approval from API
     if config.APPROVAL_MODE == "api":
         from approval_store import wait_approval
+
         logger.info("[%s] Email draft ready — waiting for dashboard approval", name)
         result = await wait_approval(
             email,
@@ -282,7 +295,11 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
         )
         if result.get("approved"):
             logger.info("[%s] Email approved via API", name)
-            approved_draft = result.get("edited_email_draft") if result.get("edited_email_draft") is not None else email_draft
+            approved_draft = (
+                result.get("edited_email_draft")
+                if result.get("edited_email_draft") is not None
+                else email_draft
+            )
             out = {
                 "approved_email": True,
                 "email_feedback": None,
@@ -313,8 +330,7 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
     print("=" * 70)
     loop = asyncio.get_event_loop()
     decision = await loop.run_in_executor(
-        None,
-        lambda: input("\nApprove email to send? (y/n): ").strip().lower()
+        None, lambda: input("\nApprove email to send? (y/n): ").strip().lower()
     )
     if decision == "y":
         logger.info("[%s] Email approved by human", name)
@@ -324,8 +340,7 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
             "status": "EMAIL_APPROVED",
         }
     feedback = await loop.run_in_executor(
-        None,
-        lambda: input("Provide feedback for regeneration: ").strip()
+        None, lambda: input("Provide feedback for regeneration: ").strip()
     )
     logger.info("[%s] Email rejected. Feedback: %s", name, feedback)
     return {
@@ -338,6 +353,7 @@ async def human_validate_email(state: LeadState) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 # 5. SEND EMAIL NODE
 # ─────────────────────────────────────────────
+
 
 async def send_email_node(state: LeadState) -> Dict[str, Any]:
     """
@@ -409,7 +425,8 @@ async def send_email_node(state: LeadState) -> Dict[str, Any]:
     if outcome is SendOutcome.BLOCKED:
         logger.warning(
             "[%s] Not sent: SEND_MODE=%s does not permit this recipient. Draft is kept.",
-            name, config.SEND_MODE,
+            name,
+            config.SEND_MODE,
         )
         return {"email_sent": False, "status": status}
 
@@ -420,6 +437,7 @@ async def send_email_node(state: LeadState) -> Dict[str, Any]:
 # ─────────────────────────────────────────────
 # 6. END NODE
 # ─────────────────────────────────────────────
+
 
 async def end_node(state: LeadState) -> Dict[str, Any]:
     """

@@ -8,9 +8,9 @@ Hard rules: an LLM label can never trigger a send, and MEETING_BOOKED is set onl
 """
 
 import pytest
+from conftest import executable_source
 
 import decision_engine
-from conftest import executable_source
 
 LEAD = {
     "name": "Asha",

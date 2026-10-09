@@ -23,15 +23,16 @@ Usage:
     python main.py --status                    # Show DB status summary
 """
 
+import argparse
 import asyncio
 import sys
-import argparse
 from pathlib import Path
 
 # Windows: use UTF-8 for stdout/stderr so emojis and Unicode log messages don't crash (cp1252)
 if sys.platform == "win32":
     try:
         import io
+
         if hasattr(sys.stdout, "buffer"):
             sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
         if hasattr(sys.stderr, "buffer"):
@@ -40,12 +41,12 @@ if sys.platform == "win32":
         pass
 
 from config.config import ConfigError, config
-from database import init_db, upsert_lead, print_leads_summary
-from excel_loader import load_leads_from_excel
-from runner import run_all_leads
-from reply_monitor import reply_monitor_loop
+from database import init_db, print_leads_summary, upsert_lead
 from decision_engine import decision_engine_loop
+from excel_loader import load_leads_from_excel
 from logger import get_logger, set_log_level
+from reply_monitor import reply_monitor_loop
+from runner import run_all_leads
 
 logger = get_logger("main")
 
@@ -121,7 +122,9 @@ async def run_outreach_phase(leads: list) -> None:
     logger.info("=" * 70)
     logger.info("PHASE 1-4: PARALLEL OUTREACH WORKFLOWS")
     logger.info("=" * 70)
-    logger.info("Processing %d leads with max %d concurrent", len(leads), config.MAX_CONCURRENT_LEADS)
+    logger.info(
+        "Processing %d leads with max %d concurrent", len(leads), config.MAX_CONCURRENT_LEADS
+    )
 
     results = await run_all_leads(leads)
 
@@ -143,7 +146,9 @@ async def run_background_workers() -> None:
     logger.info("PHASE 5-6: STARTING BACKGROUND WORKERS")
     logger.info("=" * 70)
     logger.info("Reply monitor: every %d minutes", config.REPLY_CHECK_INTERVAL_MINUTES)
-    logger.info("Decision engine: every %d minutes (offset 30s)", config.REPLY_CHECK_INTERVAL_MINUTES)
+    logger.info(
+        "Decision engine: every %d minutes (offset 30s)", config.REPLY_CHECK_INTERVAL_MINUTES
+    )
     logger.info("Press Ctrl+C to stop background workers")
 
     # Run both workers concurrently — they loop forever
@@ -194,8 +199,7 @@ async def main():
     # ── Mode: Full run (needs Excel file) ──
     if not args.excel_file:
         logger.error(
-            "Excel file required. Usage: python main.py leads.xlsx\n"
-            "   Or: python main.py --help"
+            "Excel file required. Usage: python main.py leads.xlsx\n   Or: python main.py --help"
         )
         sys.exit(1)
 

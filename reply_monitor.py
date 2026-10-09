@@ -10,12 +10,11 @@ the workflow ends after sending email, and this picks up from there.
 """
 
 import asyncio
-from typing import List
 
+from config.config import config
 from database import get_leads_by_status, update_lead
 from email_utils import check_inbox
 from logger import get_logger
-from config.config import config
 
 logger = get_logger("reply_monitor")
 
@@ -38,9 +37,7 @@ async def check_and_store_replies() -> int:
     lead_emails = [lead["email"].lower() for lead in sent_leads]
     email_to_lead = {lead["email"].lower(): lead for lead in sent_leads}
 
-    logger.info(
-        "Checking inbox for replies from %d leads...", len(lead_emails)
-    )
+    logger.info("Checking inbox for replies from %d leads...", len(lead_emails))
 
     # Check inbox for replies from known lead emails
     replies = await check_inbox(check_from_emails=lead_emails)
@@ -61,10 +58,7 @@ async def check_and_store_replies() -> int:
         name = lead["name"]
         body = reply["body"]
 
-        logger.info(
-            "[%s] Reply received from %s | Subject: %s",
-            name, from_email, reply["subject"]
-        )
+        logger.info("[%s] Reply received from %s | Subject: %s", name, from_email, reply["subject"])
 
         # Update the lead in DB with reply content
         await update_lead(

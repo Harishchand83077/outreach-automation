@@ -8,7 +8,7 @@ which sets the result and unblocks the waiting node.
 """
 
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from logger import get_logger
 
@@ -111,6 +111,5 @@ async def get_pending_async() -> list:
     """Return list of {email, type, ...payload} for all pending approvals (for API)."""
     async with _lock:
         return [
-            {"email": k[0], "type": k[1], **v.get("payload", {})}
-            for k, v in list(_pending.items())
+            {"email": k[0], "type": k[1], **v.get("payload", {})} for k, v in list(_pending.items())
         ]

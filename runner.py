@@ -9,13 +9,13 @@ Key Design:
 """
 
 import asyncio
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
-from graph import get_graph
-from state import LeadState
-from database import update_lead
 from config.config import config
+from database import update_lead
+from graph import get_graph
 from logger import get_logger
+from state import LeadState
 
 logger = get_logger("runner")
 

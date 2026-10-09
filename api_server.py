@@ -15,38 +15,37 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 # Ensure project root is on path and load env
 _root = Path(__file__).resolve().parent
 os.chdir(_root)
 
+from approval_store import (
+    approve_email,
+    approve_insights,
+    approve_question_reply,
+    get_pending_async,
+    reject_email,
+    reject_insights,
+)
 from config.config import config
 from database import (
-    init_db,
     get_all_leads,
-    get_lead,
-    upsert_lead,
     get_leads_by_status,
     get_stats,
+    init_db,
     reset_failed_leads_to_init,
+    upsert_lead,
 )
-from excel_loader import load_leads_from_bytes
-from runner import run_all_leads
-from approval_store import (
-    get_pending_async,
-    approve_insights,
-    reject_insights,
-    approve_email,
-    reject_email,
-    approve_question_reply,
-)
-from reply_monitor import reply_monitor_loop
 from decision_engine import decision_engine_loop
+from excel_loader import load_leads_from_bytes
 from logger import get_logger
+from reply_monitor import reply_monitor_loop
+from runner import run_all_leads
 
 logger = get_logger("api_server")
 
@@ -107,6 +106,7 @@ _last_run_error: Optional[str] = None
 
 # ─── Pydantic models ───────────────────────────────────────────────────────
 
+
 class ApproveRejectBody(BaseModel):
     feedback: Optional[str] = None
 
@@ -125,6 +125,7 @@ class ApproveQuestionReplyBody(BaseModel):
 
 # ─── Startup ───────────────────────────────────────────────────────────────
 
+
 @app.on_event("startup")
 async def startup():
     # Fail fast on incomplete or placeholder configuration rather than running in a state where
@@ -142,7 +143,10 @@ async def startup():
         )
 
     await init_db()
-    asyncio.create_task(_workers_loop())
+    global _workers_task
+    # Keep the handle: a bare create_task left _workers_task None, so the duplicate guard in
+    # start_workers() could not work and a second reply monitor could be spawned (NEW-5).
+    _workers_task = asyncio.create_task(_workers_loop())
     logger.info(
         "API server started. APPROVAL_MODE=api, SEND_MODE=%s, background workers started.",
         config.SEND_MODE,
@@ -150,6 +154,7 @@ async def startup():
 
 
 # ─── API routes ─────────────────────────────────────────────────────────────
+
 
 @app.get("/")
 async def root():
@@ -210,7 +215,7 @@ async def upload_leads(file: UploadFile = File(...)):
     try:
         leads = load_leads_from_bytes(contents, file.filename)
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e)) from e
     for lead in leads:
         await upsert_lead(
             name=lead["name"],
@@ -236,7 +241,10 @@ async def start_run(use_existing: bool = True):
         all_leads = await get_all_leads()
         leads = [dict(r) for r in all_leads if dict(r).get("status") == "INIT"]
     if not leads:
-        return {"status": "no_leads", "message": "No leads in INIT status. Upload an Excel file first."}
+        return {
+            "status": "no_leads",
+            "message": "No leads in INIT status. Upload an Excel file first.",
+        }
     _run_task = asyncio.create_task(_run_outreach([dict(r) for r in leads]))
     return {"status": "started", "lead_count": len(leads)}
 
@@ -324,19 +332,32 @@ async def export_leads_csv():
     leads = await get_all_leads()
     out = io.StringIO()
     writer = csv.writer(out)
-    writer.writerow(["Name", "Email", "Company", "Status", "Classification", "Meeting", "Insights", "Email draft"])
+    writer.writerow(
+        [
+            "Name",
+            "Email",
+            "Company",
+            "Status",
+            "Classification",
+            "Meeting",
+            "Insights",
+            "Email draft",
+        ]
+    )
     for r in leads:
         row = dict(r)
-        writer.writerow([
-            row.get("name", ""),
-            row.get("email", ""),
-            row.get("company", ""),
-            row.get("status", ""),
-            row.get("classification") or "",
-            "Yes" if row.get("meeting_booked") else "",
-            (row.get("insights") or "")[:500],
-            (row.get("email_draft") or "")[:500],
-        ])
+        writer.writerow(
+            [
+                row.get("name", ""),
+                row.get("email", ""),
+                row.get("company", ""),
+                row.get("status", ""),
+                row.get("classification") or "",
+                "Yes" if row.get("meeting_booked") else "",
+                (row.get("insights") or "")[:500],
+                (row.get("email_draft") or "")[:500],
+            ]
+        )
     out.seek(0)
     return StreamingResponse(
         iter([out.getvalue()]),
@@ -350,12 +371,20 @@ async def retry_failed():
     """Reset all EMAIL_FAILED and ERROR leads to INIT so they can be re-run."""
     global _run_task
     if _run_task and not _run_task.done():
-        return {"status": "already_running", "message": "A run is in progress. Wait for it to finish."}
+        return {
+            "status": "already_running",
+            "message": "A run is in progress. Wait for it to finish.",
+        }
     count = await reset_failed_leads_to_init()
-    return {"status": "ok", "reset_count": count, "message": f"{count} lead(s) reset to INIT. Click Run outreach to retry."}
+    return {
+        "status": "ok",
+        "reset_count": count,
+        "message": f"{count} lead(s) reset to INIT. Click Run outreach to retry.",
+    }
 
 
 # ─── Optional: start background workers when server runs ─────────────────────
+
 
 def start_workers():
     """Start reply monitor and decision engine in the background (optional)."""

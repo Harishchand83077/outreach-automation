@@ -8,21 +8,26 @@ Includes:
 """
 
 import asyncio
+
 try:
     from tenacity import (
         retry,
+        retry_if_exception_type,
         stop_after_attempt,
         wait_exponential,
-        retry_if_exception_type,
     )
+
     _HAS_TENACITY = True
 except Exception:
     # Provide a no-op retry decorator if tenacity is unavailable
     def retry(*args, **kwargs):
         def _decorator(f):
             return f
+
         return _decorator
+
     _HAS_TENACITY = False
+
     # Provide no-op replacements for used tenacity helpers
     def stop_after_attempt(n):
         return None
@@ -33,10 +38,12 @@ except Exception:
     def retry_if_exception_type(*args, **kwargs):
         return None
 
+
 try:
-    from langchain_groq import ChatGroq
-    from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_core.exceptions import LangChainException
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_groq import ChatGroq
+
     _HAS_LANGCHAIN = True
 except Exception:
     ChatGroq = None
@@ -114,10 +121,7 @@ async def llm_call(system_prompt: str, user_prompt: str) -> str:
     try:
         # Run the synchronous LLM call in a thread pool to avoid blocking
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            lambda: llm.invoke(messages)
-        )
+        response = await loop.run_in_executor(None, lambda: llm.invoke(messages))
         return response.content.strip()
     except Exception as e:
         logger.error("LLM call failed (will retry): %s", str(e))

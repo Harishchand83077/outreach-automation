@@ -12,13 +12,13 @@ Processes leads with status = REPLIED by:
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Any, Dict
 
-from database import get_leads_by_status, update_lead
-from llm_client import llm_call
-from email_utils import SendOutcome, send_email
-from logger import get_logger
 from config.config import config
+from database import get_leads_by_status, update_lead
+from email_utils import SendOutcome, send_email
+from llm_client import llm_call
+from logger import get_logger
 
 logger = get_logger("decision_engine")
 
@@ -26,6 +26,7 @@ logger = get_logger("decision_engine")
 # ─────────────────────────────────────────────
 # REPLY CLASSIFICATION
 # ─────────────────────────────────────────────
+
 
 async def classify_reply(lead: Dict[str, Any]) -> str:
     """
@@ -77,7 +78,8 @@ Classification (positive / question / no_interest):"""
         else:
             logger.warning(
                 "[%s] Unexpected classification '%s', defaulting to 'question'",
-                name, classification
+                name,
+                classification,
             )
             return "question"
     except Exception as e:
@@ -88,6 +90,7 @@ Classification (positive / question / no_interest):"""
 # ─────────────────────────────────────────────
 # ACTION: POSITIVE REPLY
 # ─────────────────────────────────────────────
+
 
 async def handle_positive(lead: Dict[str, Any]) -> None:
     """Handle a positive reply by preparing for a human — never by sending.
@@ -130,7 +133,7 @@ Their reply to our outreach:
 {reply_text}
 
 Our company research insights:
-{lead.get('insights', 'Not available')}
+{lead.get("insights", "Not available")}
 
 Generate a pre-meeting document covering:
 1. **Meeting Objective**: What we want to achieve
@@ -164,6 +167,7 @@ Format this as a professional meeting brief."""
 # ─────────────────────────────────────────────
 # ACTION: QUESTION / OBJECTION
 # ─────────────────────────────────────────────
+
 
 async def handle_question(lead: Dict[str, Any]) -> None:
     """
@@ -228,6 +232,7 @@ async def handle_question(lead: Dict[str, Any]) -> None:
 # ACTION: NO INTEREST
 # ─────────────────────────────────────────────
 
+
 async def handle_no_interest(lead: Dict[str, Any]) -> None:
     """
     Handle a no-interest reply: mark as CLOSED.
@@ -247,6 +252,7 @@ async def handle_no_interest(lead: Dict[str, Any]) -> None:
 # ─────────────────────────────────────────────
 # MAIN DECISION ENGINE PASS
 # ─────────────────────────────────────────────
+
 
 async def process_replied_leads() -> int:
     """
@@ -284,9 +290,7 @@ async def process_replied_leads() -> int:
             count += 1
 
         except Exception as e:
-            logger.error(
-                "[%s] Decision engine error: %s", name, str(e), exc_info=True
-            )
+            logger.error("[%s] Decision engine error: %s", name, str(e), exc_info=True)
 
     return count
 

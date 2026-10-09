@@ -7,7 +7,6 @@ Error text must never be reachable as email content.
 """
 
 import pytest
-
 from conftest import executable_source
 
 
@@ -28,10 +27,15 @@ class TestNodesRaiseInsteadOfReturningErrorText:
         clean_env.setattr(nodes, "update_lead", fake_update_lead)
 
         with pytest.raises(RuntimeError, match="groq exploded"):
-            await nodes.generate_email({
-                "name": "A", "email": "me@example.com", "company": "Acme",
-                "insights": "x", "email_attempts": 0,
-            })
+            await nodes.generate_email(
+                {
+                    "name": "A",
+                    "email": "me@example.com",
+                    "company": "Acme",
+                    "insights": "x",
+                    "email_attempts": 0,
+                }
+            )
 
         # Nothing may have been persisted as a sendable draft.
         for fields in writes:
@@ -54,10 +58,14 @@ class TestNodesRaiseInsteadOfReturningErrorText:
         clean_env.setattr(nodes, "update_lead", fake_update_lead)
 
         with pytest.raises(RuntimeError):
-            await nodes.generate_insights({
-                "name": "A", "email": "me@example.com", "company": "Acme",
-                "insights_attempts": 0,
-            })
+            await nodes.generate_insights(
+                {
+                    "name": "A",
+                    "email": "me@example.com",
+                    "company": "Acme",
+                    "insights_attempts": 0,
+                }
+            )
 
         for fields in writes:
             assert fields.get("status") != "INSIGHTS_GENERATED"
