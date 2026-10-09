@@ -153,6 +153,44 @@ assume a connection failure was the thing protecting you.
 
 ---
 
+## ADR-006 — Google Workspace on a GoDaddy domain: what it settles
+
+**Date** 2026-10-10 · **Status** Accepted · **Resolves** the `[VERIFY]` in ADR-002, and Q-B
+
+**The facts.** The sending mailbox is **Google Workspace (paid Starter)** on a dedicated domain
+whose DNS is at **GoDaddy**.
+
+**What this settles, and why each one mattered:**
+
+1. **ADR-002's Sent-folder recovery works.** Gmail and Workspace copy mail sent through
+   `smtp.gmail.com` into the Sent folder automatically. That was flagged `[VERIFY]` because the
+   whole crash-recovery path depends on it: a row stuck in `sending` is resolved by searching the
+   mailbox for its pre-generated `Message-ID`, and a provider that does not save SMTP-sent mail
+   would leave every such row unresolvable. **`BCC_SELF` is therefore not needed.**
+2. **The daily cap has real headroom.** Workspace allows roughly 2,000 messages a day per user,
+   against our 100. The cap is ours for deliverability reasons, not the provider's limit — so
+   hitting it is a choice we are making, not a wall we are near. Personal Gmail's ~500/day would
+   have been closer.
+3. **C6 is resolved rather than mitigated.** The audit flagged using "a Gmail app password over
+   SMTP/IMAP for bulk cold outreach" as an account-suspension risk. On a paid Workspace account
+   with its own domain, SMTP relay is a supported use rather than something tolerated.
+4. **SPF, DKIM and DMARC are set at GoDaddy.** Google publishes the exact records; the Phase 9
+   runbook will give them verbatim with GoDaddy's DNS-panel steps, since that is the one part of
+   deliverability that no amount of code can substitute for.
+
+**Still required of the operator**, and recorded so it is not assumed:
+
+- IMAP must be enabled in Workspace (Settings → Apps → Gmail → IMAP access). It is off by default
+  on some plans, and the reply engine cannot see anything without it.
+- The SMTP password must be an **App Password**, which requires 2-Step Verification on the
+  account. A normal account password will be rejected.
+
+**Alternatives rejected.** The Gmail API with OAuth instead of SMTP — better rate limits and no
+App Password, but it needs a Google Cloud project, a consent screen and a token refresh path, for
+a volume that SMTP handles comfortably. Worth revisiting if we ever outgrow 2,000/day.
+
+---
+
 ## Minor decisions (inside spec latitude)
 
 | Date | Decision | Why |
