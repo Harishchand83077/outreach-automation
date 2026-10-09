@@ -37,13 +37,13 @@
       "Bash(gh run list:*)",
       "Bash(docker compose config:*)",
       "Bash(docker compose build:*)",
-      "Bash(pre-commit run:*)"
-    ],
-    "ask": [
+      "Bash(pre-commit run:*)",
       "Bash(git push:*)",
       "Bash(gh pr create:*)",
       "Bash(gh pr merge:*)",
-      "Bash(gh repo edit:*)",
+      "Bash(gh repo edit:*)"
+    ],
+    "ask": [
       "Bash(gh api:*)",
       "Bash(alembic upgrade:*)",
       "Bash(alembic downgrade:*)",

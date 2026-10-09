@@ -366,6 +366,55 @@ class Job(Base):
             postgresql_where=text("status = 'queued'"),
         ),
         Index("ix_jobs_lease", "status", "locked_until"),
+        # Enqueueing is idempotent: a live job already holding this (kind, dedupe_key) blocks a
+        # duplicate, while a finished one does not, so the same work can be queued again later.
+        #
+        # Declared here as well as created by migration 1. It must be in the metadata, or
+        # autogenerate reads it as drift and writes a migration that DROPS it — which it did
+        # once, silently removing the guarantee until the queue tests caught it.
+        Index(
+            "uq_jobs_kind_dedupe_live",
+            "kind",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL AND status IN ('queued', 'running')"),
+        ),
+    )
+
+
+class LlmUsage(Base):
+    """One LLM call, successful or not.
+
+    Failures are recorded too: a provider that fails often is exactly what the admin view needs
+    to show, and §20's 9-12k tokens-per-lead estimate was always meant to be replaced by
+    measurement. The prototype had no accounting at all, so when its daily quota ran out there
+    was no record of why or of how close it had been (issue E5).
+    """
+
+    __tablename__ = "llm_usage"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The chain entry's name, not the provider: two models from one provider are separate pools
+    #: of headroom, and that is the level caps apply at.
+    entry_name: Mapped[str] = mapped_column(String(60), nullable=False)
+    task: Mapped[str] = mapped_column(String(40), nullable=False)
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_ms: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    outcome: Mapped[str] = mapped_column(String(20), nullable=False)
+    at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # The headroom query: tokens for one entry since a cutoff, run before every call.
+        Index("ix_llm_usage_entry_at", "entry_name", "at"),
+        Index("ix_llm_usage_org_at", "org_id", "at"),
+        Index("ix_llm_usage_lead", "lead_id"),
     )
 
 

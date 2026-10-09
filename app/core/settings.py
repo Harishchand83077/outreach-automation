@@ -157,6 +157,11 @@ class Settings(BaseSettings):
     # Entries whose key is unset are skipped by the router, so adding a provider is just a
     # matter of setting its key. One account per provider — never rotate accounts to evade a
     # free-tier quota (hard rule 8).
+    #: Ordered JSON list of provider entries, overriding the built-in chain. Each entry names
+    #: the *environment variable* holding its key, never the key, so this value is safe to log.
+    #: Left empty, app.services.llm.entries.DEFAULT_CHAIN is used and entries whose key is
+    #: absent are skipped — so adding a provider is just setting its key.
+    LLM_CHAIN: str = ""
     CEREBRAS_API_KEY: str = ""
     OPENROUTER_API_KEY: str = ""
     #: Google AI Studio. Outside the EEA/UK this tier may train on prompts, so the router marks
