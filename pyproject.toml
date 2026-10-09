@@ -48,7 +48,7 @@ dev = [
     "pytest-asyncio==1.4.0",
     "aiosmtpd==1.4.6",       # in-process fake SMTP; no test may touch the network
     "ruff==0.16.10",
-    "mypy==1.18.2",
+    "mypy==2.4.0",
     "types-openpyxl==3.1.5.20260827",
     "respx==0.23.1",
 ]
