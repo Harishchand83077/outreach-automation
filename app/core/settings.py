@@ -25,6 +25,26 @@ FEATURE_KEYS: dict[str, str] = {
     "SEND_ALLOWLIST": "SEND_MODE=allowlist can reach nobody",
 }
 
+#: Configuration for phases that have not landed yet. Declared and validated so a value can be
+#: provisioned early and checked, grouped by the phase whose code will first read it.
+FUTURE_KEYS: dict[str, list[str]] = {
+    "Phase 1 - database": ["DATABASE_URL"],
+    "Phase 3 - LLM router": [
+        "CEREBRAS_API_KEY",
+        "OPENROUTER_API_KEY",
+        "GEMINI_API_KEY",
+    ],
+    "Phase 3 - research": ["TAVILY_API_KEY"],
+    "Phase 5/6 - worker": ["INTERNAL_TICK_SECRET"],
+    "Phase 7 - auth": [
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_JWKS_URL",
+        "CORS_ALLOWED_ORIGINS",
+    ],
+    "Phase 9 - ops": ["ALERT_WEBHOOK_URL"],
+}
+
 #: Models Groq has retired; silently upgraded so an old .env keeps working.
 _DECOMMISSIONED_MODELS = {"llama3-70b-8192", "llama3-8b-8192"}
 _CURRENT_MODEL = "llama-3.3-70b-versatile"
@@ -122,6 +142,44 @@ class Settings(BaseSettings):
     #: Idle poll interval. The runner backs off to this when there is no work.
     JOB_POLL_SECONDS: float = 2.0
 
+    # === Auth (Supabase is used for AUTHENTICATION ONLY — ADR-001) ===
+    # Declared now so the values are validated and visible to check_env. The code that consumes
+    # them lands in Phase 7; the anon key is public by design and used by the browser, while the
+    # api verifies each JWT locally against the JWKS.
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_JWKS_URL: str = ""
+    #: Comma-separated browser origins allowed to call the api. Replaces the prototype's
+    #: `allow_origins=["*"]` with credentials enabled (issue C3).
+    CORS_ALLOWED_ORIGINS: str = ""
+
+    # === LLM router (Phase 3) ===
+    # Entries whose key is unset are skipped by the router, so adding a provider is just a
+    # matter of setting its key. One account per provider — never rotate accounts to evade a
+    # free-tier quota (hard rule 8).
+    CEREBRAS_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
+    #: Google AI Studio. Outside the EEA/UK this tier may train on prompts, so the router marks
+    #: it allow_pii=false: public website text only, never a lead's name, address or reply.
+    GEMINI_API_KEY: str = ""
+    #: The paid fallback stays off unless both of these are set deliberately.
+    PAID_LLM_ENABLED: bool = False
+    PAID_LLM_DAILY_USD_CAP: float = 0.0
+
+    # === Research (Phase 3) ===
+    TAVILY_API_KEY: str = ""
+    TAVILY_MONTHLY_CREDIT_BUDGET: int = 1000
+
+    # === Worker and operations (Phases 5, 6, 9) ===
+    #: Shared secret for POST /internal/tick, which runs one scheduler cycle.
+    INTERNAL_TICK_SECRET: str = ""
+    #: Optional webhook for alerts: SMTP auth failure, LLM chain exhausted, dead jobs, a bounce
+    #: spike. Without it, alerts are visible only in the dashboard.
+    ALERT_WEBHOOK_URL: str = ""
+    #: Only needed if the mail provider does not copy SMTP-sent mail to the Sent folder, so a
+    #: crashed send can still be found by Message-ID (ADR-002).
+    BCC_SELF: bool = False
+
     # === Workflow ===
     APPROVAL_MODE: Literal["cli", "api"] = "cli"
     AUTO_APPROVE: bool = False
@@ -131,7 +189,7 @@ class Settings(BaseSettings):
     REPLY_CHECK_INTERVAL_MINUTES: int = 5
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
-    @field_validator("AUTO_APPROVE", "SMTP_USE_TLS", mode="before")
+    @field_validator("AUTO_APPROVE", "SMTP_USE_TLS", "PAID_LLM_ENABLED", "BCC_SELF", mode="before")
     @classmethod
     def _tolerate_empty_bool(cls, v: object) -> object:
         """An unset-but-present flag (`AUTO_APPROVE=`) means off, not a validation error."""
