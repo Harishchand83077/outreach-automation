@@ -162,16 +162,16 @@ async def lead_factory(db: AsyncSession, org, campaign):
         from app.db.models import Lead
 
         n = next(counter)
-        record = Lead(
-            org_id=org.id,
-            campaign_id=campaign.id,
-            email_norm=kw.pop("email", f"lead{n}@example.com"),
-            email_raw=f"Lead{n}@Example.com",
-            full_name=f"Lead {n}",
-            company_name=f"Company {n}",
-            state=state,
-            **kw,
-        )
+        # Defaults that a caller may override, so a test can set the one field it cares about
+        # without having to restate the rest.
+        fields: dict[str, object] = {
+            "email_norm": kw.pop("email", f"lead{n}@example.com"),
+            "email_raw": f"Lead{n}@Example.com",
+            "full_name": f"Lead {n}",
+            "company_name": f"Company {n}",
+        }
+        fields.update(kw)
+        record = Lead(org_id=org.id, campaign_id=campaign.id, state=state, **fields)
         db.add(record)
         await db.commit()
         return record
