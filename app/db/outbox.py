@@ -211,6 +211,10 @@ async def claim_send(
         from_addr=mailbox.from_email,
         to_addr=lead.email_norm,
         idempotency_key=f"{lead_id}:{kind}:{sequence}",
+        # Explicit rather than the server default, so every timestamp on the send path comes
+        # from one clock. The daily cap is counted from these rows, and a count that mixed the
+        # database's clock with the caller's could not be reasoned about.
+        created_at=now,
     )
     session.add(message)
 

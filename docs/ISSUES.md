@@ -26,7 +26,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 | A4 | P1 | **Superseded-by-rewrite** (persona/campaign schema plus the prompts that read them) | Use case is hardcoded to *funding/VC* ("startup and venture capital analyst", "Funding Potential", "Series A/B/C"). Not a generic outreach engine. | nodes.py:53-73 |
 | A5 | P1 | **Superseded-by-rewrite** | Excel extra columns (title, website, LinkedIn, notes, segment) are dropped, so they can't feed research or personalization. | excel_loader.py:47-51,82 |
 | A6 | P1 | **Confirmed** | **Reply loop is single-shot.** After one human reply, status → `WAITING_REPLY`, but `reply_monitor` only watches `EMAIL_SENT`. A second reply is never seen. Worse than first audited: when *no* lead sits in `EMAIL_SENT` the inbox is not polled at all. | decision_engine.py:229, reply_monitor.py:31,33-35 |
-| A7 | P1 | **Confirmed (absence)** | No follow-up sequence, no stop-on-reply guarantee, no scheduling/send windows. | — |
+| A7 | P1 | **Superseded-by-rewrite** | No follow-up sequence, no stop-on-reply guarantee, no scheduling/send windows. | — |
 | A8 | P1 | **Confirmed** | Reply classifier has only 3 buckets. Missing: unsubscribe/opt-out, out-of-office, bounce, wrong person/referral, hostile. Auto-replies and bounces get classified as real replies. | decision_engine.py:44-50 |
 
 ## B. Correctness bugs
@@ -69,11 +69,11 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 
 | ID | Sev | Verdict | Issue |
 |----|-----|---------|-------|
-| D1 | P0 | **Confirmed (absence)** | No unsubscribe/opt-out mechanism, no `List-Unsubscribe` header, no suppression list, no sender postal address (CAN-SPAM / GDPR / CASL exposure). |
+| D1 | P0 | **Superseded-by-rewrite** | No unsubscribe/opt-out mechanism, no `List-Unsubscribe` header, no suppression list, no sender postal address (CAN-SPAM / GDPR / CASL exposure). |
 | D2 | P0 | **Confirmed (absence)** | No bounce handling: `MAILER-DAEMON` mails are ignored; bad addresses keep being counted as "sent". |
-| D3 | P1 | **Confirmed (absence)** | No send throttling, jitter, daily caps, warm-up, or per-domain limits. Gmail personal ≈500/day, Workspace ≈2000/day; exceeding it risks lockout. |
+| D3 | P1 | **Superseded-by-rewrite** | No send throttling, jitter, daily caps, warm-up, or per-domain limits. Gmail personal ≈500/day, Workspace ≈2000/day; exceeding it risks lockout. |
 | D4 | P1 | **Superseded-by-rewrite** | No email verification beyond `'@' in email`: no syntax check, MX check, role-address (`info@`) or free-domain filtering, no dedupe-by-domain. (`excel_loader.py:45,80`) |
-| D5 | P2 | **Confirmed (absence)** | No SPF/DKIM/DMARC guidance, no dedicated sending domain, no plain-text/HTML hygiene, no `Message-ID`/`Date`/`Reply-To` control on outbound mail. |
+| D5 | P2 | **Partly** (headers, plain text and the footer done; SPF/DKIM/DMARC guidance is a Phase 9 runbook item) | No SPF/DKIM/DMARC guidance, no dedicated sending domain, no plain-text/HTML hygiene, no `Message-ID`/`Date`/`Reply-To` control on outbound mail. |
 | D6 | P2 | **Confirmed** | Lead data and reply text go to a third-party LLM with no consent/retention policy; `PRIVACY.md` is 22 generic lines. No deletion path per lead — there is no `DELETE` route in the API at all. |
 
 ## E. Architecture & operations

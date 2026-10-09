@@ -1,0 +1,419 @@
+"""The send loop: the only thing that causes mail to leave.
+
+`ARCHITECTURE_TARGET.md` §9. Single-threaded and deliberately the only sender, so send rate is
+controlled in exactly one place. Two workers both sending would make the daily cap a race.
+
+The order within one send is the whole design:
+
+1. **Re-check eligibility against the database**, immediately before sending. An approval might
+   be hours old; a reply, bounce or opt-out may have arrived since.
+2. **Claim** an outbox row with a pre-generated `Message-ID` and a unique idempotency key.
+3. **Send**, through the one SMTP chokepoint.
+4. **Mark**, in a second transaction.
+
+A crash between 3 and 4 leaves a row in `sending`, which the recovery pass turns into `unknown`
+for a human rather than resending. At-most-once is the deliberate choice (§9.5).
+
+`sent_today` is counted from `messages` every time, never kept as a separate number, so the cap
+cannot drift (§9.2).
+"""
+
+from __future__ import annotations
+
+import random
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import outbox
+from app.db.models import Campaign, Draft, Lead, Mailbox, Message, Org
+from app.db.state import record_event
+from app.domain.campaign import CampaignSettings
+from app.domain.persona import Persona
+from app.domain.scheduling import (
+    followup_due_at,
+    in_window,
+    ist_day_bounds,
+    next_window_open,
+    pacing_gap,
+    remaining_capacity,
+    warmup_cap,
+)
+from app.services.mail.message import FooterIdentity, build_message
+from app.services.mail.message import Mailbox as MailboxIdentity
+from app.services.mail.smtp import SmtpOutcome, SmtpSender
+
+#: Priority order when capacity is short (§9.2): a reply to someone who wrote to us first, then
+#: a due follow-up, then a new lead. Ignoring someone who replied is the worst outcome
+#: available, so replies win.
+KIND_PRIORITY = {outbox.KIND_REPLY: 0, outbox.KIND_FOLLOWUP: 1, outbox.KIND_INITIAL: 2}
+
+
+@dataclass
+class SendDecision:
+    """One pass of the loop: what happened, or why nothing did."""
+
+    sent: bool = False
+    message_id: uuid.UUID | None = None
+    lead_id: uuid.UUID | None = None
+    reason: str = ""
+    #: How long the caller should wait before asking again.
+    wait: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+
+
+@dataclass
+class Candidate:
+    """A draft that is approved and whose lead is ready for that kind of send."""
+
+    lead: Lead
+    draft: Draft
+    kind: str
+
+    @property
+    def priority(self) -> int:
+        return KIND_PRIORITY.get(self.kind, 9)
+
+
+async def sent_today(
+    session: AsyncSession,
+    *,
+    mailbox_id: uuid.UUID,
+    settings: CampaignSettings,
+    now: datetime,
+) -> int:
+    """Today's send count, straight from `messages`.
+
+    §9.2 is explicit that this is never a stored counter: a counter drifts the first time a
+    crash lands between the send and the increment, and a drifted cap is how a mailbox gets
+    suspended.
+    """
+    start, end = ist_day_bounds(now, settings)
+    # `sending` rows count too: a claimed-but-unresolved message is capacity already committed,
+    # and not counting it would let a crash hand back allowance the mailbox has really used.
+    #
+    # Bucketed on sent_at where there is one, falling back to created_at for a row still in
+    # flight, so a message belongs to the day it actually went out.
+    occurred_at = func.coalesce(Message.sent_at, Message.created_at)
+    total = await session.scalar(
+        select(func.count())
+        .select_from(Message)
+        .where(
+            Message.mailbox_id == mailbox_id,
+            Message.direction == "out",
+            Message.status.in_(("sent", "sending")),
+            occurred_at >= start,
+            occurred_at < end,
+        )
+    )
+    return int(total or 0)
+
+
+async def effective_cap(
+    session: AsyncSession, *, mailbox: Mailbox, settings: CampaignSettings, now: datetime
+) -> int:
+    """Today's ceiling for this mailbox, after warm-up."""
+    local_today = now.astimezone(settings.zone).date()
+    started = (
+        mailbox.warmup_started_on.astimezone(settings.zone).date()
+        if mailbox.warmup_started_on is not None
+        else None
+    )
+    return warmup_cap(
+        today=local_today,
+        settings=settings,
+        warmup_started_on=started,
+        warmup_start=mailbox.warmup_start,
+        warmup_step=mailbox.warmup_step,
+        warmup_step_days=mailbox.warmup_step_days,
+        daily_cap=mailbox.daily_cap,
+    )
+
+
+async def find_candidates(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    mailbox_id: uuid.UUID,
+    now: datetime,
+    limit: int = 20,
+) -> list[Candidate]:
+    """Approved drafts whose lead is in a state that permits that kind of send.
+
+    Joined on the draft rather than scanning leads, because an `APPROVED` lead with no approved
+    draft is not sendable and should not occupy a slot in the queue.
+    """
+    rows = (
+        await session.execute(
+            select(Lead, Draft)
+            .join(Draft, Draft.lead_id == Lead.id)
+            .join(Campaign, Campaign.id == Lead.campaign_id)
+            .where(
+                Lead.org_id == org_id,
+                Campaign.mailbox_id == mailbox_id,
+                Campaign.paused.is_(False),
+                Campaign.status == "running",
+                Lead.paused.is_(False),
+                Draft.status == "approved",
+                Lead.state.in_(("APPROVED", "SENT", "REPLIED")),
+            )
+            .order_by(Draft.approved_at)
+            .limit(limit)
+        )
+    ).all()
+
+    candidates: list[Candidate] = []
+    for lead, draft in rows:
+        kind = str(draft.kind)
+        # The draft's kind and the lead's state have to agree, or this is a stale draft for a
+        # lead that has already moved on.
+        if kind == outbox.KIND_INITIAL and lead.state != "APPROVED":
+            continue
+        if kind == outbox.KIND_FOLLOWUP:
+            if lead.state != "SENT":
+                continue
+            if lead.next_action_at is None or lead.next_action_at > now:
+                continue  # not due yet
+        if kind == outbox.KIND_REPLY and lead.state != "REPLIED":
+            continue
+        candidates.append(Candidate(lead=lead, draft=draft, kind=kind))
+
+    # Replies first, then due follow-ups, then new leads (§9.2).
+    candidates.sort(key=lambda c: (c.priority, c.draft.approved_at or now))
+    return candidates
+
+
+async def send_one(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    mailbox: Mailbox,
+    persona: Persona,
+    settings: CampaignSettings,
+    sender: SmtpSender,
+    now: datetime | None = None,
+    rng: random.Random | None = None,
+) -> SendDecision:
+    """Do at most one send, and say how long to wait before the next attempt.
+
+    One per call so the caller controls pacing, and so a single send is the unit that either
+    completes or is recoverable — never half a batch.
+    """
+    now = now or datetime.now(tz=UTC)
+
+    org = await session.get(Org, org_id)
+    if org is None:
+        return SendDecision(reason="org not found", wait=timedelta(minutes=5))
+    if org.paused:
+        # The global kill switch. Checked first, so flipping it stops everything at once.
+        return SendDecision(reason="the organisation is paused", wait=timedelta(minutes=5))
+    if mailbox.paused:
+        return SendDecision(
+            reason=f"mailbox paused: {mailbox.pause_reason or 'no reason given'}",
+            wait=timedelta(minutes=5),
+        )
+
+    if not in_window(now, settings):
+        opens = next_window_open(now, settings)
+        return SendDecision(
+            reason="outside the send window",
+            wait=max(opens - now, timedelta(seconds=30)),
+        )
+
+    cap = await effective_cap(session, mailbox=mailbox, settings=settings, now=now)
+    used = await sent_today(session, mailbox_id=mailbox.id, settings=settings, now=now)
+    remaining = remaining_capacity(effective_cap=cap, sent_today=used)
+    if remaining <= 0:
+        opens = next_window_open(now + timedelta(days=1), settings)
+        return SendDecision(
+            reason=f"daily cap reached ({used}/{cap})",
+            wait=max(opens - now, timedelta(minutes=10)),
+        )
+
+    if mailbox.next_send_at is not None and mailbox.next_send_at > now:
+        return SendDecision(
+            reason="pacing", wait=max(mailbox.next_send_at - now, timedelta(seconds=5))
+        )
+
+    candidates = await find_candidates(session, org_id=org_id, mailbox_id=mailbox.id, now=now)
+    if not candidates:
+        return SendDecision(reason="nothing is ready to send", wait=timedelta(minutes=2))
+
+    chosen = candidates[0]
+
+    # Step 1 and 2: re-check everything against the database, then claim the outbox row. The
+    # approval may be hours old, and a reply or opt-out may have arrived since.
+    claim = await outbox.claim_send(
+        session,
+        org_id=org_id,
+        lead_id=chosen.lead.id,
+        kind=chosen.kind,
+        mailbox_id=mailbox.id,
+        draft_id=chosen.draft.id,
+        subject=chosen.draft.subject,
+        body_text=chosen.draft.body,
+        now=now,
+    )
+    if not claim.claimed or claim.message is None:
+        return SendDecision(
+            reason=f"not eligible: {claim.reason}",
+            lead_id=chosen.lead.id,
+            wait=timedelta(seconds=5),
+        )
+
+    message_row = claim.message
+    built = build_message(
+        mailbox=MailboxIdentity(
+            from_name=mailbox.from_name,
+            from_email=mailbox.from_email,
+            reply_to=mailbox.reply_to,
+        ),
+        to_email=chosen.lead.email_norm,
+        subject=chosen.draft.subject,
+        body=chosen.draft.body,
+        identity=FooterIdentity(
+            sender_name=persona.sender_name,
+            agency_name=persona.agency_name,
+            agency_url=str(persona.agency_url) if persona.agency_url else None,
+            postal_address=persona.postal_address or None,
+        ),
+        message_id=message_row.message_id_hdr,
+        in_reply_to=message_row.in_reply_to,
+        references=message_row.references_hdr,
+        now=now,
+    )
+
+    # Pace the *next* send before this one leaves, so a crash mid-send cannot cause a burst on
+    # restart.
+    gap = pacing_gap(now=now, settings=settings, remaining=remaining, rng=rng)
+    mailbox.next_send_at = now + gap
+    await session.commit()
+
+    # Step 3: the one SMTP call. Nothing else in the system sends mail.
+    report = await sender.send(built, to_email=chosen.lead.email_norm)
+
+    # Step 4: record the outcome in its own transaction.
+    if report.outcome is SmtpOutcome.SENT:
+        follow_at = (
+            followup_due_at(first_sent_at=now, settings=settings)
+            if chosen.kind == outbox.KIND_INITIAL and settings.max_followups > 0
+            else None
+        )
+        await outbox.mark_sent(
+            session,
+            org_id=org_id,
+            message_id=message_row.id,
+            smtp_response=report.response,
+            next_action_at=follow_at,
+            now=now,
+        )
+        chosen.draft.status = "sent"
+        await session.commit()
+        return SendDecision(
+            sent=True,
+            message_id=message_row.id,
+            lead_id=chosen.lead.id,
+            reason="sent",
+            wait=gap,
+        )
+
+    if report.outcome is SmtpOutcome.BLOCKED:
+        # SEND_MODE refused it. Not a failure — the lead is parked, not broken.
+        await outbox.mark_failed(
+            session, org_id=org_id, message_id=message_row.id, error=report.detail, now=now
+        )
+        await _skip_lead(session, org_id=org_id, candidate=chosen, reason=report.detail, now=now)
+        await session.commit()
+        return SendDecision(
+            lead_id=chosen.lead.id, reason=f"blocked: {report.detail}", wait=timedelta(seconds=1)
+        )
+
+    if report.outcome is SmtpOutcome.REJECTED:
+        # A 5xx on the recipient is a hard bounce discovered at send time: suppress immediately
+        # rather than discovering it again tomorrow.
+        await outbox.mark_failed(
+            session, org_id=org_id, message_id=message_row.id, error=report.detail, now=now
+        )
+        await _bounce_lead(session, org_id=org_id, candidate=chosen, reason=report.detail, now=now)
+        await session.commit()
+        return SendDecision(
+            lead_id=chosen.lead.id, reason=f"rejected: {report.detail}", wait=timedelta(seconds=2)
+        )
+
+    await outbox.mark_failed(
+        session, org_id=org_id, message_id=message_row.id, error=report.detail, now=now
+    )
+    if report.should_pause_mailbox:
+        # §9.8: never retry-spam an auth failure. Retrying a wrong password looks like a
+        # brute-force attempt and gets the mailbox locked.
+        mailbox.paused = True
+        mailbox.pause_reason = f"SMTP authentication failed: {report.detail[:200]}"
+        await record_event(
+            session,
+            org_id=org_id,
+            lead_id=chosen.lead.id,
+            type="mailbox.paused",
+            data={"reason": mailbox.pause_reason},
+        )
+    await session.commit()
+    return SendDecision(
+        lead_id=chosen.lead.id,
+        reason=f"failed: {report.detail}",
+        wait=timedelta(minutes=5) if report.should_pause_mailbox else timedelta(seconds=30),
+    )
+
+
+async def _skip_lead(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    candidate: Candidate,
+    reason: str,
+    now: datetime,
+) -> None:
+    """Park a lead that could not be sent to, without losing it."""
+    from app.db.state import transition
+    from app.domain.state import LeadState
+
+    if candidate.kind == outbox.KIND_INITIAL:
+        await transition(
+            session,
+            org_id=org_id,
+            lead_id=candidate.lead.id,
+            to_state=LeadState.SKIPPED,
+            data={"reason": reason},
+            flags_add=["not_allowlisted"],
+            now=now,
+        )
+
+
+async def _bounce_lead(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    candidate: Candidate,
+    reason: str,
+    now: datetime,
+) -> None:
+    """Suppress and close a lead the server refused outright."""
+    from app.db.repo import OrgContext, add_suppression
+    from app.db.state import transition
+    from app.domain.state import LeadState
+
+    await add_suppression(
+        OrgContext(org_id=org_id),
+        session,
+        value=candidate.lead.email_norm,
+        reason="bounce",
+    )
+    await transition(
+        session,
+        org_id=org_id,
+        lead_id=candidate.lead.id,
+        to_state=LeadState.BOUNCED,
+        data={"reason": reason[:300]},
+        clear_next_action=True,
+        now=now,
+    )
