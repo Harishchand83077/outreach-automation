@@ -13,20 +13,19 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config.config import REQUIRED_KEYS, Settings, looks_like_placeholder  # noqa: E402
-
-#: Not required to start, but each disables a feature if absent.
-FEATURE_KEYS: dict[str, str] = {
-    "IMAP_EMAIL": "replies are not monitored",
-    "IMAP_PASSWORD": "replies are not monitored",
-    "CALENDAR_LINK": "drafts have no booking link to call to action with",
-    "SEND_ALLOWLIST": "SEND_MODE=allowlist can reach nobody",
-}
+from app.core.settings import (  # noqa: E402
+    FEATURE_KEYS,
+    FUTURE_KEYS,
+    REQUIRED_KEYS,
+    Settings,
+    looks_like_placeholder,
+)
 
 OK = "OK     "
 MISSING = "MISSING"
@@ -126,6 +125,15 @@ def main() -> int:
         note = "" if status == OK else f"  (without it: {feature})"
         print(f"  {status:<12} {key}{note}")
 
+    print("\nConfigured ahead of the phase that uses it")
+    for group, names in FUTURE_KEYS.items():
+        statuses = [
+            f"{key}={'set' if _status(str(getattr(settings, key, '') or '')) == OK else 'unset'}"
+            for key in names
+        ]
+        print(f"  {group}")
+        print(f"    {', '.join(statuses)}")
+
     print("\nSafety")
     print(f"  SEND_MODE    = {settings.SEND_MODE}")
     if settings.SEND_MODE == "disabled":
@@ -136,6 +144,21 @@ def main() -> int:
     else:
         print("                 LIVE: may send to anyone")
     print(f"  AUTO_APPROVE = {'on — human review is SKIPPED' if settings.AUTO_APPROVE else 'off'}")
+
+    # ADR-005: a DATABASE_URL on the default port very likely belongs to another project.
+    parts = urlsplit(settings.DATABASE_URL)
+    print(f"  DATABASE     = {parts.hostname}:{parts.port}/{(parts.path or '').lstrip('/')}")
+    if parts.port == 5432:
+        print("                 WARNING: 5432 is the Postgres default and is very likely")
+        print("                 another project's database. This project expects 5433.")
+
+    # A JWKS URL from a different Supabase project than SUPABASE_URL would verify tokens
+    # against the wrong keys, which fails confusingly at request time rather than at startup.
+    if settings.SUPABASE_URL and settings.SUPABASE_JWKS_URL:
+        consistent = settings.SUPABASE_JWKS_URL.startswith(settings.SUPABASE_URL.rstrip("/"))
+        print(f"  SUPABASE     = {'URL and JWKS agree' if consistent else 'MISMATCH'}")
+        if not consistent:
+            print("                 SUPABASE_JWKS_URL is not under SUPABASE_URL - check both")
 
     if missing_required:
         print(

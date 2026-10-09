@@ -100,6 +100,59 @@ constraint is structural from the start rather than a convention.
 
 ---
 
+## ADR-005 — Never run migrations against a shared or default port
+
+**Date** 2026-10-10 · **Status** Accepted · **Prompted by** a near miss, not a hypothetical
+
+**Decision.**
+
+1. This project's Postgres listens on **5433**, never the default 5432, bound to `127.0.0.1`,
+   with an explicit container name (`outreach-pg`) and volume (`outreach_pgdata`) so it cannot
+   share either with another project on the same machine.
+2. Migrations **refuse to run** unless the target is ours. `app/db/guard.py` checks, before any
+   DDL, that the connected database is named `outreach` (or `outreach_test`) **and** that it
+   contains no tables outside our `app` schema. There is no override flag: if it fires, the fix
+   is to correct `DATABASE_URL`, not to force past it.
+3. The integration-test URL is **derived** from `DATABASE_URL` rather than written out
+   separately, so there is one place to configure credentials and no way for the test harness to
+   drift onto a different server.
+
+**Why.** While setting up Phase 1, `.env` contained
+`DATABASE_URL=postgresql+asyncpg://outreach:<password>@localhost:5432/outreach`. Port 5432 on
+this machine is held by `postgres-ml`, an unrelated project's container. `alembic upgrade head`
+connected to **that** database and failed only because the password did not match. Had it
+matched, the migration would have created an `app` schema inside another project's database.
+Nothing was written, but the only thing standing in the way was a credential mismatch, which is
+luck rather than a safety mechanism.
+
+Two details made this easy to get wrong, and both are now fixed rather than documented around:
+
+- The template and the early setup instructions both used `localhost:5432`, the port most likely
+  to be already occupied. A default that is also the most contended value is a bad default.
+- Docker Compose resolves a bare `.env` relative to the **compose file's** directory, not the
+  repository root, so `POSTGRES_PASSWORD` in the root `.env` was silently ignored and the
+  container initialised with the built-in default — guaranteeing a mismatch with `DATABASE_URL`.
+  The documented command is now `docker compose --env-file .env -f deploy/compose.yml up -d`.
+
+**Cost, accepted.** A non-standard port is mildly surprising, and anyone connecting with `psql`
+has to pass `-p 5433`. That is a small price for removing a whole class of cross-project
+accident. The guard also adds one round trip before each migration.
+
+**Alternatives rejected.** (a) Documenting the risk without enforcing it — the near miss happened
+*while* the risk was understood. (b) Checking host and port rather than database identity —
+brittle, since production legitimately uses a different host and port; the database's own name
+and contents are what actually matter. (c) An override environment variable — it would be set
+once in frustration and then left set.
+
+**Tested by** `tests/integration/test_db_guard.py`: the right database passes, a wrongly named
+one is refused, and a correctly named database holding foreign tables is refused — that last case
+being the one that would have caught the real near miss.
+
+**The rule, for future sessions:** never point a migration at a shared or default port, and never
+assume a connection failure was the thing protecting you.
+
+---
+
 ## Minor decisions (inside spec latitude)
 
 | Date | Decision | Why |

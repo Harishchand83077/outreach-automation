@@ -1,6 +1,6 @@
 # Progress
 
-Updated 2026-10-10. Read this with `CLAUDE.md` at the start of every session.
+Updated 2026-10-10 (Phase 1 in progress). Read this with `CLAUDE.md` at the start of every session.
 
 ## Handoff note (rewrite at the end of every session)
 
@@ -52,7 +52,7 @@ just strings): `SKIPPED_NOT_ALLOWLISTED`, `INSIGHTS_FAILED`, `EMAIL_DRAFT_FAILED
 | §00 | Bootstrap, tooling, permissions | **Done** |
 | §0 | Repo analysis, issue verification, baseline | **Done** |
 | 0 | Safety patch + CI + docs | Safety patch **done** (76 tests green, unpushed); CI next |
-| 1 | Data layer, state machine, job queue, outbox | Not started |
+| 1 | Data layer, state machine, job queue, outbox | **Done** — 213 tests |
 | 2 | Import, persona, campaigns | Not started |
 | 3 | LLM router, research engine | Not started |
 | 4 | Drafting, grounding, review queue | Not started |
@@ -71,6 +71,7 @@ behaviour) or `Won't fix` (with a reason). Full text and evidence in `ISSUES.md`
 | Status | Count | IDs |
 |---|---|---|
 | **Done** | 14 | B1, B2, B3, B4, B6, C2, C8, E6, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
+| **Superseded-by-rewrite** (each with a test proving the behaviour) | 7 | B8, B9, B12, B16, E2, E3, E4 |
 | Partly done | 3 | B7 (crash on a long row fixed; header aliasing deferred to Phase 2) · B18 (numeric/bool parsing and `get_event_loop` fixed; `utcnow`, import-time semaphore, `on_event` and the timestamp-format mismatch deferred) · NEW-8 (`.xls` now rejected with a clear message and `.csv` accepted; the `--skip-monitor` docstring is part of the F1–F3 rewrite) |
 | Verified, not yet fixed | 39 | everything else |
 

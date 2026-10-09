@@ -9,10 +9,10 @@ no path to traverse.
 from pathlib import Path
 
 import pytest
-from conftest import executable_source
 
 import api_server
 from excel_loader import load_leads_from_bytes
+from tests.helpers import executable_source
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 

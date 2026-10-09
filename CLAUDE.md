@@ -32,6 +32,12 @@ audited in `docs/ISSUES.md` — 51 tracked issues — and analysed in `docs/REPO
 8. **Respect provider terms.** One account per provider per org. Never rotate accounts or keys to
    evade a free-tier quota. Extra headroom comes from more models/providers, not more accounts.
 9. **No real recipients in tests.** Fixtures and CI use `@example.com` only.
+10. **Never run migrations against a shared or default port.** This project's Postgres is on
+    **5433**; port 5432 on this machine belongs to another project. Migrations refuse to run
+    unless the database is named `outreach`/`outreach_test` and holds no foreign tables
+    (`app/db/guard.py`). A failed connection is not a safety mechanism — see ADR-005, which
+    exists because `alembic upgrade` once reached a neighbouring project's database and was
+    stopped only by a wrong password.
 
 ## Commands
 

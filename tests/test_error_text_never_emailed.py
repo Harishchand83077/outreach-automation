@@ -7,7 +7,8 @@ Error text must never be reachable as email content.
 """
 
 import pytest
-from conftest import executable_source
+
+from tests.helpers import executable_source
 
 
 class TestNodesRaiseInsteadOfReturningErrorText:
