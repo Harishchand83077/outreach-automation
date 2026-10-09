@@ -41,6 +41,68 @@ def _status(value: str) -> str:
     return OK
 
 
+def _diagnose_env_file() -> None:
+    """Explain why a .env might not be taking effect. Prints names, never values."""
+    print("\nWhere .env is being read from")
+    expected = REPO_ROOT / ".env"
+    print(f"  Looked for: {expected}")
+
+    if not expected.is_file():
+        print("  NOT FOUND at that path.")
+        # The usual Windows causes: a hidden extension, or the file saved elsewhere.
+        strays = sorted(
+            p.name for p in REPO_ROOT.iterdir()
+            if p.is_file() and p.name.lower().startswith(".env") and p.name != ".env.example"
+        )
+        if strays:
+            print(f"  Similar files here: {', '.join(strays)}")
+            print("  If one of those is your file, rename it to exactly '.env'.")
+            print("  (Windows Explorer hides known extensions, so '.env.txt' looks like '.env'.)")
+        else:
+            print("  No .env-like file in the project root at all.")
+        print(f"  Create it at: {expected}")
+        return
+
+    raw = expected.read_bytes()
+    print(f"  Found it: {len(raw)} bytes")
+    if not raw.strip():
+        print("  The file is EMPTY.")
+        return
+
+    text = raw.decode("utf-8-sig", errors="replace")
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        print("  The file is UTF-16 encoded, which python-dotenv cannot read.")
+        print("  Re-save it as UTF-8 (in Notepad: Save As, Encoding = UTF-8).")
+        return
+
+    named: list[str] = []
+    commented: list[str] = []
+    empty: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.lstrip("#").strip()
+        if not key:
+            continue
+        if stripped.startswith("#"):
+            commented.append(key)
+        else:
+            named.append(key)
+            if not value.strip():
+                empty.append(key)
+
+    print(f"  Variable names set in the file: {', '.join(named) or '(none)'}")
+    if empty:
+        print(f"  Present but with an EMPTY value: {', '.join(empty)}")
+    if commented:
+        print(f"  Commented out, so ignored: {', '.join(commented)}")
+    if not named:
+        print("  Every line is a comment or blank, so no value is set.")
+    print("  (Values are never read or printed by this script.)")
+
+
 def main() -> int:
     settings = Settings()
     missing_required: list[str] = []
@@ -75,6 +137,7 @@ def main() -> int:
             f"{', '.join(missing_required)}"
         )
         print("Set them in .env in the project root. See .env.example for the shape.")
+        _diagnose_env_file()
         return 1
 
     print("\nAll required configuration is present.")
