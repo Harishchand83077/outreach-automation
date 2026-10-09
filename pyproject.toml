@@ -51,6 +51,9 @@ dev = [
     "mypy==2.4.0",
     "types-openpyxl==3.1.5.20260827",
     "respx==0.23.1",
+    # Property-based tests for the scheduling maths: §22 asks for them there specifically,
+    # because window edges, weekends and warm-up are where hand-picked examples miss cases.
+    "hypothesis==6.168.5",
 ]
 
 [tool.uv]

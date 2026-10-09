@@ -56,7 +56,7 @@ just strings): `SKIPPED_NOT_ALLOWLISTED`, `INSIGHTS_FAILED`, `EMAIL_DRAFT_FAILED
 | 2 | Import, persona, campaigns | **Done** — 318 tests |
 | 3 | LLM router, research engine | **Done** - 539 tests |
 | 4 | Drafting, grounding, review queue | **Done** - 633 tests |
-| 5 | Send engine — **first `allowlist` send gate** | Not started |
+| 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | Not started |
 | 7 | Auth, multi-tenancy | Not started |
 | 8 | UI completion | Not started |
@@ -71,7 +71,7 @@ behaviour) or `Won't fix` (with a reason). Full text and evidence in `ISSUES.md`
 | Status | Count | IDs |
 |---|---|---|
 | **Done** | 14 | B1, B2, B3, B4, B6, C2, C8, E6, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
-| **Superseded-by-rewrite** (each with a test proving the behaviour) | 18 | A1, A2, A3, A4, A5, B7, B8, B9, B12, B13, B14, B15, B16, D4, E2, E3, E4, E5 |
+| **Superseded-by-rewrite** (each with a test proving the behaviour) | 21 | A1, A2, A3, A4, A5, A7, B7, B8, B9, B12, B13, B14, B15, B16, D1, D3, D4, E2, E3, E4, E5 |
 | Partly done | 3 | B7 (crash on a long row fixed; header aliasing deferred to Phase 2) · B18 (numeric/bool parsing and `get_event_loop` fixed; `utcnow`, import-time semaphore, `on_event` and the timestamp-format mismatch deferred) · NEW-8 (`.xls` now rejected with a clear message and `.csv` accepted; the `--skip-monitor` docstring is part of the F1–F3 rewrite) |
 | Verified, not yet fixed | 39 | everything else |
 

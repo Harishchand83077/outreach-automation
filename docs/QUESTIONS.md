@@ -103,3 +103,5 @@ list, so a purged person is never re-contacted. *Default:* 12 months.
 | 2026-10-09 | Approve the §00 permissions model and the five standing approvals? | Approved as written, plus two extra `deny` rules (see `.claude/settings.json`). |
 | 2026-10-09 | P0–P10 breadth-first, or a vertical slice? | Vertical slice — ADR-003. |
 | 2026-10-09 | Supabase Postgres as specified, or simplify? | Postgres in Compose, Supabase for Auth only — ADR-001. |
+| 2026-10-10 | **Q1** — does the 100/day cap cover all outbound, or 100 new leads with follow-ups on top? | **All outbound**: about 50 new leads/day plus 50 follow-ups at steady state. |
+| 2026-10-10 | **Q4** — separate sending domain before go-live? | **Yes, already in place.** The mailbox in `.env` is on a dedicated sending domain, so cold-outreach reputation cannot damage the client-facing domain. |
