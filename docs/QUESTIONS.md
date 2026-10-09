@@ -20,10 +20,25 @@ attention:
    "Bash(iwr:*)",
    "Bash(Invoke-WebRequest:*)",
    ```
-2. **`"Read(./.env.*)"` also blocks `.env.example`**, which the spec intends to stay readable. I
-   recommend **leaving it as it is**: erring toward over-blocking is right for secrets, and
-   `.env.example`'s contents are documented in `SETUP.md` anyway. Delete the pattern only if you
-   want it readable again.
+2. **`"Read(./.env.*)"` also blocks `.env.example`** — and this is not merely cosmetic, as I first
+   assumed. It **blocked part of the Phase 0 safety patch**: `.env.example` still documents the
+   deleted `DRY_RUN_EMAILS` flag, including the sentence that caused issue B1 ("Leave unset or 0
+   to send real emails"), and it does not mention `SEND_MODE` at all. Startup now refuses to run
+   if `DRY_RUN_EMAILS` is set, so a stale copy cannot silently mislead, but the template itself is
+   wrong until it is edited.
+
+   Recommended fix — narrow the rule so the committed template stays maintainable while every
+   real secret file stays blocked. Replace `"Read(./.env.*)"` and `"Read(./**/.env.*)"` with:
+   ```json
+   "Read(./.env.local)",
+   "Read(./.env.*.local)",
+   "Read(./.env.production)",
+   "Read(./.env.development)",
+   "Read(./**/.env.local)",
+   ```
+   Keep `"Read(./.env)"` and `"Read(./**/.env)"` exactly as they are. Then tell me and I will
+   finish the `.env.example` rewrite. Alternatively, paste the replacement block into
+   `.env.example` yourself — the exact text is in the Phase 0 PR description.
 
 Nothing else in the file needs changing — the `allow`/`ask`/`deny` lists otherwise match §00.3 plus
 the two extra denies (`Read(./local/**)`, `Bash(gh repo edit --visibility public:*)`).

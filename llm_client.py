@@ -98,12 +98,13 @@ async def llm_call(system_prompt: str, user_prompt: str) -> str:
     """
     llm = get_llm()
     if llm is None:
-        # Fallback: return a conservative default or echo to allow continued execution
-        logger.warning("LLM not available — returning fallback response")
-        # If used for classification, user_prompt may ask for a single category; default to 'question'
-        if "Classification" in system_prompt or "Classification" in user_prompt:
-            return "question"
-        return "(simulated LLM response)"
+        # The prototype returned "(simulated LLM response)" here, and the literal "question" for
+        # anything classification-shaped. Both were sendable strings and a fabricated label that
+        # could trigger action (B2, B4). Fail loudly instead.
+        raise RuntimeError(
+            "No LLM backend available: langchain-groq is not installed or failed to import. "
+            "Install dependencies; this is never substituted with placeholder text."
+        )
 
     messages = [
         SystemMessage(content=system_prompt),

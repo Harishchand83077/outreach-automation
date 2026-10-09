@@ -14,12 +14,11 @@ with only the fields it updates.
 """
 
 import asyncio
-import os
 from typing import Dict, Any
 
 from state import LeadState
 from llm_client import llm_call
-from email_utils import send_email
+from email_utils import SendOutcome, send_email
 from logger import get_logger
 from config.config import config
 from database import update_lead
@@ -28,8 +27,8 @@ logger = get_logger("nodes")
 
 
 def _is_auto_approve() -> bool:
-    """Only treat explicit 1/true/yes as auto-approve. Empty or 0 means human approval required."""
-    return os.getenv("AUTO_APPROVE", "").strip().lower() in ("1", "true", "yes")
+    """Human approval is required unless AUTO_APPROVE is explicitly on. Validated in Settings."""
+    return config.AUTO_APPROVE
 
 
 # ─────────────────────────────────────────────
@@ -84,14 +83,11 @@ Be specific and actionable. Base analysis on the company name and industry."""
             "status": "INSIGHTS_GENERATED",
         }
     except Exception as e:
+        # Never persist the error as content: the prototype stored "Error generating insights: ..."
+        # under a *success* status, so the graph carried it to drafting and on toward a send (B2).
         logger.error("[%s] Failed to generate insights: %s", name, str(e))
-        err_msg = f"Error generating insights: {str(e)}"
-        await update_lead(email=email, status="INSIGHTS_GENERATED", insights=err_msg)
-        return {
-            "insights": err_msg,
-            "insights_attempts": attempts + 1,
-            "error": str(e),
-        }
+        await update_lead(email=email, status="INSIGHTS_FAILED", insights=None)
+        raise
 
 
 # ─────────────────────────────────────────────
@@ -242,19 +238,15 @@ Keep it under 200 words. Sound human, not like a template."""
             "status": "EMAIL_DRAFTED",
         }
     except Exception as e:
+        # Same rule as generate_insights: error text must never become email content (B2).
         logger.error("[%s] Failed to generate email: %s", name, str(e))
-        err_msg = f"Error generating email: {str(e)}"
         await update_lead(
             email=email_addr,
-            status="EMAIL_DRAFTED",
+            status="EMAIL_DRAFT_FAILED",
             insights=insights,
-            email_draft=err_msg,
+            email_draft=None,
         )
-        return {
-            "email_draft": err_msg,
-            "email_attempts": attempts + 1,
-            "error": str(e),
-        }
+        raise
 
 
 # ─────────────────────────────────────────────
@@ -381,42 +373,48 @@ async def send_email_node(state: LeadState) -> Dict[str, Any]:
     </html></body>
     """
 
+    if not email_draft.strip():
+        logger.error("[%s] Refusing to send an empty draft", name)
+        await update_lead(email=to_email, status="EMAIL_DRAFT_FAILED")
+        return {"email_sent": False, "status": "EMAIL_DRAFT_FAILED", "error": "empty draft"}
+
     logger.info("[%s] Sending email to: %s", name, to_email)
 
-    success = await send_email(
+    outcome = await send_email(
         to_email=to_email,
         subject=subject,
-        body_html=html_body,
         body_text=body,
+        body_html=html_body,
     )
 
-    if success:
-        # Persist to DB
-        await update_lead(
-            email=to_email,
-            status="EMAIL_SENT",
-            insights=state.get("insights"),
-            email_draft=email_draft,
-        )
+    # A blocked send is not a failure and is emphatically not a success. The prototype collapsed
+    # all three cases into a bool, so a suppressed send was recorded as EMAIL_SENT (B1).
+    status = {
+        SendOutcome.SENT: "EMAIL_SENT",
+        SendOutcome.BLOCKED: "SKIPPED_NOT_ALLOWLISTED",
+        SendOutcome.FAILED: "EMAIL_FAILED",
+    }[outcome]
+
+    await update_lead(
+        email=to_email,
+        status=status,
+        insights=state.get("insights"),
+        email_draft=email_draft,
+    )
+
+    if outcome is SendOutcome.SENT:
         logger.info("[%s] Email sent and DB updated", name)
-        return {
-            "email_sent": True,
-            "status": "EMAIL_SENT",
-        }
-    else:
-        logger.error("[%s] Email send failed", name)
-        # Persist so dashboard shows EMAIL_FAILED and the draft (user can retry or fix)
-        await update_lead(
-            email=to_email,
-            status="EMAIL_FAILED",
-            insights=state.get("insights"),
-            email_draft=email_draft,
+        return {"email_sent": True, "status": status}
+
+    if outcome is SendOutcome.BLOCKED:
+        logger.warning(
+            "[%s] Not sent: SEND_MODE=%s does not permit this recipient. Draft is kept.",
+            name, config.SEND_MODE,
         )
-        return {
-            "email_sent": False,
-            "status": "EMAIL_FAILED",
-            "error": "SMTP send failed",
-        }
+        return {"email_sent": False, "status": status}
+
+    logger.error("[%s] Email send failed", name)
+    return {"email_sent": False, "status": status, "error": "SMTP send failed"}
 
 
 # ─────────────────────────────────────────────

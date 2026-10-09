@@ -1,92 +1,115 @@
-"""
-utils/email_utils.py — Async email sending via SMTP (Gmail).
+"""Email sending (SMTP) and inbox reading (IMAP).
 
-Handles:
-- Sending HTML emails via aiosmtplib
-- Inbox checking via imaplib (sync, run in executor)
-- Reply detection by subject/thread matching
+**All outbound mail passes through `send_email`, and `send_email` asks `is_send_allowed` first.**
+That one function is the only thing standing between a development run and a stranger's inbox, so
+it is kept deliberately small and is covered by `tests/test_send_guard.py`. Anything else that
+reaches SMTP is a bug.
+
+The prototype gated sending on `DRY_RUN_EMAILS` instead, which inverted its own meaning:
+`bool("0") is True`, so the value `.env.example` documented as "send real emails" silently
+suppressed every send *while the lead was still marked EMAIL_SENT* (issue B1). That flag is gone.
 """
 
 import asyncio
-import imaplib
 import email as email_lib
+import imaplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional, List, Dict
+from enum import Enum
+from typing import Dict, List, Optional
 
-from config.config import config
+from config.config import Settings, config
 from logger import get_logger
-import os
 
 logger = get_logger("email_utils")
+
+
+class SendOutcome(str, Enum):
+    """Why a send did or did not happen.
+
+    Callers must distinguish these: the prototype's boolean let a suppressed send be recorded as
+    `EMAIL_SENT`, so the dashboard reported a campaign that never left the building.
+    """
+
+    SENT = "sent"
+    BLOCKED = "blocked"  # refused by SEND_MODE / SEND_ALLOWLIST — not an error
+    FAILED = "failed"  # SMTP rejected it or the connection broke
+
+
+def is_send_allowed(to_email: str, settings: Optional[Settings] = None) -> bool:
+    """The single send decision. `True` only if this recipient may legitimately be emailed now.
+
+    - `disabled` (the default): nothing may be sent, to anybody.
+    - `allowlist`: only addresses in `SEND_ALLOWLIST`, compared case-insensitively.
+    - `live`: anybody. Set only by the operator, only in production.
+    """
+    settings = settings or config
+    recipient = (to_email or "").strip().lower()
+    if not recipient:
+        return False
+    if settings.SEND_MODE == "live":
+        return True
+    if settings.SEND_MODE == "allowlist":
+        return recipient in settings.send_allowlist
+    return False
 
 
 async def send_email(
     to_email: str,
     subject: str,
-    body_html: str,
-    body_text: Optional[str] = None,
-) -> bool:
-    """
-    Send an email asynchronously via SMTP.
+    body_text: str,
+    body_html: Optional[str] = None,
+) -> SendOutcome:
+    """Send one email, if and only if `is_send_allowed` permits it.
 
-    Args:
-        to_email: Recipient email address.
-        subject: Email subject line.
-        body_html: HTML body of the email.
-        body_text: Optional plain-text fallback.
-
-    Returns:
-        bool: True if sent successfully, False otherwise.
+    Returns a `SendOutcome` rather than a bool so that a blocked send can never be mistaken for a
+    successful one.
     """
-    msg = MIMEMultipart("alternative")
+    if not is_send_allowed(to_email, config):
+        logger.warning(
+            "Send refused by SEND_MODE=%s: recipient not permitted | Subject: %s",
+            config.SEND_MODE,
+            subject,
+        )
+        return SendOutcome.BLOCKED
+
+    msg = MIMEMultipart("alternative") if body_html else MIMEMultipart()
     msg["Subject"] = subject
     msg["From"] = config.SMTP_EMAIL
     msg["To"] = to_email
-
-    # Attach plain text fallback
-    if body_text:
-        msg.attach(MIMEText(body_text, "plain"))
-
-    # Attach HTML content
-    msg.attach(MIMEText(body_html, "html"))
+    msg.attach(MIMEText(body_text, "plain"))
+    if body_html:
+        msg.attach(MIMEText(body_html, "html"))
 
     try:
-        # DRY RUN support: if DRY_RUN_EMAILS=1 then just log and return success
-        if os.getenv("DRY_RUN_EMAILS", ""):
-            logger.info("[DRY_RUN] Simulating send to: %s | Subject: %s", to_email, subject)
-            return True
+        import aiosmtplib
+    except ImportError as exc:  # pragma: no cover - dependency is pinned
+        raise RuntimeError("aiosmtplib is not installed; install it to send emails") from exc
 
-        try:
-            import aiosmtplib
-        except Exception:
-            raise RuntimeError("aiosmtplib is not installed; install it to send emails")
-
-        use_tls = config.SMTP_USE_TLS
-        start_tls = not use_tls
+    try:
         await aiosmtplib.send(
             msg,
             hostname=config.SMTP_HOST,
             port=config.SMTP_PORT,
             username=config.SMTP_EMAIL,
             password=config.SMTP_PASSWORD,
-            use_tls=use_tls,
-            start_tls=start_tls,
+            use_tls=config.SMTP_USE_TLS,
+            start_tls=config.SMTP_START_TLS if not config.SMTP_USE_TLS else False,
             timeout=config.SMTP_TIMEOUT,
         )
-        logger.info("Email sent to: %s | Subject: %s", to_email, subject)
-        return True
-    except Exception as e:
-        logger.error("Failed to send email to %s: %s", to_email, str(e))
-        return False
+    except Exception as exc:
+        logger.error("Failed to send email to %s: %s", to_email, exc)
+        return SendOutcome.FAILED
+
+    logger.info("Email sent to: %s | Subject: %s", to_email, subject)
+    return SendOutcome.SENT
 
 
 def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dict]:
-    """
-    Synchronous IMAP inbox check.
-    Returns list of reply dicts: {from_email, subject, body, message_id}
+    """Synchronous IMAP inbox check. Runs in a thread executor.
 
-    This runs in a thread executor to avoid blocking the event loop.
+    Known defects, deliberately left for the reply-engine phase (issues B10, B11): `fetch(RFC822)`
+    marks mail `\\Seen`, matching is by sender address only, and quoted text is not stripped.
     """
     replies = []
 
@@ -95,7 +118,6 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
         mail.login(config.IMAP_EMAIL, config.IMAP_PASSWORD)
         mail.select("INBOX")
 
-        # Search for UNSEEN emails
         status, messages = mail.search(None, "UNSEEN")
         if status != "OK":
             return replies
@@ -116,7 +138,6 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
                 subject = msg.get("Subject", "")
                 message_id = msg.get("Message-ID", "")
 
-                # Extract body
                 body = ""
                 if msg.is_multipart():
                     for part in msg.walk():
@@ -126,7 +147,6 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
                 else:
                     body = msg.get_payload(decode=True).decode(errors="replace")
 
-                # Filter by specific senders if provided
                 if check_from_emails:
                     if from_email not in [e.lower() for e in check_from_emails]:
                         continue
@@ -138,7 +158,6 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
                     "message_id": message_id,
                 })
 
-                # Mark as read
                 mail.store(msg_id, "+FLAGS", "\\Seen")
 
             except Exception as e:
@@ -156,9 +175,7 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
 
 
 async def check_inbox(check_from_emails: Optional[List[str]] = None) -> List[Dict]:
-    """
-    Async wrapper around the synchronous IMAP check.
-    Runs in a thread pool executor to avoid blocking.
-    """
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _check_inbox_sync, check_from_emails)
+    """Async wrapper around the synchronous IMAP check."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _check_inbox_sync, check_from_emails
+    )

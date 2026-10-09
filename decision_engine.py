@@ -16,7 +16,7 @@ from typing import Dict, Any
 
 from database import get_leads_by_status, update_lead
 from llm_client import llm_call
-from email_utils import send_email
+from email_utils import SendOutcome, send_email
 from logger import get_logger
 from config.config import config
 
@@ -90,40 +90,32 @@ Classification (positive / question / no_interest):"""
 # ─────────────────────────────────────────────
 
 async def handle_positive(lead: Dict[str, Any]) -> None:
-    """
-    Handle a positive reply:
-    1. Send a meeting confirmation email with calendar link
-    2. Generate a pre-meeting knowledge document
-    3. Update DB: status=MEETING_BOOKED
+    """Handle a positive reply by preparing for a human — never by sending.
+
+    The prototype sent a "book a time" email here and set `MEETING_BOOKED` / `meeting_booked=1`
+    on the strength of an LLM label alone, with no human gate, while the dashboard told the
+    operator "Nothing is sent without your approval" (B4). Because the label came from a
+    substring test, a reply reading *"not positive"* reached this path (B17), and the return value
+    of the send was never checked, so a failed send still booked a meeting (NEW-2).
+
+    Now: persist the classification, prepare a briefing document for the reviewer, and stop. A
+    label has no power to send, and `MEETING_BOOKED` is set only by a human action.
     """
     name = lead["name"]
     email = lead["email"]
     company = lead["company"]
     reply_text = lead.get("reply", "")
 
-    logger.info("[%s] POSITIVE reply! Booking meeting...", name)
+    logger.info("[%s] Positive reply — queued for human review. Nothing has been sent.", name)
 
-    # ── 1. Send confirmation email ──
-    confirmation_subject = f"Re: Looking forward to connecting, {name}!"
-    confirmation_body = f"""Hi {name},
-
-Thank you for your interest! I'd love to connect and explore how we can work together.
-
-Please use the link below to book a time that works best for you:
-{config.CALENDAR_LINK}
-
-I look forward to our conversation!
-
-Best regards
-"""
-    await send_email(
-        to_email=email,
-        subject=confirmation_subject,
-        body_html=confirmation_body.replace("\n", "<br>"),
-        body_text=confirmation_body,
+    # Persist the classification *before* doing any further work, so a crash or retry does not
+    # re-run the LLM and cannot lose the fact that this lead needs attention (B17).
+    await update_lead(
+        email=email,
+        status="REPLIED_NEEDS_REVIEW",
+        classification="positive",
     )
 
-    # ── 2. Generate pre-meeting document ──
     logger.info("[%s] Generating pre-meeting document...", name)
 
     system_prompt = """You are a business development expert preparing for an important investor/partner meeting.
@@ -154,19 +146,14 @@ Format this as a professional meeting brief."""
     try:
         pre_meeting_doc = await llm_call(system_prompt, user_prompt)
     except Exception as e:
-        pre_meeting_doc = f"Error generating document: {str(e)}"
+        # The briefing is a convenience; failing to write it must not lose the reply. Store
+        # nothing rather than error text, which the UI would render as though it were content.
         logger.error("[%s] Failed to generate pre-meeting doc: %s", name, str(e))
+        return
 
-    # ── 3. Update DB ──
-    await update_lead(
-        email=email,
-        status="MEETING_BOOKED",
-        classification="positive",
-        meeting_booked=1,
-        pre_meeting_doc=pre_meeting_doc,
-    )
+    await update_lead(email=email, pre_meeting_doc=pre_meeting_doc)
 
-    logger.info("[%s] Meeting booked, confirmation sent, pre-meeting doc saved", name)
+    logger.info("[%s] Pre-meeting briefing saved. Awaiting a human reply.", name)
     print(f"\n{'=' * 70}")
     print(f"PRE-MEETING DOCUMENT — {name} @ {company}")
     print("=" * 70)
@@ -214,16 +201,20 @@ async def handle_question(lead: Dict[str, Any]) -> None:
         logger.warning("[%s] No response provided, skipping.", name)
         return
 
-    # Send the human's reply
-    subject = f"Re: Following up — {company}"
-    await send_email(
+    # Send the human's own words — this is the one reply path with a person in the loop.
+    outcome = await send_email(
         to_email=email,
-        subject=subject,
-        body_html=human_response.replace("\n", "<br>"),
+        subject=f"Re: Following up — {company}",
         body_text=human_response,
+        body_html=human_response.replace("\n", "<br>"),
     )
 
-    # Update DB
+    if outcome is not SendOutcome.SENT:
+        # Do not advance the lead on a send that did not happen (the B1 class of bug).
+        logger.warning("[%s] Reply not sent (%s). Lead stays in review.", name, outcome.value)
+        await update_lead(email=email, classification="question")
+        return
+
     await update_lead(
         email=email,
         status="WAITING_REPLY",

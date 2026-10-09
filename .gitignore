@@ -29,3 +29,12 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Uploads and local-only data (real lead sheets, never committed)
+uploads/
+local/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
