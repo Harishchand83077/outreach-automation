@@ -34,7 +34,7 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://outreach:outreach_ci@127.0.0.1:5432/outreach
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Start PostgreSQL
         run: |
@@ -71,7 +71,7 @@ jobs:
     name: frontend build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-node@v4
         with:
@@ -94,7 +94,7 @@ jobs:
       # Without this it gets a 403 and fails before scanning anything.
       pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # gitleaks scans history, not just the diff
 
