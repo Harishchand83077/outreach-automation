@@ -1,91 +1,79 @@
-# Funding Outreach Automation System
+# outreach-automation
 
-Production-ready automated funding outreach using LangGraph, async Python, and parallel execution.
+A cold-outreach system for a small software agency: import a sheet of founders, research each
+company from real sources, draft a grounded email, get human approval, send on a safe schedule,
+then handle replies, bounces, opt-outs and follow-ups until every lead reaches a terminal state.
+Each *campaign* carries its own sender persona and goal, so the tool is general purpose.
 
-## Requirements
+**Status: a prototype being rewritten into production.** Nothing here is production-ready yet, and
+by default nothing can send mail at all. Start with the documents below rather than the code.
 
-- Python 3.10+
-- Excel file with columns: Name, Email, Company
+| Document | What it is |
+|---|---|
+| [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md) | The design we are building. **Authoritative** — deviating needs an ADR. |
+| [`docs/REPO_ANALYSIS.md`](docs/REPO_ANALYSIS.md) | What the code actually does today, module by module, and the top risks. |
+| [`docs/ISSUES.md`](docs/ISSUES.md) | 51 tracked issues, each with a verdict and file:line evidence. |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Phase status, what is done, and what is next. |
+| [`docs/DECISIONS.md`](docs/DECISIONS.md) | ADRs: where and why we deviate from the target design. |
+| [`docs/SETUP.md`](docs/SETUP.md) | How to install and run it locally. |
+| [`docs/QUESTIONS.md`](docs/QUESTIONS.md) | Open questions, each with a default so nothing blocks. |
+| [`docs/SETUP_CHECKLIST.md`](docs/SETUP_CHECKLIST.md) | Accounts and keys to provision, by phase. |
+| [`CLAUDE.md`](CLAUDE.md) | Hard rules, conventions and gotchas. Read this first when working on the repo. |
 
-## Setup
+## Sending is off by default
 
-1. Clone or extract the project.
+`SEND_MODE` is the only switch that decides whether mail can leave, and it is enforced in exactly
+one function (`email_utils.is_send_allowed`).
 
-2. Create a virtual environment (recommended):
+| Value | Behaviour |
+|---|---|
+| `disabled` | **Default.** Nothing is sent, to anyone. Drafts are still generated and saved. |
+| `allowlist` | Sends only to addresses in `SEND_ALLOWLIST`. Everything else ends `SKIPPED_NOT_ALLOWLISTED`. |
+| `live` | Sends normally. Set by the operator only, deliberately, in production. |
 
-   ```
-   python -m venv venv
-   venv\Scripts\activate   # Windows
-   source venv/bin/activate # Linux/macOS
-   ```
+Startup fails if a required value is missing or still holds a placeholder, so the system cannot run
+half-configured and report itself healthy.
 
-3. Install dependencies:
+## Quick start
 
-   ```
-   pip install -r requirements.txt
-   ```
+Requires **Python 3.12** (not 3.13+), Node 20+, and [uv](https://docs.astral.sh/uv/).
 
-4. Configure environment:
+```bash
+uv python install 3.12
+uv venv --python 3.12 .venv
+uv sync --all-groups
 
-   - Copy `.env.example` to `.env`
-   - Set `GROQ_API_KEY` (Groq API key for LLM)
-   - Set `SMTP_EMAIL` and `SMTP_PASSWORD` (Gmail app password for sending)
-   - Set `IMAP_EMAIL` and `IMAP_PASSWORD` (for reply monitoring)
-   - Set `CALENDAR_LINK` (e.g. Calendly link)
-   - Optional: `AUTO_APPROVE=1` to skip CLI approval prompts; `DRY_RUN_EMAILS=1` to simulate sends
-
-## How to Run
-
-**Full run (load leads, run workflows, then start background workers):**
-
-```
-python main.py leads.xlsx
-```
-
-**Skip reply monitoring (run workflows only, then exit):**
-
-```
-python main.py leads.xlsx --no-monitor
-```
-
-**Show lead status only:**
-
-```
-python main.py --status
+cp env.example .env          # then fill in GROQ_API_KEY, SMTP_EMAIL, SMTP_PASSWORD
+.venv/Scripts/python -m app.scripts.check_env    # prints OK/MISSING per NAME, never a value
 ```
 
-**Run only background workers (reply monitor + decision engine):**
+Then run the legacy prototype — which still works, but is being replaced module by module:
 
+```bash
+.venv/Scripts/python main.py leads.xlsx --no-monitor
+.venv/Scripts/python -m uvicorn api_server:app --reload --port 8000
+cd frontend && npm install && npm run dev
 ```
-python main.py --workers-only
+
+Full detail, including the checks below, is in [`docs/SETUP.md`](docs/SETUP.md).
+
+## Checks
+
+```bash
+.venv/Scripts/python -m ruff check .
+.venv/Scripts/python -m ruff format --check .
+.venv/Scripts/python -m mypy
+.venv/Scripts/python -m pytest
+cd frontend && npm run build
 ```
 
-## Sample Excel Format
+No test touches the network: SMTP is faked with `aiosmtpd`, the LLM is monkeypatched, and every
+address in a fixture is `@example.com`.
 
-| Name | Email | Company |
-|------|--------|---------|
-| Jane Doe | jane@example.com | Acme Inc |
-| John Smith | john@corp.com | Tech Co |
+## Where the code is going
 
-Save as `.xlsx` (or `.csv` with same column names).
-
-## Project Structure
-
-- `main.py` – Entry point, argument parsing, phase orchestration
-- `runner.py` – Parallel execution (asyncio.gather + semaphore), runs one LangGraph workflow per lead
-- `graph.py` – LangGraph workflow definition (generate_insights -> human_validate_insights -> generate_email -> human_validate_email -> send_email -> end_node)
-- `state.py` – LeadState TypedDict
-- `nodes.py` – Graph node implementations (LLM, CLI, SMTP)
-- `database.py` – Async SQLite (aiosqlite) for leads table
-- `excel_loader.py` – Load leads from Excel/CSV (openpyxl)
-- `reply_monitor.py` – Background worker: IMAP inbox check, update DB on reply
-- `decision_engine.py` – Background worker: classify reply (LLM), positive/question/no_interest actions
-- `llm_client.py` – Groq/LangChain LLM with retry
-- `email_utils.py` – SMTP send and IMAP check
-- `logger.py` – Rich logging
-- `config/config.py` – Config from .env
-
-## Architecture
-
-See `ARCHITECTURE.md` for flow diagrams and design rules (parallel execution, workflow ends after send_email, reply handling in separate workers).
-
+The target is a FastAPI application in `app/` — an explicit, DB-backed state machine plus a
+Postgres job queue, replacing the current LangGraph workflow, with a separate worker process whose
+`SendLoop` is the only code that touches SMTP. The `app/` tree exists and each package's
+`__init__.py` states what belongs in it; Phase 1 begins filling them. The flat modules at the
+repository root are the prototype and will be deleted as `app/` supersedes each one.

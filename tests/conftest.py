@@ -18,11 +18,27 @@ if str(REPO_ROOT) not in sys.path:
 
 # Every environment variable the app reads, so a test never inherits the developer's .env.
 APP_ENV_VARS = (
-    "GROQ_API_KEY", "GROQ_MODEL",
-    "SMTP_HOST", "SMTP_PORT", "SMTP_EMAIL", "SMTP_PASSWORD", "SMTP_TIMEOUT", "SMTP_USE_TLS",
-    "IMAP_HOST", "IMAP_PORT", "IMAP_EMAIL", "IMAP_PASSWORD",
-    "CALENDAR_LINK", "DB_PATH", "MAX_CONCURRENT_LEADS", "REPLY_CHECK_INTERVAL_MINUTES",
-    "LOG_LEVEL", "APPROVAL_MODE", "AUTO_APPROVE", "SEND_MODE", "SEND_ALLOWLIST",
+    "GROQ_API_KEY",
+    "GROQ_MODEL",
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_EMAIL",
+    "SMTP_PASSWORD",
+    "SMTP_TIMEOUT",
+    "SMTP_USE_TLS",
+    "IMAP_HOST",
+    "IMAP_PORT",
+    "IMAP_EMAIL",
+    "IMAP_PASSWORD",
+    "CALENDAR_LINK",
+    "DB_PATH",
+    "MAX_CONCURRENT_LEADS",
+    "REPLY_CHECK_INTERVAL_MINUTES",
+    "LOG_LEVEL",
+    "APPROVAL_MODE",
+    "AUTO_APPROVE",
+    "SEND_MODE",
+    "SEND_ALLOWLIST",
     "DRY_RUN_EMAILS",
 )
 
@@ -90,11 +106,13 @@ async def fake_smtp():
             self.messages = []
 
         async def handle_DATA(self, server, session, envelope):
-            self.messages.append({
-                "from": envelope.mail_from,
-                "rcpt": list(envelope.rcpt_tos),
-                "raw": envelope.content.decode("utf-8", errors="replace"),
-            })
+            self.messages.append(
+                {
+                    "from": envelope.mail_from,
+                    "rcpt": list(envelope.rcpt_tos),
+                    "raw": envelope.content.decode("utf-8", errors="replace"),
+                }
+            )
             return "250 OK"
 
     # aiosmtpd's readiness probe dials the configured port, so port=0 is not usable here —

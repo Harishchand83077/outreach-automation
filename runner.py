@@ -1,5 +1,5 @@
 """
-workflows/runner.py — Parallel execution engine for all leads.
+runner.py — Parallel execution engine for all leads.
 
 Key Design:
 - Uses asyncio.gather() to run all leads concurrently
@@ -9,13 +9,13 @@ Key Design:
 """
 
 import asyncio
-from typing import List, Dict, Any
+from typing import Any, Dict, List
 
-from graph import get_graph
-from state import LeadState
-from database import update_lead
 from config.config import config
+from database import update_lead
+from graph import get_graph
 from logger import get_logger
+from state import LeadState
 
 logger = get_logger("runner")
 
@@ -73,7 +73,7 @@ async def run_lead_workflow(lead: Dict[str, Any]) -> Dict[str, Any]:
                 name,
                 final_state.get("status", "UNKNOWN"),
             )
-            # Sync DB when workflow reports EMAIL_SENT (dummy graph skips send_email_node)
+            # Belt and braces: send_email_node already persisted this.
             if final_state.get("status") == "EMAIL_SENT":
                 await update_lead(
                     email=email,

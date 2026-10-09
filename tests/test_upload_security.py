@@ -9,18 +9,14 @@ no path to traverse.
 from pathlib import Path
 
 import pytest
+from conftest import executable_source
 
 import api_server
-from conftest import executable_source
 from excel_loader import load_leads_from_bytes
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-CSV_BYTES = (
-    b"Name,Email,Company\n"
-    b"Asha Rao,asha@example.com,Acme\n"
-    b"Ben Shah,ben@example.com,Globex\n"
-)
+CSV_BYTES = b"Name,Email,Company\nAsha Rao,asha@example.com,Acme\nBen Shah,ben@example.com,Globex\n"
 
 
 class TestNoDiskWrite:
@@ -38,12 +34,15 @@ class TestParseFromBytes:
         leads = load_leads_from_bytes(CSV_BYTES, "leads.csv")
         assert [lead["email"] for lead in leads] == ["asha@example.com", "ben@example.com"]
 
-    @pytest.mark.parametrize("filename", [
-        "../../pwned.csv",
-        "..\\..\\pwned.csv",
-        "/etc/passwd.csv",
-        "C:\\Windows\\Temp\\pwned.csv",
-    ])
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "../../pwned.csv",
+            "..\\..\\pwned.csv",
+            "/etc/passwd.csv",
+            "C:\\Windows\\Temp\\pwned.csv",
+        ],
+    )
     def test_traversal_filenames_are_only_used_for_extension_dispatch(self, filename):
         """A hostile name must not matter, because nothing is written to disk."""
         leads = load_leads_from_bytes(CSV_BYTES, filename)
@@ -77,10 +76,6 @@ class TestRowLongerThanHeader:
     """B7 — `col_map[i]` raised KeyError and killed the whole upload."""
 
     def test_stray_extra_column_does_not_crash(self):
-        data = (
-            b"Name,Email,Company\n"
-            b"Asha,asha@example.com,Acme,STRAY\n"
-            b"Ben,ben@example.com,Globex\n"
-        )
+        data = b"Name,Email,Company\nAsha,asha@example.com,Acme,STRAY\nBen,ben@example.com,Globex\n"
         leads = load_leads_from_bytes(data, "leads.csv")
         assert len(leads) == 2

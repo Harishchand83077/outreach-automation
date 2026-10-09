@@ -1,14 +1,15 @@
 """
-db/database.py — Async SQLite database layer for leads management.
+database.py — Async SQLite database layer for leads management.
 
 Uses aiosqlite for non-blocking DB operations.
 All operations are safe for concurrent async access.
 """
 
 import asyncio
-import aiosqlite
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+import aiosqlite
 
 from config.config import config
 from logger import get_logger
@@ -59,10 +60,13 @@ async def upsert_lead(name: str, email: str, company: str) -> int:
     Returns the row id.
     """
     async with aiosqlite.connect(config.DB_PATH) as db:
-        cursor = await db.execute("""
+        await db.execute(
+            """
             INSERT OR IGNORE INTO leads (name, email, company, status)
             VALUES (?, ?, ?, 'INIT')
-        """, (name, email, company))
+        """,
+            (name, email, company),
+        )
         await db.commit()
 
         # Fetch the id whether inserted or pre-existing
@@ -84,13 +88,10 @@ async def update_lead(email: str, **fields) -> None:
 
     fields["updated_at"] = datetime.utcnow().isoformat()
     set_clause = ", ".join(f"{k} = ?" for k in fields.keys())
-    values = list(fields.values()) + [email]
+    values = [*fields.values(), email]
 
     async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute(
-            f"UPDATE leads SET {set_clause} WHERE email = ?",
-            values
-        )
+        await db.execute(f"UPDATE leads SET {set_clause} WHERE email = ?", values)
         await db.commit()
     logger.debug("Updated lead [%s]: %s", email, list(fields.keys()))
 
@@ -109,8 +110,7 @@ async def get_leads_by_status(status: str) -> List[Dict[str, Any]]:
     async with aiosqlite.connect(config.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         cursor = await db.execute(
-            "SELECT * FROM leads WHERE status = ? ORDER BY updated_at ASC",
-            (status,)
+            "SELECT * FROM leads WHERE status = ? ORDER BY updated_at ASC", (status,)
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
@@ -129,9 +129,7 @@ async def get_stats() -> Dict[str, Any]:
     """Return dashboard stats: total, by status, last_activity."""
     async with aiosqlite.connect(config.DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute(
-            "SELECT status, COUNT(*) as c FROM leads GROUP BY status"
-        )
+        cursor = await db.execute("SELECT status, COUNT(*) as c FROM leads GROUP BY status")
         rows = await cursor.fetchall()
         by_status = {r["status"]: int(r["c"]) for r in rows}
         cursor = await db.execute("SELECT MAX(updated_at) as last FROM leads")
@@ -179,6 +177,7 @@ async def print_leads_summary() -> None:
         return
 
     from rich.table import Table
+
     from logger import console
 
     table = Table(title="Leads Status Summary", show_lines=True)

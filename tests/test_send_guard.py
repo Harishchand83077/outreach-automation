@@ -5,15 +5,16 @@ Hard rule 1: no real email is ever sent while developing. Hard rule 9: when SEND
 """
 
 import pytest
+from conftest import executable_source
 
 import email_utils
-from conftest import executable_source
 from email_utils import SendOutcome, is_send_allowed
 
 
 @pytest.fixture
 def send_env(clean_env, valid_settings_kwargs):
     """Point the app at a fresh Settings whose SMTP host is overridden per test."""
+
     def _configure(**overrides):
         from config import config as config_module
         from config.config import Settings
@@ -54,11 +55,14 @@ class TestIsSendAllowed:
         assert is_send_allowed("other@example.com", s) is True
         assert is_send_allowed("stranger@example.com", s) is False
 
-    @pytest.mark.parametrize("listed,candidate", [
-        ("Me@Example.com", "me@example.com"),
-        ("me@example.com", "ME@EXAMPLE.COM"),
-        (" me@example.com , other@example.com ", "other@example.com"),
-    ])
+    @pytest.mark.parametrize(
+        "listed,candidate",
+        [
+            ("Me@Example.com", "me@example.com"),
+            ("me@example.com", "ME@EXAMPLE.COM"),
+            (" me@example.com , other@example.com ", "other@example.com"),
+        ],
+    )
     def test_matching_ignores_case_and_whitespace(self, send_env, listed, candidate):
         s = send_env(SEND_MODE="allowlist", SEND_ALLOWLIST=listed)
         assert is_send_allowed(candidate, s) is True
@@ -86,9 +90,7 @@ class TestSendEmailOutcomes:
         assert outcome is SendOutcome.BLOCKED
 
     @pytest.mark.asyncio
-    async def test_unlisted_recipient_is_blocked_and_nothing_is_received(
-        self, send_env, fake_smtp
-    ):
+    async def test_unlisted_recipient_is_blocked_and_nothing_is_received(self, send_env, fake_smtp):
         send_env(
             SEND_MODE="allowlist",
             SEND_ALLOWLIST="me@example.com",
@@ -154,10 +156,14 @@ class TestLeadIsNotMarkedSentWhenNothingWasSent:
         clean_env.setattr(nodes, "update_lead", fake_update_lead)
         clean_env.setattr(nodes, "send_email", fake_send_email)
 
-        result = await nodes.send_email_node({
-            "name": "A", "email": "stranger@example.com", "company": "Acme",
-            "email_draft": "Subject: Hi\n\nBody",
-        })
+        result = await nodes.send_email_node(
+            {
+                "name": "A",
+                "email": "stranger@example.com",
+                "company": "Acme",
+                "email_draft": "Subject: Hi\n\nBody",
+            }
+        )
 
         assert result["status"] != "EMAIL_SENT"
         assert result["email_sent"] is False
@@ -178,10 +184,14 @@ class TestLeadIsNotMarkedSentWhenNothingWasSent:
         clean_env.setattr(nodes, "update_lead", fake_update_lead)
         clean_env.setattr(nodes, "send_email", fake_send_email)
 
-        result = await nodes.send_email_node({
-            "name": "A", "email": "me@example.com", "company": "Acme",
-            "email_draft": "Subject: Hi\n\nBody",
-        })
+        result = await nodes.send_email_node(
+            {
+                "name": "A",
+                "email": "me@example.com",
+                "company": "Acme",
+                "email_draft": "Subject: Hi\n\nBody",
+            }
+        )
 
         assert result["status"] == "EMAIL_SENT"
         assert any(w.get("status") == "EMAIL_SENT" for w in writes)

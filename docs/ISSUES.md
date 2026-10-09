@@ -85,7 +85,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 | E3 | P1 | **Confirmed** | **State model is a single mutable row.** Insights/draft are overwritten; no event history, no record of what was *actually sent* (final subject/body/timestamp/Message-ID), no audit of who approved what. |
 | E4 | P1 | **Confirmed (absence)** | No job queue / worker separation. Parallelism is `asyncio.gather` in one process; no job-level retries, no dead-letter, no resumability. |
 | E5 | P1 | **Confirmed** | LLM: retry on *every* exception including auth/400 (`llm_client.py:85`), fixed 2-10 s backoff ignoring `Retry-After`, no token/cost accounting, no model fallback, `max_tokens=2048` fixed. |
-| E6 | P2 | **Confirmed** | No tests, no CI, no type checking, unpinned deps (`>=` throughout), no Python lockfile, no Dockerfile, no `pyproject.toml`. Nothing is installable; imports resolve only from the repo root. |
+| E6 | P2 | **Done** | ~~No tests, no CI, no type checking, unpinned deps, no lockfile, no `pyproject.toml`.~~ Fixed: `pyproject.toml` with exact pins plus `uv.lock`, ruff (lint and format), mypy strict over `app/` and `config/`, pytest, GitHub Actions CI, `pre-commit` with `gitleaks`, Dependabot. `requirements.txt` deleted. The Dockerfile is still outstanding and belongs to Phase 9. |
 | E7 | P2 | **Confirmed** | Observability: Rich console logs only; no structured logs, run IDs, metrics, alerting, or per-lead timeline. |
 | E8 | P2 | **Confirmed** | Dashboard: approvals one-by-one only (no bulk endpoint exists), no filters/search/pagination, no run/campaign concept, no per-step status view, no way to pause/cancel a run or a single lead. |
 
@@ -93,9 +93,9 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 
 | ID | Sev | Verdict | Issue |
 |----|-----|---------|-------|
-| F1 | P3 | **Confirmed** | `INSTALL.md:3,16,23,25,36,41,50,55` reference `requirements-full.txt`, "lite/dummy mode", pandas, numpy and conda — none exist. `runner.py:76` mentions a "dummy graph" that no longer exists. |
-| F2 | P3 | **Confirmed** | `DEPLOY.md:70-82` devotes a step to Neon Postgres that `database.py` cannot use. `RUN.md:13,149` hardcode `c:\Users\Mi\Downloads\automation`. `README.md:3` says "Production-ready". |
-| F3 | P3 | **Confirmed** | Every module docstring claims a `workflows/`, `utils/`, `db/` or `workers/` path against a flat layout. `.gitignore` ignores neither `uploads/` (written by the API) nor `local/`. |
+| F1 | P3 | **Done** | `INSTALL.md` deleted — it documented a `requirements-full.txt`, a "lite/dummy mode", pandas and conda, none of which existed. `docs/SETUP.md` is now the single install guide. The "dummy graph" comment in `runner.py` and the "dummy LLM" warning in `llm_client.py` are gone. |
+| F2 | P3 | **Done** | `DEPLOY.md` deleted — it described Render plus Neon, which both ADR-001 and the target architecture reject; Phase 9 writes `docs/DEPLOY.md`. `RUN.md` deleted along with its hardcoded local Windows path. `README.md` rewritten: it states plainly that this is a prototype under rewrite and that sending is off by default. |
+| F3 | P3 | **Done** | Every module docstring now names its real path. `.gitignore` covers `uploads/`, `local/` and the tool caches. The root `ARCHITECTURE.md` is deleted: `docs/REPO_ANALYSIS.md` describes the current system accurately, and `docs/ARCHITECTURE_TARGET.md` is the target. |
 
 ---
 
@@ -107,7 +107,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 | NEW-2 | P1 | `handle_positive` ignores `send_email`'s return value, so the lead is marked `MEETING_BOOKED` even when the send failed outright. | decision_engine.py:119 |
 | NEW-3 | P2 | `get_stats` counts `emails_sent` as *current* `status == 'EMAIL_SENT'`, so every lead that progresses to `REPLIED`/`MEETING_BOOKED` silently decrements the "sent" total. With B4 inflating meetings, both headline numbers on the dashboard are wrong. | database.py:145 |
 | NEW-4 | P2 | `/api/leads/export/csv` writes lead and LLM text into CSV with no formula-injection guard: a lead whose name begins `=`, `+`, `-` or `@` executes on open in Excel. The endpoint is unauthenticated (C1) and the rate limiter is POST-only, so it is not even throttled. | api_server.py:306-330 |
-| NEW-5 | P2 | `startup()` spawns `_workers_loop()` without assigning `_workers_task`, so the duplicate-guard inside `start_workers()` cannot work; calling it yields a second reply monitor and decision engine, double-processing every reply. | api_server.py:135,345-350 |
+| NEW-5 | **Done** | ~~`startup()` spawned `_workers_loop()` without assigning `_workers_task`, so the duplicate guard inside `start_workers()` could not work and a second reply monitor could be spawned.~~ Fixed: the task handle is stored. Found independently by ruff (RUF006) while setting up CI. | api_server.py |
 | NEW-6 | P3 | `os.chdir(_root)` runs at import time, mutating process-global working directory for anything else hosted in the same interpreter. | api_server.py:25 |
 | NEW-7 | P3 | `update_lead` interpolates `fields.keys()` into the SQL string. Not exploitable today — every call site passes literals — but one user-controlled kwarg away from SQL injection. | database.py:86 |
 | NEW-8 | P3 | `/api/upload` accepts only `.xlsx`/`.xls` while `excel_loader` supports CSV, so the CSV path is dead from the API; and `main.py:22` documents a `--skip-monitor` flag that is really `--no-monitor`. | api_server.py:189, main.py:22,78 |

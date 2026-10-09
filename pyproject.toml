@@ -1,8 +1,92 @@
-# Minimal project config. The Phase 0 CI pull request expands this with dependencies,
-# a uv lockfile, ruff and mypy settings.
+[project]
+name = "outreach-automation"
+version = "0.1.0"
+description = "Cold-outreach system: research, draft, human review, scheduled send, reply handling."
+requires-python = "==3.12.*"
 
+# Pinned to exact versions. The prototype used `>=` throughout with no lockfile, so two
+# installs a week apart were different programs (issue E6). `uv.lock` pins the full graph.
+dependencies = [
+    "fastapi==0.143.0",
+    "uvicorn[standard]==0.54.0",
+    "python-multipart==0.0.32",
+    "pydantic==2.14.0",
+    "pydantic-settings==2.15.0",
+    "python-dotenv==1.2.4",
+    "aiosqlite==0.22.1",
+    "openpyxl==3.1.5",
+    "aiosmtplib==5.1.3",
+    "rich==15.0.0",
+    "tenacity==9.2.1",
+    # LangChain/LangGraph are the legacy workflow's engine. ADR-001's rewrite replaces them
+    # with an explicit state machine plus a Postgres job queue; they go when that lands.
+    "langchain==1.4.3",
+    "langchain-core==1.6.9",
+    "langchain-groq==1.1.3",
+    "langgraph==1.2.14",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "aiosmtpd==1.4.6",       # in-process fake SMTP; no test may touch the network
+    "ruff==0.16.10",
+    "mypy==1.18.2",
+]
+
+[tool.uv]
+package = false
+
+# ──────────────────────────────────────────────────────────────────────────────
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 addopts = "-q"
+
+# ──────────────────────────────────────────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv", "frontend", "app/db/migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "UP",       # pyupgrade
+    "B",        # bugbear
+    "ASYNC",    # async correctness
+    "S",        # bandit security checks
+    "DTZ",      # naive datetime use — we store timestamptz in UTC
+    "RUF",
+]
+ignore = [
+    "B008",     # FastAPI's Depends()/File() defaults are the documented idiom
+    "S101",     # assert is how tests assert
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The legacy flat modules are superseded module-by-module during the rewrite. Lint them for real
+# defects (B, F, ASYNC correctness) but do not churn them for style that is about to be deleted:
+# E501/E402 formatting, DTZ naive datetimes and UP modernisation are all fixed by the rewrite
+# itself, and reflowing them now would bury the real changes in review noise.
+"{main,api_server,runner,graph,nodes,decision_engine,reply_monitor,approval_store,database,llm_client,logger,state,email_utils}.py" = [
+    "DTZ", "S", "UP", "E501", "E402", "ASYNC109", "ASYNC240",
+]
+"tests/**" = ["S", "ASYNC"]
+
+# ──────────────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+# Strict where the rewrite lives; the legacy modules are excluded until they are replaced.
+files = ["app", "config"]
+strict = true
+warn_unreachable = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = ["langchain_groq.*", "langchain_core.*", "langgraph.*", "aiosmtpd.*"]
+ignore_missing_imports = true

@@ -51,7 +51,8 @@ def _diagnose_env_file() -> None:
         print("  NOT FOUND at that path.")
         # The usual Windows causes: a hidden extension, or the file saved elsewhere.
         strays = sorted(
-            p.name for p in REPO_ROOT.iterdir()
+            p.name
+            for p in REPO_ROOT.iterdir()
             if p.is_file() and p.name.lower().startswith(".env") and p.name != ".env.example"
         )
         if strays:
@@ -70,10 +71,15 @@ def _diagnose_env_file() -> None:
         return
 
     text = raw.decode("utf-8-sig", errors="replace")
-    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
         print("  The file is UTF-16 encoded, which python-dotenv cannot read.")
         print("  Re-save it as UTF-8 (in Notepad: Save As, Encoding = UTF-8).")
         return
+    if raw.startswith(b"\xef\xbb\xbf"):
+        print("  The file starts with a UTF-8 byte-order mark, so python-dotenv cannot")
+        print("  parse line 1 (you will see 'could not parse statement starting at line 1').")
+        print("  Harmless if line 1 is a comment, but re-save without the BOM to be safe:")
+        print("  Notepad Save As -> Encoding 'UTF-8' (not 'UTF-8 with BOM').")
 
     named: list[str] = []
     commented: list[str] = []
@@ -136,7 +142,7 @@ def main() -> int:
             f"\n{len(missing_required)} required value(s) still needed: "
             f"{', '.join(missing_required)}"
         )
-        print("Set them in .env in the project root. See .env.example for the shape.")
+        print("Set them in .env in the project root. See env.example for the shape.")
         _diagnose_env_file()
         return 1
 

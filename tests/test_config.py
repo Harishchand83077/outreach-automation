@@ -14,25 +14,31 @@ from config.config import ConfigError, Settings, looks_like_placeholder
 class TestPlaceholderRejection:
     """B3 — a placeholder must never be accepted as a credential."""
 
-    @pytest.mark.parametrize("value", [
-        "your_groq_api_key_here",
-        "your_app_password",
-        "your_email@gmail.com",
-        "YOUR_API_KEY",
-        "changeme",
-        "<your-key>",
-        "replace_me",
-        "xxx",
-        "TODO",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "your_groq_api_key_here",
+            "your_app_password",
+            "your_email@gmail.com",
+            "YOUR_API_KEY",
+            "changeme",
+            "<your-key>",
+            "replace_me",
+            "xxx",
+            "TODO",
+        ],
+    )
     def test_known_placeholders_are_detected(self, value):
         assert looks_like_placeholder(value) is True
 
-    @pytest.mark.parametrize("value", [
-        "gsk_realLookingKey123456",
-        "sender@example.com",
-        "a-genuine-app-password",
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "gsk_realLookingKey123456",
+            "sender@example.com",
+            "a-genuine-app-password",
+        ],
+    )
     def test_real_values_are_not_flagged(self, value):
         assert looks_like_placeholder(value) is False
 
@@ -84,9 +90,9 @@ class TestEnvExampleIsNotLoaded:
 
     def test_env_example_is_never_loaded_as_a_source_of_values(self):
         """Assert the mechanism, not the spelling: the file is still named in error messages."""
-        import config.config as cfg
-
         from conftest import executable_source
+
+        import config.config as cfg
 
         assert "load_dotenv" not in executable_source(cfg)
         assert cfg.Settings.model_config["env_file"] == ".env"
@@ -105,10 +111,18 @@ class TestDeclaredSettings:
     def test_auto_approve_is_declared_and_defaults_off(self, settings_factory):
         assert settings_factory().AUTO_APPROVE is False
 
-    @pytest.mark.parametrize("raw,expected", [
-        ("0", False), ("", False), ("false", False), ("no", False),
-        ("1", True), ("true", True), ("yes", True),
-    ])
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("0", False),
+            ("", False),
+            ("false", False),
+            ("no", False),
+            ("1", True),
+            ("true", True),
+            ("yes", True),
+        ],
+    )
     def test_auto_approve_parses_loosely(self, settings_factory, raw, expected):
         assert settings_factory(AUTO_APPROVE=raw).AUTO_APPROVE is expected
 

@@ -151,12 +151,14 @@ def _check_inbox_sync(check_from_emails: Optional[List[str]] = None) -> List[Dic
                     if from_email not in [e.lower() for e in check_from_emails]:
                         continue
 
-                replies.append({
-                    "from_email": from_email,
-                    "subject": subject,
-                    "body": body.strip(),
-                    "message_id": message_id,
-                })
+                replies.append(
+                    {
+                        "from_email": from_email,
+                        "subject": subject,
+                        "body": body.strip(),
+                        "message_id": message_id,
+                    }
+                )
 
                 mail.store(msg_id, "+FLAGS", "\\Seen")
 

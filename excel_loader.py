@@ -13,7 +13,7 @@ ARCHITECTURE_TARGET.md §7A.
 import csv
 import io
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from openpyxl import load_workbook
 
@@ -32,7 +32,7 @@ def _normalize_header(h: str) -> str:
     return (h or "").strip().title()
 
 
-def _row_to_lead(values: Dict[str, Any]) -> Dict[str, str] | None:
+def _row_to_lead(values: dict[str, Any]) -> dict[str, str] | None:
     """Return a lead dict, or None if the row is unusable."""
     name = str(values.get("Name") or "").strip()
     email = str(values.get("Email") or "").strip()
@@ -44,55 +44,55 @@ def _row_to_lead(values: Dict[str, Any]) -> Dict[str, str] | None:
     return {"name": name, "email": email.lower(), "company": company}
 
 
-def _parse_csv(data: bytes) -> List[Dict[str, str]]:
+def _parse_csv(data: bytes) -> list[dict[str, str]]:
     text = data.decode("utf-8-sig", errors="replace")
     reader = csv.reader(io.StringIO(text, newline=""))
     try:
         header = next(reader)
-    except StopIteration:
-        raise ValueError("The file is empty — no header row found.")
+    except StopIteration as exc:
+        raise ValueError("The file is empty — no header row found.") from exc
 
     normalized = [_normalize_header(h) for h in header]
     _require_columns(normalized)
 
-    leads: List[Dict[str, str]] = []
+    leads: list[dict[str, str]] = []
     for count, row in enumerate(reader, start=1):
         if count > MAX_ROWS:
             raise ValueError(f"Too many rows: the limit is {MAX_ROWS:,} rows per upload.")
         # zip() stops at the shorter sequence, so a row with a stray extra cell is tolerated
         # instead of raising KeyError and killing the whole upload (B7).
-        lead = _row_to_lead(dict(zip(normalized, row)))
+        lead = _row_to_lead(dict(zip(normalized, row, strict=False)))
         if lead:
             leads.append(lead)
     return leads
 
 
-def _parse_xlsx(data: bytes) -> List[Dict[str, str]]:
+def _parse_xlsx(data: bytes) -> list[dict[str, str]]:
     wb = load_workbook(filename=io.BytesIO(data), read_only=True, data_only=True)
     ws = wb.active
 
     rows = ws.iter_rows(values_only=True)
     try:
         header = next(rows)
-    except StopIteration:
-        raise ValueError("The file is empty — no header row found.")
+    except StopIteration as exc:
+        raise ValueError("The file is empty — no header row found.") from exc
     if not header:
         raise ValueError("Missing header row.")
 
     normalized = [_normalize_header(str(h)) if h is not None else "" for h in header]
     _require_columns(normalized)
 
-    leads: List[Dict[str, str]] = []
+    leads: list[dict[str, str]] = []
     for count, row in enumerate(rows, start=1):
         if count > MAX_ROWS:
             raise ValueError(f"Too many rows: the limit is {MAX_ROWS:,} rows per upload.")
-        lead = _row_to_lead(dict(zip(normalized, row)))
+        lead = _row_to_lead(dict(zip(normalized, row, strict=False)))
         if lead:
             leads.append(lead)
     return leads
 
 
-def _require_columns(normalized: List[str]) -> None:
+def _require_columns(normalized: list[str]) -> None:
     missing = [c for c in REQUIRED_COLUMNS if c not in normalized]
     if missing:
         raise ValueError(
@@ -101,16 +101,14 @@ def _require_columns(normalized: List[str]) -> None:
         )
 
 
-def load_leads_from_bytes(data: bytes, filename: str) -> List[Dict[str, Any]]:
+def load_leads_from_bytes(data: bytes, filename: str) -> list[dict[str, Any]]:
     """Parse an uploaded sheet from memory.
 
     `filename` selects the parser by extension and is otherwise ignored — in particular it is
     never joined onto a path.
     """
     if len(data) > MAX_UPLOAD_BYTES:
-        raise ValueError(
-            f"File is too large: the limit is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
-        )
+        raise ValueError(f"File is too large: the limit is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.")
 
     suffix = Path(filename or "").suffix.lower()
     if suffix == ".csv":
@@ -132,7 +130,7 @@ def load_leads_from_bytes(data: bytes, filename: str) -> List[Dict[str, Any]]:
     return leads
 
 
-def load_leads_from_excel(filepath: str) -> List[Dict[str, Any]]:
+def load_leads_from_excel(filepath: str) -> list[dict[str, Any]]:
     """Read a sheet from disk (CLI use). Delegates to the in-memory parser."""
     p = Path(filepath)
     if not p.exists():

@@ -460,7 +460,7 @@ export default function App() {
 
       <footer style={styles.footer}>
         <p style={styles.muted}>
-          Nothing is sent without your approval. Data is stored in your backend only — use Export CSV to backup. For production deploy, see DEPLOY.md. Data handling: PRIVACY.md.
+          Nothing is sent without your approval, and SEND_MODE must be set before any mail can leave at all. Data is stored in your backend only — use Export CSV to back it up. Data handling: PRIVACY.md.
         </p>
       </footer>
     </div>

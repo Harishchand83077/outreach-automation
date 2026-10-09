@@ -20,8 +20,9 @@ audited in `docs/ISSUES.md` — 51 tracked issues — and analysed in `docs/REPO
    addresses in `SEND_ALLOWLIST`) | `live`. Only the owner sets `live`, only in production. The
    check lives in **exactly one function**; anything else reaching SMTP is a bug.
 2. **Never print, log, commit or paste secrets.** Config comes from env via `pydantic-settings`.
-   **Never read `.env` or `.env.*`** (except `.env.example`). Verify config by running the env check
-   script, which prints only OK/MISSING per variable *name*.
+   **Never read `.env` or `.env.*`**. Verify config by running `python -m app.scripts.check_env`,
+   which prints only OK/MISSING per variable *name*. The committed template is `env.example`
+   (undotted, so it stays editable despite the `Read(./.env.*)` deny rule — see QUESTIONS.md Q-0).
 3. **No direct pushes to `main`, no force-push.** Everything goes through a PR.
 4. **No scraping LinkedIn.** `linkedin_url` is stored and displayed only. Never fetched.
 5. **Never spend money or create paid/cloud resources.** Stop and ask.

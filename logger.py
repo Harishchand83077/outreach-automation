@@ -1,11 +1,11 @@
 """
-utils/logger.py — Rich logging setup for the entire system
+logger.py — Rich logging setup for the entire system
 """
 
 import logging
-import sys
-from rich.logging import RichHandler
+
 from rich.console import Console
+from rich.logging import RichHandler
 
 console = Console()
 
