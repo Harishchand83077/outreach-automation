@@ -39,7 +39,7 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from config.config import config
+from config.config import ConfigError, config
 from database import init_db, upsert_lead, print_leads_summary
 from excel_loader import load_leads_from_excel
 from runner import run_all_leads
@@ -165,12 +165,14 @@ async def main():
     logger.info("FUNDING OUTREACH AUTOMATION SYSTEM")
     logger.info("=" * 70)
 
-    # Validate required config
+    # Validate required config. Placeholders count as missing (B3).
     try:
-        config.validate()
-    except EnvironmentError as e:
+        config.validate_required()
+    except ConfigError as e:
         logger.error("Configuration error:\n%s", str(e))
         sys.exit(1)
+
+    logger.info("SEND_MODE=%s", config.SEND_MODE)
 
     # Initialize database
     await init_db()

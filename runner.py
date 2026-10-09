@@ -83,9 +83,11 @@ async def run_lead_workflow(lead: Dict[str, Any]) -> Dict[str, Any]:
                 )
             return final_state
         except Exception as e:
+            # Record the failure, but never in email_draft: that column is rendered as a draft and
+            # offered for sending, so an exception string there is one click from a recipient
+            # (NEW-1). The detail belongs in the log.
             logger.error("[%s]  Workflow crashed: %s", name, str(e), exc_info=True)
-            # Update DB with error status
-            await update_lead(email=email, status="ERROR", email_draft=str(e))
+            await update_lead(email=email, status="ERROR")
             return {**initial_state, "status": "ERROR", "error": str(e)}
 
 

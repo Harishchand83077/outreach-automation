@@ -34,7 +34,7 @@ from database import (
     get_stats,
     reset_failed_leads_to_init,
 )
-from excel_loader import load_leads_from_excel
+from excel_loader import load_leads_from_bytes
 from runner import run_all_leads
 from approval_store import (
     get_pending_async,
@@ -127,13 +127,26 @@ class ApproveQuestionReplyBody(BaseModel):
 
 @app.on_event("startup")
 async def startup():
-    await init_db()
+    # Fail fast on incomplete or placeholder configuration rather than running in a state where
+    # the dashboard reports itself configured while holding `your_groq_api_key_here` (B3).
+    config.validate_required()
+
+    # There is no stdin in a server process, so approvals must come from the dashboard.
     config.APPROVAL_MODE = "api"
-    os.environ["AUTO_APPROVE"] = "0"
-    if not (config.GROQ_API_KEY and config.GROQ_API_KEY.strip()):
-        logger.warning("GROQ_API_KEY is not set. Insights and email generation will fail. Set it in Render → Environment.")
+
+    # AUTO_APPROVE would send drafts with no human review at all. In a server, where nobody is
+    # watching a terminal, that is never what the operator meant.
+    if config.AUTO_APPROVE:
+        raise RuntimeError(
+            "AUTO_APPROVE is on, which bypasses human review. Unset it to run the API server."
+        )
+
+    await init_db()
     asyncio.create_task(_workers_loop())
-    logger.info("API server started. APPROVAL_MODE=api, AUTO_APPROVE=0, background workers started.")
+    logger.info(
+        "API server started. APPROVAL_MODE=api, SEND_MODE=%s, background workers started.",
+        config.SEND_MODE,
+    )
 
 
 # ─── API routes ─────────────────────────────────────────────────────────────
@@ -157,8 +170,8 @@ async def health():
 
 @app.get("/api/config/check")
 async def config_check():
-    """Return whether LLM (Groq) is configured so the dashboard can show a hint."""
-    return {"groq_configured": bool(config.GROQ_API_KEY and config.GROQ_API_KEY.strip())}
+    """Report configuration honestly — a placeholder key is not "configured" (B3)."""
+    return {"groq_configured": config.groq_configured, "send_mode": config.SEND_MODE}
 
 
 @app.get("/api/leads")
@@ -185,17 +198,19 @@ async def list_pending():
 
 @app.post("/api/upload")
 async def upload_leads(file: UploadFile = File(...)):
-    """Upload Excel file; parse and store leads. Returns stored lead count."""
-    if not file.filename or not file.filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(400, "File must be Excel (.xlsx or .xls)")
+    """Parse an uploaded sheet in memory and store the leads it contains.
+
+    The file is never written to disk. The prototype joined the client-supplied filename onto a
+    path, which allowed traversal out of the upload directory and left files behind forever (C2).
+    The name is now only used to choose a parser.
+    """
+    if not file.filename or not file.filename.lower().endswith((".xlsx", ".csv")):
+        raise HTTPException(400, "File must be .xlsx or .csv")
     contents = await file.read()
-    path = _root / "uploads" / (file.filename or "upload.xlsx")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(contents)
     try:
-        leads = load_leads_from_excel(str(path))
-    except Exception as e:
-        raise HTTPException(400, f"Failed to parse Excel: {e}")
+        leads = load_leads_from_bytes(contents, file.filename)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     for lead in leads:
         await upsert_lead(
             name=lead["name"],

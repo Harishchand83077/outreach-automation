@@ -1,0 +1,8 @@
+# Minimal project config. The Phase 0 CI pull request expands this with dependencies,
+# a uv lockfile, ruff and mypy settings.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
