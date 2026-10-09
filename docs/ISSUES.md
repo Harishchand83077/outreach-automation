@@ -20,8 +20,8 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 
 | ID | Sev | Verdict | Issue | Where |
 |----|-----|---------|-------|-------|
-| A1 | P0 | **Confirmed** | **There is no research.** `generate_insights` asks the LLM to "research" a company from *only its name* (prompt literally says "Base analysis on the company name"). No web search, no site scrape, no news, no enrichment. Output is hallucination dressed as research. | nodes.py:73 |
-| A2 | P0 | **Confirmed** | **Nothing researches the person.** `name` reaches the model only as a "Contact:" line and a greeting. No role, LinkedIn, recent posts. | nodes.py:61,206 |
+| A1 | P0 | **Superseded-by-rewrite** | **There is no research.** `generate_insights` asks the LLM to "research" a company from *only its name* (prompt literally says "Base analysis on the company name"). No web search, no site scrape, no news, no enrichment. Output is hallucination dressed as research. | nodes.py:73 |
+| A2 | P0 | **Superseded-by-rewrite** | **Nothing researches the person.** `name` reaches the model only as a "Contact:" line and a greeting. No role, LinkedIn, recent posts. | nodes.py:61,206 |
 | A3 | P0 | **Confirmed** | **The email prompt never tells the LLM who "we" are or what we offer** ("what we offer", "our product/service and traction" with no data supplied). The model invents the product and traction claims, and they get sent to real people. | nodes.py:219-220 |
 | A4 | P1 | **Partly** (persona/campaign schema done; the prompts that read them land in Phase 4) | Use case is hardcoded to *funding/VC* ("startup and venture capital analyst", "Funding Potential", "Series A/B/C"). Not a generic outreach engine. | nodes.py:53-73 |
 | A5 | P1 | **Superseded-by-rewrite** | Excel extra columns (title, website, LinkedIn, notes, segment) are dropped, so they can't feed research or personalization. | excel_loader.py:47-51,82 |

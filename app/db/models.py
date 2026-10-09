@@ -22,6 +22,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -416,6 +417,95 @@ class LlmUsage(Base):
         Index("ix_llm_usage_org_at", "org_id", "at"),
         Index("ix_llm_usage_lead", "lead_id"),
     )
+
+
+class DomainResearch(Base):
+    """Research cached per company domain, not per lead.
+
+    A sheet routinely contains several founders at one company, and their company page is the
+    same page. Fetching it once per lead would be rude to the server and would multiply the
+    token cost of the most expensive step. §12 caches for 30 days.
+    """
+
+    __tablename__ = "domain_research"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    findings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    sources: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: Raw fetched text, purged after 30 days by the retention job (§19). Never whole HTML: the
+    #: free tier is 500 MB and raw markup is almost all of the bytes and none of the value.
+    evidence_text: Mapped[str | None] = mapped_column(Text)
+    prompt_version: Mapped[str | None] = mapped_column(String(50))
+    llm_entry: Mapped[str | None] = mapped_column(String(60))
+    fetched_at: Mapped[datetime] = _now_col(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "domain", name="uq_domain_research_org_domain"),
+        Index("ix_domain_research_expiry", "expires_at"),
+    )
+
+
+class Research(Base):
+    """Per-lead research: the shared domain findings plus anything specific to this person."""
+
+    __tablename__ = "research"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE"), nullable=False
+    )
+    domain_research_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.domain_research.id", ondelete="SET NULL")
+    )
+    #: Job title, operator notes and extra sheet columns. LinkedIn is never fetched (rule 4).
+    person_notes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: Hooks that survived the deterministic snippet check, with their citations.
+    hooks: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    #: Hooks the check dropped, kept so a weak model is visible rather than merely quiet.
+    rejected: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    thin: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    tokens_in: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    tokens_out: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("lead_id", name="uq_research_lead"),
+        Index("ix_research_org", "org_id"),
+    )
+
+
+class SearchUsage(Base):
+    """Search credits spent, tracked against a monthly budget.
+
+    Tavily's free plan is 1,000 credits a month, so this is what stops a large import quietly
+    spending the lot and what shows credits-left in the UI (§12).
+    """
+
+    __tablename__ = "search_usage"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    credits: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    query_domain: Mapped[str | None] = mapped_column(String(253))
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (Index("ix_search_usage_org_at", "org_id", "at"),)
 
 
 class Suppression(Base):
