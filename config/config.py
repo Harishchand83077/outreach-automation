@@ -162,7 +162,7 @@ class Settings(BaseSettings):
             raise ConfigError(
                 "Configuration is incomplete:\n  - "
                 + "\n  - ".join(problems)
-                + "\nSet these in .env in the project root (see .env.example for the shape)."
+                + "\nSet these in .env in the project root (see env.example for the shape)."
             )
 
 

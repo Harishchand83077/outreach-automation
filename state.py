@@ -1,5 +1,5 @@
 """
-workflows/state.py — TypedDict state for the LangGraph per-lead workflow.
+state.py — TypedDict state for the LangGraph per-lead workflow.
 
 Each field corresponds to data collected or generated throughout
 the lead processing pipeline.

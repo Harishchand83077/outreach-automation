@@ -142,7 +142,7 @@ def main() -> int:
             f"\n{len(missing_required)} required value(s) still needed: "
             f"{', '.join(missing_required)}"
         )
-        print("Set them in .env in the project root. See .env.example for the shape.")
+        print("Set them in .env in the project root. See env.example for the shape.")
         _diagnose_env_file()
         return 1
 

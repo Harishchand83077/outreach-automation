@@ -1,5 +1,5 @@
 """
-workflows/nodes.py — All LangGraph node functions for the outreach pipeline.
+nodes.py — All LangGraph node functions for the outreach pipeline.
 
 Nodes:
 1. generate_insights      — LLM researches the company

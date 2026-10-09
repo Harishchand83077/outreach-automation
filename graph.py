@@ -1,5 +1,5 @@
 """
-workflows/graph.py — LangGraph workflow definition for per-lead outreach.
+graph.py — LangGraph workflow definition for per-lead outreach.
 
 Architecture:
   START
@@ -76,8 +76,7 @@ def build_outreach_graph():
     """
     if not _HAS_LANGGRAPH or StateGraph is None:
         raise RuntimeError(
-            "LangGraph is required for the full workflow. Install with:\n"
-            "  pip install -r requirements.txt"
+            "LangGraph is required for the full workflow. Install with:\n  uv sync --all-groups"
         )
 
     from nodes import (

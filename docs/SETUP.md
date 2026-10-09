@@ -34,14 +34,10 @@ From then on, always call the interpreter explicitly — do not rely on an activ
 `.venv/` is gitignored. On this machine a 3.12.1 venv already existed with the prototype's
 dependencies installed; it was kept as found rather than recreated.
 
-> Until the Phase 0 CI PR lands, dependencies still come from the unpinned `requirements.txt`:
-> `.venv/Scripts/python -m pip install -r requirements.txt`. That file is replaced by
-> `pyproject.toml` + `uv.lock` in that PR.
-
 ## Configuration
 
 ```bash
-cp .env.example .env     # then edit .env with real values
+cp env.example .env      # then edit .env with real values
 ```
 
 `.env` is gitignored and **Claude never reads it** — that is enforced by a `deny` rule in

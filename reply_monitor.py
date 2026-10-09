@@ -1,5 +1,5 @@
 """
-workers/reply_monitor.py — Background Worker 1: Reply Monitor
+reply_monitor.py — Background Worker 1: Reply Monitor
 
 Runs asynchronously every N minutes.
 Checks the email inbox for new replies from leads.

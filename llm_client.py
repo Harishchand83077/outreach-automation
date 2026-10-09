@@ -1,5 +1,5 @@
 """
-utils/llm_client.py — LLM client using Groq via LangChain.
+llm_client.py — LLM client using Groq via LangChain.
 
 Includes:
 - Retry logic using tenacity
@@ -82,7 +82,7 @@ def get_llm():
         if _llm is not None:
             logger.info("LLM initialized: %s", config.GROQ_MODEL)
         else:
-            logger.warning("LangChain/Groq not available — using dummy LLM")
+            logger.warning("LangChain/Groq not available — LLM calls will raise, never stub")
     return _llm
 
 

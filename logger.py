@@ -1,5 +1,5 @@
 """
-utils/logger.py — Rich logging setup for the entire system
+logger.py — Rich logging setup for the entire system
 """
 
 import logging

@@ -1,5 +1,5 @@
 """
-db/database.py — Async SQLite database layer for leads management.
+database.py — Async SQLite database layer for leads management.
 
 Uses aiosqlite for non-blocking DB operations.
 All operations are safe for concurrent async access.
