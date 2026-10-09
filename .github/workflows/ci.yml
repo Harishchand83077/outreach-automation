@@ -19,28 +19,31 @@ jobs:
     name: lint, types and tests
     runs-on: ubuntu-latest
 
-    services:
-      # The integration tests exercise FOR UPDATE SKIP LOCKED, a partial unique index and an
-      # append-only trigger. Those are database behaviour, so they need a real Postgres.
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: outreach
-          POSTGRES_PASSWORD: outreach_ci
-          POSTGRES_DB: outreach
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U outreach -d outreach"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
+    # The integration tests exercise FOR UPDATE SKIP LOCKED, a partial unique index, a unique
+    # constraint under concurrency and an append-only trigger. Those are database behaviour, so
+    # they need a real Postgres.
+    #
+    # Deliberately NOT a service container: pulling postgres from Docker Hub hits the
+    # unauthenticated rate limit on shared runners, which fails the build for reasons that have
+    # nothing to do with the code. The runner image already ships PostgreSQL, so we start that.
+    #
+    # Port 5432 here, unlike locally. ADR-005 chose to verify the database's identity rather
+    # than its port precisely because CI and production legitimately differ — and an ephemeral
+    # runner has no neighbouring project to collide with.
     env:
-      DATABASE_URL: postgresql+asyncpg://outreach:outreach_ci@127.0.0.1:5433/outreach
+      DATABASE_URL: postgresql+asyncpg://outreach:outreach_ci@127.0.0.1:5432/outreach
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start PostgreSQL
+        run: |
+          sudo systemctl start postgresql.service
+          pg_isready --timeout=30
+          # SUPERUSER so the integration harness can CREATE DATABASE for its own test database.
+          sudo -u postgres psql -c \
+            "CREATE USER outreach WITH PASSWORD 'outreach_ci' SUPERUSER CREATEDB;"
+          sudo -u postgres psql -c "CREATE DATABASE outreach OWNER outreach;"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
