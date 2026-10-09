@@ -38,3 +38,8 @@ local/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Node
+node_modules/
+frontend/dist/
+npm-debug.log*
