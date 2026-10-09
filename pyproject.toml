@@ -30,6 +30,10 @@ dependencies = [
     # Windows ships no tz database, and scheduling is defined in Asia/Kolkata, so ZoneInfo
     # needs this. Also required by Alembic's UTC filename timestamps.
     "tzdata==2026.5",
+    # RFC-compliant address syntax. Deliverability (MX) is checked separately through an
+    # injectable resolver, so no test ever needs the network.
+    "email-validator==2.3.0",
+    "dnspython==2.9.0",
 ]
 
 [dependency-groups]
@@ -39,6 +43,7 @@ dev = [
     "aiosmtpd==1.4.6",       # in-process fake SMTP; no test may touch the network
     "ruff==0.16.10",
     "mypy==1.18.2",
+    "types-openpyxl==3.1.5.20260827",
 ]
 
 [tool.uv]
