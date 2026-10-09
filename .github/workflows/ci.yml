@@ -18,6 +18,27 @@ jobs:
   python:
     name: lint, types and tests
     runs-on: ubuntu-latest
+
+    services:
+      # The integration tests exercise FOR UPDATE SKIP LOCKED, a partial unique index and an
+      # append-only trigger. Those are database behaviour, so they need a real Postgres.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: outreach
+          POSTGRES_PASSWORD: outreach_ci
+          POSTGRES_DB: outreach
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U outreach -d outreach"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://outreach:outreach_ci@127.0.0.1:5433/outreach
+
     steps:
       - uses: actions/checkout@v4
 

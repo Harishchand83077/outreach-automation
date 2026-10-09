@@ -4,10 +4,8 @@ No test in this suite may touch the network. SMTP is faked with aiosmtpd, the LL
 monkeypatched, and every recipient address is @example.com.
 """
 
-import io
 import socket
 import sys
-import tokenize
 from pathlib import Path
 
 import pytest
@@ -41,25 +39,6 @@ APP_ENV_VARS = (
     "SEND_ALLOWLIST",
     "DRY_RUN_EMAILS",
 )
-
-
-def executable_source(module) -> str:
-    """Return a module's source with comments and docstrings removed.
-
-    Several tests assert that a dangerous string no longer appears in a module — a lock against
-    quietly reintroducing it. A plain source grep would also match the comments that *explain*
-    why the string was removed, so those are stripped first. Ordinary string literals are kept,
-    because that is the form a reintroduced bug would take (`status="MEETING_BOOKED"`).
-    """
-    source = Path(module.__file__).read_text(encoding="utf-8")
-    kept: list[str] = []
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if token.type == tokenize.COMMENT:
-            continue
-        if token.type == tokenize.STRING and token.string.lstrip("rbfuRBFU")[:3] in ('"""', "'''"):
-            continue  # docstring or long prose block
-        kept.append(token.string)
-    return "\n".join(kept)
 
 
 @pytest.fixture

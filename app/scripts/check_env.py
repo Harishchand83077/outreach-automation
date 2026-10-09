@@ -18,15 +18,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from config.config import REQUIRED_KEYS, Settings, looks_like_placeholder  # noqa: E402
-
-#: Not required to start, but each disables a feature if absent.
-FEATURE_KEYS: dict[str, str] = {
-    "IMAP_EMAIL": "replies are not monitored",
-    "IMAP_PASSWORD": "replies are not monitored",
-    "CALENDAR_LINK": "drafts have no booking link to call to action with",
-    "SEND_ALLOWLIST": "SEND_MODE=allowlist can reach nobody",
-}
+from app.core.settings import (  # noqa: E402
+    FEATURE_KEYS,
+    REQUIRED_KEYS,
+    Settings,
+    looks_like_placeholder,
+)
 
 OK = "OK     "
 MISSING = "MISSING"

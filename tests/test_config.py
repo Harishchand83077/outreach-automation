@@ -90,9 +90,8 @@ class TestEnvExampleIsNotLoaded:
 
     def test_env_example_is_never_loaded_as_a_source_of_values(self):
         """Assert the mechanism, not the spelling: the file is still named in error messages."""
-        from conftest import executable_source
-
         import config.config as cfg
+        from tests.helpers import executable_source
 
         assert "load_dotenv" not in executable_source(cfg)
         assert cfg.Settings.model_config["env_file"] == ".env"

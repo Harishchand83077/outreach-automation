@@ -1,6 +1,6 @@
 # Progress
 
-Updated 2026-10-10. Read this with `CLAUDE.md` at the start of every session.
+Updated 2026-10-10 (Phase 1 in progress). Read this with `CLAUDE.md` at the start of every session.
 
 ## Handoff note (rewrite at the end of every session)
 
@@ -52,7 +52,7 @@ just strings): `SKIPPED_NOT_ALLOWLISTED`, `INSIGHTS_FAILED`, `EMAIL_DRAFT_FAILED
 | §00 | Bootstrap, tooling, permissions | **Done** |
 | §0 | Repo analysis, issue verification, baseline | **Done** |
 | 0 | Safety patch + CI + docs | Safety patch **done** (76 tests green, unpushed); CI next |
-| 1 | Data layer, state machine, job queue, outbox | Not started |
+| 1 | Data layer, state machine, job queue, outbox | **In progress** — schema, state machine and queue done (162 tests); outbox claim/mark next |
 | 2 | Import, persona, campaigns | Not started |
 | 3 | LLM router, research engine | Not started |
 | 4 | Drafting, grounding, review queue | Not started |

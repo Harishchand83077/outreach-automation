@@ -5,10 +5,10 @@ Hard rule 1: no real email is ever sent while developing. Hard rule 9: when SEND
 """
 
 import pytest
-from conftest import executable_source
 
 import email_utils
 from email_utils import SendOutcome, is_send_allowed
+from tests.helpers import executable_source
 
 
 @pytest.fixture
