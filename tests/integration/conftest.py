@@ -43,8 +43,10 @@ def _derive_test_url() -> str:
 #: Override only to point CI at its own service container.
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or _derive_test_url()
 
-#: Every table migration 1 creates, child-first, for truncation.
+#: Every table the migrations create, child-first, for truncation.
 _TABLES = (
+    "worker_heartbeats",
+    "alerts",
     "suppressions",
     "messages",
     "drafts",

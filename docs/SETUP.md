@@ -78,13 +78,14 @@ committed. Committed fixtures use `@example.com` addresses only.
 cd frontend && npm install && npm run dev
 ```
 
-Legacy prototype, still runnable through Phase 0 but not to be extended:
+The two processes, which is the whole system (the legacy prototype was deleted in Phase 7):
 
 ```bash
-.venv/Scripts/python main.py leads.xlsx --no-monitor   # note: --no-monitor, not --skip-monitor
-.venv/Scripts/python main.py --status
-.venv/Scripts/python -m uvicorn api_server:app --reload --port 8000
+.venv/Scripts/python -m app.worker                                   # five asyncio tasks
+.venv/Scripts/python -m uvicorn app.api.app:create_app --factory --reload --port 8000
 ```
+
+Deploying either of them is `docs/DEPLOY.md`.
 
 ## Checks
 

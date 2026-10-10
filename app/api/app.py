@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, Response
 from app.api.deps import get_session, session_dependency
 from app.api.ratelimit import RateLimit
 from app.api.routers import campaigns, health, imports, me, operations, review
+from app.core.logging import configure_logging, log_context
 from app.core.settings import Settings, config
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,9 @@ def allowed_origins(settings: Settings) -> list[str]:
 def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = None) -> FastAPI:
     settings = settings or config
     limiter = limiter or DEFAULT_RATE_LIMIT
+    # Installed here rather than in a `__main__`: uvicorn imports the factory, so this is the
+    # only place guaranteed to run before the first request is logged. Idempotent.
+    configure_logging(settings)
 
     application = FastAPI(
         title="outreach-automation",
@@ -85,18 +89,22 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
         request_id = request.headers.get(REQUEST_ID_HEADER) or uuid.uuid4().hex
         request.state.request_id = request_id
 
-        allowed, retry_after = limiter.check(_rate_key(request))
-        if not allowed:
-            return _error(
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                "Too many requests.",
-                request_id,
-                headers={"Retry-After": str(int(retry_after) + 1)},
-            )
+        # Bound for the whole request, so every log line underneath carries it without any
+        # handler having to remember to pass it — including the ones inside services that know
+        # nothing about HTTP (§18).
+        with log_context(request_id=request_id):
+            allowed, retry_after = limiter.check(_rate_key(request))
+            if not allowed:
+                return _error(
+                    status.HTTP_429_TOO_MANY_REQUESTS,
+                    "Too many requests.",
+                    request_id,
+                    headers={"Retry-After": str(int(retry_after) + 1)},
+                )
 
-        response = await call_next(request)
-        response.headers[REQUEST_ID_HEADER] = request_id
-        return response
+            response = await call_next(request)
+            response.headers[REQUEST_ID_HEADER] = request_id
+            return response
 
     @application.exception_handler(HTTPException)
     async def http_error(request: Request, exc: HTTPException) -> JSONResponse:

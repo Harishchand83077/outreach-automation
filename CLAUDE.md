@@ -11,8 +11,10 @@ company from real sources, draft a grounded email, get human approval, send on a
 handle replies, bounces, opt-outs and follow-ups until each lead reaches a terminal state. Each
 *campaign* carries its own sender persona and goal, so the tool is general purpose.
 
-Status: the rewrite is done through Phase 7; the prototype is deleted. `docs/ISSUES.md` tracks
-59 issues (52 resolved) and `docs/REPO_ANALYSIS.md` analyses the original.
+Status: the rewrite is done through Phase 8 slice 1, and Phase 9 slice 1 (ops) has landed: the
+system is deployable and observable. The prototype is deleted. `docs/ISSUES.md` tracks 59 issues
+(56 resolved), `docs/DEPLOY.md` is the runbook for the VM, and `docs/REPO_ANALYSIS.md` analyses
+the original.
 
 ## Hard rules — never break these
 
@@ -54,6 +56,12 @@ uv venv --python 3.12 && uv sync          # create/refresh the env
 .venv/Scripts/python -m app.worker            # the worker: five asyncio tasks
 uvicorn app.api.app:create_app --factory --reload --port 8000
 cd frontend && npm install && npm run dev
+
+# deployment (docs/DEPLOY.md is the runbook; nothing here has ever been deployed)
+docker build -t outreach:local .
+docker compose --env-file .env -f deploy/compose.prod.yml config --quiet
+./deploy/deploy.sh          # on the VM only: migrates, starts, verifies, rolls back on failure
+./deploy/backup.sh          # nightly pg_dump, 14 days; the weekly off-box copy is manual
 ```
 
 ## Architecture (target — `docs/ARCHITECTURE_TARGET.md` is authoritative)

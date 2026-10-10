@@ -24,6 +24,7 @@ import contextlib
 import logging
 import signal
 
+from app.core.logging import configure_logging, redacted_database_url
 from app.core.settings import config
 from app.db.engine import dispose_engine
 from app.worker.base import WorkerTask
@@ -60,7 +61,15 @@ async def run_worker(ctx: WorkerContext | None = None) -> None:
 
     logger.info(
         "worker starting",
-        extra={"tasks": [task.name for task in tasks], "send_mode": ctx.settings.SEND_MODE},
+        extra={
+            "tasks": [task.name for task in tasks],
+            "send_mode": ctx.settings.SEND_MODE,
+            "worker_id": ctx.worker_id,
+            "env": ctx.settings.APP_ENV,
+            # The password is stripped: the rest is worth seeing, because "connected to the
+            # wrong database" is otherwise invisible until something is missing (ADR-005).
+            "database": redacted_database_url(ctx.settings.DATABASE_URL),
+        },
     )
 
     running = [asyncio.create_task(task.run(), name=task.name) for task in tasks]
@@ -85,10 +94,7 @@ async def run_worker(ctx: WorkerContext | None = None) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=config.LOG_LEVEL,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(config)
     asyncio.run(run_worker())
 
 

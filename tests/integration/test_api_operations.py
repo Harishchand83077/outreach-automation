@@ -180,6 +180,36 @@ class TestImportPreview:
         response = api.post(f"/api/v1/campaigns/{campaign.id}/imports/preview", files=upload())
         assert response.status_code == 401
 
+    async def test_a_traversing_filename_never_reaches_the_filesystem(
+        self, api, owner, campaign, tmp_path, monkeypatch
+    ):
+        """Issue C2, re-proved against the new endpoint.
+
+        The prototype did `path = _root/"uploads"/file.filename` with the client's own filename,
+        so `../../x.csv` escaped the upload directory. The replacement parses bytes in memory and
+        uses the filename only to pick a parser — so the test worth having is not "the name is
+        sanitised" but **"nothing is written at all"**, which stays true however the parser
+        changes later.
+
+        `tests/test_upload_security.py` proved this about the deleted `api_server.py` and went
+        with it in PR #26. This is its replacement; without it, C2 is a verdict with no test.
+        """
+        monkeypatch.chdir(tmp_path)
+        before = {path for path in tmp_path.rglob("*")}
+
+        for name in ("../../escaped.csv", r"..\..\escaped.csv", "/etc/passwd.csv"):
+            response = api.post(
+                f"/api/v1/campaigns/{campaign.id}/imports/preview",
+                headers=owner,
+                files=upload(SHEET, name),
+            )
+            # Accepted or refused is beside the point; writing a file is not.
+            assert response.status_code in (200, 422)
+
+        assert {path for path in tmp_path.rglob("*")} == before
+        assert not list(tmp_path.rglob("escaped.csv"))
+        assert not list(tmp_path.rglob("*passwd*"))
+
 
 class TestImportCommit:
     async def test_it_creates_the_leads(self, db, api, owner, campaign):

@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 
 from app.api.deps import CurrentUserDep, SessionDep
 from app.api.pagination import clamp_limit
-from app.db import repo
+from app.db import ops, repo
 from app.db.models import Job, LlmUsage, Mailbox, Message, Suppression
 
 router = APIRouter(tags=["operations"])
@@ -245,4 +245,70 @@ async def needs_attention(user: CurrentUserDep, session: SessionDep) -> dict[str
         "unknown_sends": int(unknown or 0),
         "dead_jobs": int(dead or 0),
         "paused_mailboxes": int(paused or 0),
+    }
+
+
+@router.get("/admin/alerts")
+async def alerts(
+    user: CurrentUserDep,
+    session: SessionDep,
+    unacked: Annotated[bool, Query()] = False,
+    limit: Annotated[int | None, Query(ge=1, le=200)] = None,
+) -> dict[str, Any]:
+    """Alerts for this org, plus the system-wide ones (§18).
+
+    A system alert — a stalled worker, an unreachable database — carries no `org_id` because it
+    belongs to no tenant and stops everyone's work, so it is listed for whoever looks first.
+    """
+    rows = await ops.list_alerts(
+        session, org_id=user.org_id, unacked_only=unacked, limit=clamp_limit(limit)
+    )
+    return {
+        "alerts": [
+            {
+                "id": str(row.id),
+                "severity": row.severity,
+                "kind": row.kind,
+                "message": row.message,
+                "detail": row.detail or {},
+                "scope": "org" if row.org_id else "system",
+                "created_at": row.created_at.isoformat(),
+                "acked_at": row.acked_at.isoformat() if row.acked_at else None,
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/admin/alerts/{alert_id}/ack")
+async def ack_alert(
+    user: CurrentUserDep, session: SessionDep, alert_id: uuid.UUID
+) -> dict[str, Any]:
+    """Acknowledge an alert, so it stops being counted and can be raised again if it recurs."""
+    try:
+        row = await ops.ack_alert(
+            session, org_id=user.org_id, alert_id=alert_id, user_id=user.user_id
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such alert.") from exc
+    return {"id": str(row.id), "acked_at": row.acked_at.isoformat() if row.acked_at else None}
+
+
+@router.get("/admin/worker")
+async def worker(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """What the worker last said about itself.
+
+    Authenticated, unlike `/ready`: this returns the per-task detail, which says how the inside
+    of the system is put together and how it is currently failing.
+    """
+    status_row = await ops.latest_heartbeat(session)
+    if status_row is None:
+        return {"running": False, "detail": "The worker has never recorded a heartbeat."}
+    return {
+        "running": not status_row.stale,
+        "worker_id": status_row.worker_id,
+        "started_at": status_row.started_at.isoformat(),
+        "last_seen_at": status_row.last_seen_at.isoformat(),
+        "seen_seconds_ago": status_row.age_seconds,
+        "info": status_row.info,
     }
