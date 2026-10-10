@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -38,16 +38,17 @@ from app.services.mail.parse import ParsedMessage
 class Router(Protocol):
     """Just the part of `LLMRouter` this module needs, so a test can supply a fake."""
 
-    async def structured_with_entry(
+    async def structured_with_entry[M: BaseModel](
         self,
-        schema: type[Any],
+        schema: type[M],
         *,
         task: str,
         system: str,
         user: str,
         lead_id: uuid.UUID | None = ...,
-        **kwargs: Any,
-    ) -> tuple[Any, str]: ...
+        temperature: float = ...,
+        contains_pii: bool | None = ...,
+    ) -> tuple[M, str]: ...
 
 
 CLASSIFY_PROMPT_VERSION = "classify_reply.v1"

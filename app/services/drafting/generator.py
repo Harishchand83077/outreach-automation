@@ -54,16 +54,17 @@ class ClaimVerdict(BaseModel):
 class Router(Protocol):
     """Just the part of LLMRouter this module needs, so tests can supply a fake."""
 
-    async def structured(
+    async def structured[M: BaseModel](
         self,
-        schema: type[Any],
+        schema: type[M],
         *,
         task: str,
         system: str,
         user: str,
         lead_id: uuid.UUID | None = ...,
-        **kwargs: Any,
-    ) -> Any: ...
+        temperature: float = ...,
+        contains_pii: bool | None = ...,
+    ) -> M: ...
 
 
 @dataclass
