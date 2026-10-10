@@ -4,49 +4,50 @@ Updated 2026-10-10 (Phase 6 complete). Read this with `CLAUDE.md` at the start o
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phases 0 through 6 are complete and merged, except Phase 6 which is on its
-branch.** 952 tests pass; ruff and mypy strict are clean.
+**Where we are. Phases 0 through 6 are complete and merged, and the worker process is now
+assembled.** 980 tests pass; ruff and mypy strict are clean.
 
-- Phase 6a (merged, `b1d6aa4`): inbound mail parsing — type decided from headers first, hard and
-  soft bounces split, quoted text stripped — plus the ten reply labels, the keyword opt-out rules
-  including the Hinglish forms, and the `reconcile` precedence (bounce > auto-reply > keyword
-  opt-out > model).
-- Phase 6b (branch `feat/P6b-reply-actions`, this session): the `ImapPoller`, the reply service
-  that matches, stores and acts, the LLM classifier, the reply drafter, the ingest loop and the
-  ADR-002 send recovery.
+- Phase 6a (`b1d6aa4`): inbound mail parsing, the ten reply labels, the keyword opt-out rules
+  including the Hinglish forms, and the `reconcile` precedence.
+- Phase 6b (`089970a`, PR #19): the `ImapPoller`, the reply service, the LLM classifier, the reply
+  drafter, the ingest loop and the ADR-002 send recovery.
+- Cloudflare (`8c5f2e1`, PR #20): `frontend/wrangler.jsonc`, and Q-0 settled by measurement.
+- Phase 6c (this session): **the worker process**. `app/worker/` now holds the five asyncio tasks
+  of §4 — `JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat` — behind a `WorkerTask`
+  base whose `tick()` does one cycle and returns how long to wait. Run it with
+  `python -m app.worker`.
 
-**What Phase 6b closes:** A6, A8, B5, B10, B11, B17, C5, D2 — each with a test named in
-`ISSUES.md`. A7 (follow-ups) closed in Phase 5.
+**What the worker assembly settles.** Every service built in phases 1 to 6 was reachable only
+from a test until now. The pieces that were decisions rather than wiring:
 
-**Three design gaps the tests found, all fixed here rather than worked around:**
-1. `messages.lead_id` was `NOT NULL`, which made §10.2's "unmatched mail is never deleted"
-   impossible. Now nullable, with `ck_messages_out_has_lead` keeping every *outbound* row attached
-   to a lead (migration `e6ad2939ee88`).
-2. The state machine had no `SENT → NOT_INTERESTED` edge, so a clear "no thanks" could not close a
-   lead. Added to `SENT` and `FOLLOWUP_SENT`.
-3. `strip_quoted` returned the original body when stripping left nothing — so a reply consisting
-   only of our quoted pitch was handed to the classifier, which read our own enthusiasm and said
-   `interested`. It now returns empty when the quote starts at the first line, and such a reply is
-   labelled `other` for a human.
+- **A tick never raises.** An exception is recorded against that task's health and the task backs
+  off and retries. A task dying silently while the other four carry on is the failure that is
+  hardest to notice, and it is exactly what a bare `asyncio.gather` would produce.
+- **`send_message` and `classify_reply` are deliberately not job kinds the runner handles.** The
+  `SendLoop` is the only sender (hard rule 1), and two runners draining a send queue would make
+  the daily cap a race. Classification already happens in the transaction that stores the
+  message, so queueing it separately would reopen the window where a reply exists with no label.
+  A test asserts both absences.
+- **One send per cycle.** `send_one` returns the interval to wait and the loop honours it.
+  Batching would set the gap between two emails to zero, which is the most recognisable
+  signature of bulk mail.
+- **Graceful shutdown asks rather than cancels.** A cancellation between the SMTP call and the
+  row recording it leaves a message `sending` and costs a human a trip to the mailbox. Tasks get
+  30 seconds to finish their cycle before being cancelled.
+- **`PooledUsageStore`** was needed because `DbUsageStore` binds to one session, and the ingest
+  loop opens a session per message while the router outlives all of them. Without it the LLM
+  daily cap would silently not apply to reply classification.
 
-**ADR-002 is confirmed empirically**, not just by design: a pre-generated `Message-ID` was found in
-`[Gmail]/Sent Mail` by `BODY.PEEK` search against the real Google Workspace mailbox. That is what
-`recover_stuck_sends` relies on, and it needs no `BCC_SELF`.
-
-**The issue register was wrong and is now recomputed from `ISSUES.md`.** The "43 original / 51
-total" figures undercounted: there are **51 lettered IDs plus 8 NEW = 59 tracked**. `ISSUES.md`
-also still showed Phase 0's fixes as unresolved while this file called them Done; both now agree,
-and every test citation in `ISSUES.md` has been checked to resolve to a real file and class.
+**One assumption now in the code, stated plainly:** `SendLoop` takes the *first* campaign using a
+mailbox. One campaign per mailbox is the shape the product has today. When that stops being true
+the loop must interleave campaigns under one shared cap, which is a scheduling decision rather
+than a lookup — better to meet that assumption loudly later than to guess at it now.
 
 **Next up.**
-1. ~~Push `feat/P6b-reply-actions`, open the PR, merge.~~ Done — **PR #19 merged** as `089970a`
-   on 2026-10-10, so `main` now carries the whole reply engine.
-2. **The worker process is still not assembled.** `app/worker/` has `send_loop.py` only; the five
-   asyncio tasks of §4 (`JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat`) and the job
-   handlers that call `draft_reply`, `ingest_folder` and `recover_stuck_sends` do not exist yet.
-   Everything they need is built and tested; this is wiring. It is the first thing Phase 7 or a
-   short `feat/P6c-worker` should do, and nothing runs end-to-end until it is done.
-3. Then Phase 7 (auth, multi-tenancy): C1, C3, C4, C7, NEW-4, NEW-6.
+1. **Phase 7 (auth, multi-tenancy):** C1, C3, C4, C7, NEW-4, NEW-6. The API is still
+   unauthenticated, which is the largest remaining P0.
+2. Then Phase 8 (UI completion) and Phase 9 (ops), where `docs/DEPLOY.md`, the Compose file and
+   the `/health` + `/ready` endpoints that read `WorkerHealth` belong.
 
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
@@ -103,7 +104,8 @@ Create new branches from `origin/main`.
 | 4 | Drafting, grounding, review queue | **Done** - 633 tests |
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
-| 7 | Auth, multi-tenancy | Not started. **Assemble the worker's five tasks first** - see the handoff note. |
+| 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
+| 7 | Auth, multi-tenancy | Not started. The API is still unauthenticated (C1) - the largest remaining P0. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
