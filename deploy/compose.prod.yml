@@ -23,7 +23,13 @@ x-app: &app
     dockerfile: Dockerfile
   image: outreach:${IMAGE_TAG:-local}
   restart: unless-stopped
-  env_file: ../.env
+  env_file:
+    # `required: false` so this file can be validated (`config --quiet`) on a machine that has no
+    # `.env` — CI does exactly that, and a stat error there says nothing about whether the file
+    # is correct. Presence is enforced where it matters instead: `deploy.sh` refuses to run
+    # without it, and `Settings.validate_required()` refuses to start without real values.
+    - path: ../.env
+      required: false
   environment:
     # The database is reached by service name on the Compose network, not through the host's
     # loopback port. Overriding it here means `.env` can keep the developer's 127.0.0.1:5433
