@@ -1,193 +1,136 @@
 # Progress
 
-Updated 2026-10-10 (Phase 6 complete). Read this with `CLAUDE.md` at the start of every session.
+Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of every session.
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phases 0 through 6 are complete and merged, and the worker process is now
-assembled.** 980 tests pass; ruff and mypy strict are clean.
+**Where we are. Phases 0 through 8 slice 1 are merged, and Phase 9 slice 1 — ops — is on
+`feat/P9-ops`.** 1094 tests pass; ruff, ruff format and mypy strict are clean. **56 of 59 issues
+are resolved.**
 
-- Phase 6a (`b1d6aa4`): inbound mail parsing, the ten reply labels, the keyword opt-out rules
-  including the Hinglish forms, and the `reconcile` precedence.
-- Phase 6b (`089970a`, PR #19): the `ImapPoller`, the reply service, the LLM classifier, the reply
-  drafter, the ingest loop and the ADR-002 send recovery.
-- Cloudflare (`8c5f2e1`, PR #20): `frontend/wrangler.jsonc`, and Q-0 settled by measurement.
-- Phase 6c (this session): **the worker process**. `app/worker/` now holds the five asyncio tasks
-  of §4 — `JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat` — behind a `WorkerTask`
-  base whose `tick()` does one cycle and returns how long to wait. Run it with
-  `python -m app.worker`.
+**Phase 9 slice 1 (this session): the system can be deployed, and it can be watched.**
 
-**What the worker assembly settles.** Every service built in phases 1 to 6 was reachable only
-from a test until now. The pieces that were decisions rather than wiring:
+Everything before this ran on one laptop. The hosted dashboard was pointing at an API that
+existed nowhere else, which is why it showed nothing.
 
-- **A tick never raises.** An exception is recorded against that task's health and the task backs
-  off and retries. A task dying silently while the other four carry on is the failure that is
-  hardest to notice, and it is exactly what a bare `asyncio.gather` would produce.
-- **`send_message` and `classify_reply` are deliberately not job kinds the runner handles.** The
-  `SendLoop` is the only sender (hard rule 1), and two runners draining a send queue would make
-  the daily cap a race. Classification already happens in the transaction that stores the
-  message, so queueing it separately would reopen the window where a reply exists with no label.
-  A test asserts both absences.
-- **One send per cycle.** `send_one` returns the interval to wait and the loop honours it.
-  Batching would set the gap between two emails to zero, which is the most recognisable
-  signature of bulk mail.
-- **Graceful shutdown asks rather than cancels.** A cancellation between the SMTP call and the
-  row recording it leaves a message `sending` and costs a human a trip to the mailbox. Tasks get
-  30 seconds to finish their cycle before being cancelled.
-- **`PooledUsageStore`** was needed because `DbUsageStore` binds to one session, and the ingest
-  loop opens a session per message while the router outlives all of them. Without it the LLM
-  daily cap would silently not apply to reply classification.
+- **`Dockerfile`** — one image, two commands. The api and the worker are the same code, so they
+  cannot drift apart: a deploy updates both or neither, and a schema the api expects is a schema
+  the worker has. Non-root (uid 10001), multi-stage, dependencies from `uv.lock` with `--locked`
+  so a build in six months installs the same packages. Built and smoke-tested locally **and** in
+  CI, because a Dockerfile that is only exercised on the VM is a Dockerfile first tested during a
+  deploy.
+- **`deploy/compose.prod.yml`** — Postgres, api, worker, Caddy. Postgres publishes **no port at
+  all**; it is reachable only on the Compose network, and a dump is taken by running `pg_dump`
+  inside that network. Memory limits on all four, because on a small VM the alternative to a
+  limit is the kernel choosing what to kill. Log rotation on all four, because a full disk stops
+  Postgres rather than just the logging.
+- **`deploy/Caddyfile`** — TLS obtained and renewed by Caddy itself, no certbot to forget. It
+  strips any `X-Forwarded-For` a caller sent, and the api trusts the header only from the Compose
+  network: without that pair, the address-keyed rate limit is an honour system.
+- **`deploy/deploy.sh`** — refuses a dirty tree, migrates *before* starting the new containers,
+  waits for `/health`, and puts the previous image back if the api never answers. **It cannot
+  touch `SEND_MODE` and cannot run `down -v`**, and CI asserts both of those by grep.
+- **`deploy/backup.sh`** — nightly dump, 14 days, verified readable, written to a temporary name
+  and renamed only on success. ADR-001 put Postgres on the VM, which removed five problems and
+  introduced one: the database dies with the box. The weekly off-box copy is the mitigation, and
+  it is manual.
+- **`docs/DEPLOY.md`** — the runbook, Oracle Always Free assumed. Includes the two things that
+  waste an afternoon: Oracle has **two** firewalls and the Ubuntu image ships with iptables
+  closed, and `POSTGRES_PASSWORD` takes effect only on the first start of the volume.
 
-**One assumption now in the code, stated plainly:** `SendLoop` takes the *first* campaign using a
-mailbox. One campaign per mailbox is the shape the product has today. When that stops being true
-the loop must interleave campaigns under one shared cap, which is a scheduling decision rather
-than a lookup — better to meet that assumption loudly later than to guess at it now.
+**Structured logging (E7).** `app/core/logging.py`: one JSON object per line, human-readable in
+development. The decision worth recording is that **context travels in `contextvars`, not in
+arguments** — the api binds `request_id` once per request, the runner binds `job_id`, `org_id`
+and `lead_id` once per job, and every line written underneath carries them without the emitting
+code knowing they exist. A request id that has to be passed down in order to be logged is a
+request id that will be missing from the one line that mattered.
 
-**Phase 7 slice 1 (this session): the API exists, and it is authenticated from its first
-route.** `app/api/` was an empty package until now — a fact the plan had not noticed. Every
-C-series issue was written against the *legacy* `api_server.py`, which still runs the prototype
-on SQLite. So Phase 7 is not "add auth to the API"; it is "build the API, authenticated from the
-start", and this is the first vertical slice of it.
+Secrets are scrubbed from every rendered line as a *second* defence. The first is not logging
+them; this one exists because secrets arrive in logs by accident, inside the text of an exception
+raised by a driver that was handed a URL with a password in it. The tests pass a secret through
+every path it would really travel: the message, a format argument, an `extra` field, and an
+exception.
 
-- `app/api/security.py` verifies Supabase tokens locally against the project JWKS, cached for the
-  vendor's 10-minute edge window. Asymmetric algorithms only, `iss` and `exp` checked, `aud`
-  deliberately not (Supabase issues `authenticated` for everyone, so it distinguishes nothing).
-- `app/api/deps.py` resolves the verified `sub` to a `members` row, which yields the org and the
-  role. **`org_id` is never read from the request** — not from a path, query, body or header.
-- `app/api/app.py` adds a CORS allowlist (never `*`), a request id on every response and log
-  line, one uniform error envelope, and a rate limiter keyed on the caller rather than the
-  address.
-- Routes so far: `GET /health`, `GET /ready`, `GET /api/v1/me`. Migration `36178dafbbcb` adds
-  `members`, with `role` constrained to owner/admin/member.
+**`/ready` now fails when the worker is dead (ADR-009).** It checked only the database until now,
+so **an api serving perfectly while the worker was dead reported itself ready** — and the symptom
+of a dead worker is that nothing is researched, drafted or sent, which is invisible from outside
+for hours. The worker upserts a `worker_heartbeats` row once a minute and `/ready` fails on its
+**age**. `health.py`'s argument for keeping health in memory still holds; it is about the liveness
+signal, and the api simply cannot see another process's memory. Point an external monitor at
+`/ready`, never `/health`.
 
-**Owner-only was the owner's decision (2026-10-10):** only `owner` is issued today; `admin` and
-`member` exist in the constraint so inviting people later is a row, not a migration.
+**Alerts (`alerts` table plus an optional webhook).** The table is the record, the webhook is the
+nudge, in that order — an alert that exists only inside a failed HTTP request is an alert nobody
+will ever see, and a push failure never propagates, or the system stops working *because* it
+tried to say it was in trouble. One hour's cool-down per kind; acknowledging re-arms it. The
+worker raises `worker_task_stalled` and `worker_task_failing:<task>` about itself, after **three**
+consecutive failures rather than one, because alerting on blips trains whoever receives them to
+ignore them.
 
-**Phase 7 slice 2 (this session): the endpoints the dashboard needs.** Cursor pagination
-(`app/api/pagination.py`), campaigns, leads, lead detail and the review queue. 1034 tests.
+**Two deliberate deviations from ADR-004**, both recorded in ADR-009: `worker_heartbeats` carries
+no `org_id`, and `alerts.org_id` is nullable, meaning "the system". A process is not tenant data,
+and a stalled worker stops every org's work at once — attributing it to one org would hide it
+from the others.
 
-- **Every list row is a summary.** That is issue C7 stated as a rule: the prototype's
-  `GET /api/leads` returned each lead's full insights, draft body and reply text and the UI
-  polled it every 2.5 seconds. Bodies now live behind `GET /leads/{id}`, one lead at a time.
-  Tests assert the *absence* of those fields, which is the only way the rule survives new fields
-  being added later.
-- **Cursors, not offsets.** An offset shifts under inserts, so a reviewer paging while leads
-  arrive silently skips rows. The cursor is unsigned on purpose: it holds a timestamp and an id
-  the caller already has, and every query is still scoped by `org_id`.
-- **Approval still sends nothing.** It makes a lead eligible; the send loop re-checks
-  suppression, the window, the cap and the lead's state. A structural test proves the review
-  router imports nothing that can send.
+**A near miss worth recording, because it is a hard-rule-2 incident.** A test built a bare
+`Settings()`, which loaded the real `.env`, and a failing assertion then printed every configured
+API key into the terminal. The test was about something else entirely and had not asked for them.
+Removing the variables from `os.environ` is not enough, because `pydantic-settings` reads the file
+itself — so `tests/conftest.py` now has an **autouse, session-scoped `hermetic_settings`** fixture
+that detaches `Settings` from `.env` for the whole run. A test that forgets `_env_file=None` is
+hermetic anyway. The stale `settings_factory` fixture, which still imported the deleted
+`config.config`, was fixed at the same time.
 
-**A defect found by a test, fixed here:** a cross-org approve returned **500**. The repository
-raises `LookupError` for "not in this org" and the router caught only `ValueError`. It refused
-correctly — the draft was untouched — but answered with a server error. Now `LookupError` is 404
-(as everywhere else: confirming an id exists in another org is itself a leak) and `ValueError`
-is 409 for a stale queue.
+**C6 and D5 close here.** ADR-006 had already settled the account — paid Google Workspace on a
+dedicated domain, where SMTP relay is supported and ~2000/day leaves real headroom over our 100 —
+and `DEPLOY.md` §6 is the runbook it promised: the SPF, DKIM and DMARC records as GoDaddy's panel
+wants them (the apex is `@`, and the DKIM name is `google._domainkey`, not the full hostname), the
+two steps everyone forgets (press **Start authentication**, and never add a second SPF record),
+and a verify-as-received gate before the first send.
 
-**Phase 7 is complete, and the prototype is gone.** 1026 tests. The legacy flat modules —
-`api_server.py`, `decision_engine.py`, `email_utils.py`, `nodes.py`, `graph.py`, `runner.py`,
-`database.py`, `reply_monitor.py`, `approval_store.py`, `excel_loader.py`, `llm_client.py`,
-`logger.py`, `main.py`, `state.py` and the `config/` package — are deleted. `app/` is the whole
-system.
-
-**The test count went down, from 1062 to 1026, and that is the point of the change.** Thirty-six
-tests of deleted code went with it. Before deleting anything, the guarantees those tests held
-were re-proved against the new modules:
-
-- `tests/unit/test_send_guard.py` — the `SEND_MODE` gate in `app/services/mail/smtp.py`:
-  `disabled` is the default and blocks everyone including allowlisted addresses, an unlisted
-  recipient is refused before a socket opens, a substring is not a match, and a structural test
-  asserts nothing outside that one function *decides* on `SEND_MODE`.
-- `tests/unit/test_settings.py` — placeholder rejection, the `DRY_RUN_EMAILS` refusal, and that
-  the committed template is never in the `env_file` chain.
-
-Writing those first was deliberate: deleting a test and its subject together looks tidy and
-quietly removes the proof.
-
-**Nine issues close with this deletion**, because they described that file and it now does not
-exist: **C1** (zero authentication), **C3** (wildcard CORS), **C4** (IP-keyed rate limit), **C7**
-(whole-table responses), **B18**, **E1** (workers inside the API process), **NEW-4** (CSV formula
-injection — the endpoint is deleted, not re-guarded), **NEW-6** (`os.chdir` at import), **NEW-7**
-(string-interpolated SQL).
-
-**Phase 8 slice 1 (this session): the dashboard talks to the new API, with Supabase login.**
-
-Every endpoint the old `App.jsx` called belonged to the prototype's API and no longer exists, so
-this is a rewrite, not a port.
-
-- `frontend/src/supabase.js` — auth only (ADR-001). No table is ever read through this client;
-  all data comes from our API, which verifies the token and resolves it to a `members` row.
-- `frontend/src/Auth.jsx` — **magic link only, no password field anywhere, no sign-up form.**
-  Public sign-ups are disabled, so an invite is a database row; a password would add a credential
-  to phish and rotate for an application with one user. The "check your email" message is
-  identical whether or not the address is a member, because telling a stranger which addresses
-  exist is a free target list.
-- `frontend/src/api.js` — attaches the bearer token in **one** place, and treats a 401 as its own
-  case so the UI returns somebody to sign-in rather than showing a red box they cannot act on.
-- `frontend/src/App.jsx` — review queue first (it is the only screen where human attention is the
-  bottleneck), with the research hooks beside each draft. Then leads (cursor-paginated), import
-  (preview then commit), and the suppression list. Plain text throughout; no
-  `dangerouslySetInnerHTML` anywhere.
-
-**The frontend now has tests** — `frontend/src/api.test.js`, 12 of them, run by `npm test` and
-wired into CI. They cover the three things that have already gone wrong: an HTML answer with a
-200 status, the token being attached everywhere, and a 401 meaning "sign in again" rather than
-"something went wrong".
-
-**A dependency note:** `vitest@3.2.4` pulls a `tinypool` with two critical advisories. PR #15
-cleared every frontend advisory and reintroducing them would undo that, so the dev dependency is
-`vitest@^5` instead, which audits clean.
+**Six dependencies deleted.** `langchain`, `langchain-core`, `langchain-groq`, `langgraph`, `rich`
+and `aiosqlite` went with the prototype in Phase 7 but stayed in `pyproject.toml`. Nothing in
+`app/` imports them. They are gone now rather than later because an image that ships six unused
+dependency trees ships their vulnerabilities too. The suite is green afterwards.
 
 **Next up.**
-1. **Phase 9 (ops):** Docker, Compose, Caddy, `docs/DEPLOY.md`, structured logs, `/ready` wired
-   to the worker heartbeat, backups. **This is what finally makes the hosted dashboard show real
-   data** — it is still pointing at an API that exists only on this machine. Closes C6, D6, E7.
-2. Remaining Phase 8 polish: TypeScript and TanStack Query (the target in `CLAUDE.md`; this slice
-   stayed in plain JS to keep the rewrite reviewable), campaign creation and persona editing,
-   lead detail with its timeline. E8 and NEW-3 close with those.
-3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the go-live gate.
+1. **Phase 9 slice 2 — privacy and retention (D6).** `DELETE /leads/{id}` as a real erasure, the
+   retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
+   describes what this system actually does with a lead's data — including that public page text
+   goes to providers marked `allow_pii=false` and a lead's name, address and reply never do.
+   **D6 is the last issue outside Phase 8.**
+2. **Phase 8 polish:** TypeScript and TanStack Query (the target in `CLAUDE.md`; slice 1 stayed in
+   plain JS to keep the rewrite reviewable), campaign creation, persona editing, lead detail with
+   its timeline, bulk actions. **E8** and **NEW-3** close with those.
+3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
-- **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
-  confirmed by test to enforce nothing. The second item is closed: the undotted `env.example`
-  already works around it, and the broad `.env.*` deny should stay as it is.
-- Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
-  call.
-- **Cloudflare is sorted** (2026-10-10). The instant-failing `Workers Builds` check on PR branches
-  had nothing to do with this repo. Workers Builds keeps **two separate configurations**, and the
-  dashboard's Builds panel shows them as tabs: **Production** and **Previews Base**. Production was
-  corrected by the owner to build command `npm run build`, root directory `frontend`, deploy
-  `npx wrangler deploy`. Previews Base was still at its defaults — no build command, root `/`, and
-  preview command **`npx wrangler preview`**, a command removed back in Wrangler 2 and absent from
-  the 4.149 the builder installs. It died with an unknown-command error in under a second, which is
-  exactly the zero-duration failure we kept seeing. Preview-branch builds are now **off**, so PRs no
-  longer carry a check that could never pass; `main` deploys are unaffected. Turn them back on only
-  with the Previews tab configured like Production and the preview command set to
-  `npx wrangler versions upload`.
-- **The live site is wrong until the next `main` build, and that is expected.** The last production
-  build ran while root directory was still `/`, so Wrangler found no config, ran its onboarding
-  non-interactively, and generated one with `"assets": {"directory": "frontend"}` — publishing the
-  frontend **source** tree (`index.html`, `src/`, `package.json`) at
-  `outreach-automation.sanketyadavdohar123.workers.dev` instead of the built bundle. Nothing secret
-  is in those files, and merging #20 with the corrected settings replaces them with `dist/`. Worth
-  confirming the site actually renders after that build.
-- While you are in there: set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
-  build-time variables. They are public by design and must not go in this repo.
+- **Set up the Oracle VM** and send the address. `docs/DEPLOY.md` is written for it. Nothing in
+  this repository has ever been deployed, and nothing in Phase 9 was run against a real server —
+  hard rule 5 forbids creating cloud resources, so the first run of every command there is yours.
+  Expect §1.3 (Oracle's *two* firewalls) and §3.1 (`POSTGRES_PASSWORD` applies only on the first
+  start of the volume) to be where it bites.
+- **Q2 — the postal address in the email footer.** Still unanswered, and a go-live blocker for
+  CAN-SPAM posture. The recommendation is to include it. The default if nothing is said is to omit
+  it and record the gap.
+- Set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as Cloudflare **build**
+  variables, then redeploy. Without `VITE_API_URL` the dashboard asks its own origin for
+  `/api/v1`, gets `index.html` with a 200, and shows the `<!DOCTYPE` error.
+- Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump.
+- **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0**: the `curl` deny entry, confirmed
+  by test to enforce nothing.
+- Open questions for go-live: **Q2** (footer address), **Q5** (Indian holidays), **Q7** (retention
+  — defaulting to 12 months in slice 2 unless told otherwise).
 
-**Vercel is gone** (2026-10-10): the owner disconnected and deleted the project and connected this
-repo to Cloudflare, as `ARCHITECTURE_TARGET.md` §3 specifies. The repo never held any Vercel
-config — it was wired entirely through that dashboard — so nothing needed deleting here, and the
-`Vercel` / `Vercel Preview Comments` checks should stop appearing on new PRs.
-
-**Live environment notes.** Python 3.12 venv at `.venv`; dependencies from `pyproject.toml` +
+**Live environment notes.** Python 3.12 venv at `.venv`; dependencies from `pyproject.toml` plus
 `uv.lock` (`uv sync --all-groups`). Postgres in Compose on **port 5433** (ADR-005), container
-`outreach-pg`. `gh` is authenticated as `Harishchand83077`; the repo is private. `.env` is
+`outreach-pg`. Docker Desktop must be running for the 342 integration tests; without it they skip
+rather than fail. `gh` is authenticated as `Harishchand83077`; the repo is private. `.env` is
 populated and verified with `python -m app.scripts.check_env`, `SEND_MODE=disabled`. IMAP and SMTP
-both verified against the real mailbox. Integration tests need Postgres running and use a separate
-`_test` database.
+are both verified against the real mailbox.
 
-**Note on local `main`.** Merges have been squashed, so local `main` diverges from `origin/main`.
-Create new branches from `origin/main`.
+**Note on local `main`.** Merges are squashed, so local `main` diverges from `origin/main`. Create
+new branches from `origin/main`.
 
 ## Phase status
 
@@ -195,7 +138,7 @@ Create new branches from `origin/main`.
 |---|---|---|
 | §00 | Bootstrap, tooling, permissions | **Done** |
 | §0 | Repo analysis, issue verification, baseline | **Done** |
-| 0 | Safety patch + CI + docs | Safety patch **done** (76 tests green, unpushed); CI next |
+| 0 | Safety patch + CI + docs | **Done** |
 | 1 | Data layer, state machine, job queue, outbox | **Done** — 213 tests |
 | 2 | Import, persona, campaigns | **Done** — 318 tests |
 | 3 | LLM router, research engine | **Done** - 539 tests |
@@ -203,50 +146,48 @@ Create new branches from `origin/main`.
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
-| 7 | Auth, multi-tenancy | **Done** - 1026 tests. The legacy API is deleted. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. The legacy `api_server.py` still runs and is still unauthenticated. |
-| 8 | UI completion | **In progress** - dashboard rewired to `/api/v1` with Supabase magic-link login; 12 frontend tests. TypeScript, TanStack Query, campaign editing and lead detail remain. |
-| 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
+| 7 | Auth, multi-tenancy | **Done** - 1026 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. **The legacy `api_server.py` is deleted**, and with it nine issues that described it. |
+| 8 | UI completion | **In progress** - dashboard rewired to `/api/v1` with Supabase magic-link login; 12 frontend tests. TypeScript, TanStack Query, campaign editing, lead detail and bulk actions remain (E8, NEW-3). |
+| 9 | Ops: Docker, deploy, logs, alerts, backups | **Slice 1 done** - 1094 tests. Dockerfile, production Compose, Caddy, `deploy.sh`, `backup.sh`, `docs/DEPLOY.md`, JSON logs with request and job ids, the `alerts` table and webhook, and `/ready` wired to the worker heartbeat (ADR-009). Closes C6, D5, E7. **Slice 2 is privacy and retention (D6).** |
 | 10 | Rehearsal, go-live gate | Not started |
 
 ## Issue register
 
-**59 tracked issues**, not the 51 this file claimed until now: 51 lettered IDs (A1–A8, B1–B18,
-C1–C8, D1–D6, E1–E8, F1–F3) plus NEW-1…8. The old figure counted the lettered IDs as 43. Every one
-must end `Done`, `Superseded-by-rewrite` (with a test proving the behaviour) or `Won't fix` (with a
-reason). Counts below are computed from `ISSUES.md`, which holds the full text, evidence and the
-test that proves each resolution.
+**59 tracked issues**: 51 lettered IDs (A1–A8, B1–B18, C1–C8, D1–D6, E1–E8, F1–F3) plus NEW-1…8.
+Every one must end `Done`, `Superseded-by-rewrite` (with a test proving the behaviour) or
+`Won't fix` (with a reason). The counts below are computed from `ISSUES.md`, which holds the full
+text, the evidence and the test that proves each resolution.
 
 | Status | Count | IDs |
 |---|---|---|
 | **Superseded-by-rewrite** (each with a test) | 38 | A1-A8, B5, B7-B18, C1, C3, C4, C5, C7, D1-D4, E1-E5, NEW-4, NEW-6, NEW-7 |
-| **Done** | 14 | B1, B2, B3, B4, B6, C2, C8, E6, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
-| Partly | 2 | D5 (headers, plain text and the footer done; the SPF/DKIM/DMARC runbook is Phase 9) - NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1-F3 rewrite) |
-| Verified, not yet fixed | 5 | C6, D6, E7, E8, NEW-3 |
+| **Done** | 17 | B1, B2, B3, B4, B6, C2, C6, C8, D5, E6, E7, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
+| Partly | 1 | NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1-F3 rewrite) |
+| Verified, not yet fixed | 3 | D6, E8, NEW-3 |
 
-**52 of 59 resolved.** Everything left is Phase 8 (E8, NEW-3) or Phase 9 (C6, D6, E7, the D5
-runbook). Counts are computed from `ISSUES.md`, which holds the evidence and the test proving
-each resolution.
+**56 of 59 resolved.** What remains is one phase each: **D6** is Phase 9 slice 2 (per-lead
+erasure, the retention sweep, an honest `PRIVACY.md`), and **E8** and **NEW-3** are Phase 8 polish.
 
-**What the safety patch actually guarantees** (each with a test):
+**The safety guarantees, and where each one is proved now.** This table was rewritten in Phase 9
+because PR #26 deleted the prototype *and* the three test files three of these rows cited —
+`test_error_text_never_emailed.py`, `test_reply_never_autosends.py` and `test_upload_security.py`.
+The guarantees survived the deletion; the citations did not. A guarantee whose test no longer
+exists is a claim, so each row below was traced to a test that is in the suite today, and the one
+that had no replacement — C2's — was written in Phase 9 rather than quietly dropped.
 
-| Guarantee | Test |
+| Guarantee | Proved by |
 |---|---|
-| Nothing can be sent unless `is_send_allowed` permits it, in one function | `test_send_guard.py` |
-| `SEND_MODE=disabled` is the default and blocks every recipient | `test_default_mode_blocks`, `test_disabled_blocks_every_recipient` |
-| An unlisted recipient is refused and the SMTP server receives nothing | `test_unlisted_recipient_is_blocked_and_nothing_is_received` |
-| A blocked or failed send is never recorded as `EMAIL_SENT` | `TestLeadIsNotMarkedSentWhenNothingWasSent` |
-| Placeholder credentials fail startup, and `/api/config/check` reports honestly | `TestPlaceholderRejection` |
-| A stale `DRY_RUN_EMAILS` in the environment stops startup instead of being ignored | `test_dry_run_emails_in_env_is_rejected` |
-| An LLM exception can never become email content | `test_error_text_never_emailed.py` |
-| A positive reply sends nothing and never books a meeting | `test_reply_never_autosends.py` |
-| An uploaded filename can never reach the filesystem | `test_upload_security.py` |
-
-**Phase 0 CI targets:** E6, and the F1–F3 documentation rewrite.
-
-**Deliberately deferred past Phase 0** (they need the rewritten foundation, not a patch):
-B5, B7, B8, B9, B10, B11, B12, B13, B14, B15, B16, B17, B18, C1, C3, C4, C5, C6, C7, all of A, all
-of D, all of E except E6, and NEW-3 to NEW-8. Rationale: patching the legacy modules for these
-would be throwaway work, and `ISSUES.md` records the evidence so nothing is lost.
+| Nothing reaches SMTP unless one function permits it, and nothing else decides on `SEND_MODE` | `tests/unit/test_send_guard.py` (including the structural test over the whole tree) |
+| `SEND_MODE=disabled` is the default and blocks every recipient, allowlisted or not | `test_send_guard.py::test_default_mode_blocks`, `::test_disabled_blocks_every_recipient` |
+| An unlisted recipient is refused before a socket opens, and the SMTP server receives nothing | `test_send_guard.py::test_unlisted_recipient_is_blocked_and_nothing_is_received` |
+| A blocked or failed send is never recorded as sent | `tests/integration/test_send_loop.py`, `tests/integration/test_send_recovery.py` |
+| Placeholder credentials stop startup, and nothing reports itself configured when it is not | `tests/unit/test_settings.py::TestPlaceholderRejection` |
+| A stale `DRY_RUN_EMAILS` in the environment stops startup rather than being ignored | `tests/unit/test_settings.py::test_dry_run_emails_in_env_is_rejected` |
+| An LLM exception or a rejected draft can never become email content | `tests/unit/test_drafting_generator.py::TestFailureHandling`, `::TestTheClaimCheck` |
+| A reply can never trigger a send, and `MEETING_BOOKED` is never inferred from one | `tests/unit/test_reply_rules.py::test_a_hostile_reply_cannot_reach_meeting_booked`, `tests/unit/test_state_machine.py::test_meeting_booked_is_never_reached_from_a_machine_state`, and the structural test that the review router imports nothing that can send |
+| An uploaded filename can never reach the filesystem | `tests/integration/test_api_operations.py::test_a_traversing_filename_never_reaches_the_filesystem` (**written in Phase 9** to replace the deleted `test_upload_security.py`) |
+| No test reads the developer's `.env`, so a failing assertion cannot print a real key | `tests/conftest.py::hermetic_settings` (autouse) |
+| A worker that has died cannot report itself ready | `tests/integration/test_ops.py::TestReady` |
 
 ## PR log
 

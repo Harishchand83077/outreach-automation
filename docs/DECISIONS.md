@@ -283,3 +283,69 @@ optional. Two incidental findings worth keeping:
 | 2026-10-10 | The sign-in confirmation is identical whether or not the address is a member | Otherwise the form is a free check of which addresses have access |
 | 2026-10-10 | Phase 8 slice 1 stays in plain JS rather than converting to TypeScript at the same time | The endpoint rewrite is already a full rewrite of `App.jsx`; doing both at once would bury it. TypeScript and TanStack Query remain the target and are tracked as Phase 8 polish |
 | 2026-10-10 | `vitest@^5` rather than the 3.x line | 3.2.4 pulls a `tinypool` with two critical advisories, and PR #15 cleared every frontend advisory. A test harness is not worth reintroducing them |
+
+---
+
+## ADR-009 — The worker's liveness is a row's *age*; infrastructure alerts belong to no org
+
+**Date** 2026-10-11 · **Status** Accepted · **Phase** 9 · **Issues** E7, C6 (observability half)
+
+**Decision.**
+
+1. The worker writes a `worker_heartbeats` row once a minute and **also** logs the same snapshot.
+   `/ready` reads the row and fails when it is **stale**, not when it is absent.
+2. `worker_heartbeats` carries **no `org_id`**, and `alerts.org_id` is **nullable**, meaning "the
+   system" rather than "unknown". These are the only two deviations from ADR-004's rule that
+   every table carries `org_id`.
+3. Alerts are written to the table first and pushed to `ALERT_WEBHOOK_URL` second, and a failed
+   push never propagates to the caller.
+
+**Why a row at all.** `app/worker/health.py` says, correctly, that health belongs in memory
+because "a process that has died cannot write a row saying so". That argument is about the
+*liveness signal*, and it holds: what monitoring watches for is the absence of recent log lines.
+But `/ready` runs in the **api** process and cannot see the worker's memory. It needs something
+shared, and what it reads is not the row's presence — it is the row's age, which a stopped worker
+stops refreshing. The two mechanisms are the same signal expressed for two different readers, so
+neither is redundant.
+
+This closes a real gap rather than a theoretical one. Until now `/ready` checked only the
+database, which means **an api serving perfectly while the worker was dead reported itself
+ready** — and the symptom of a dead worker is that nothing is researched, drafted or sent, which
+is invisible from the outside for hours. §18 asks for an external monitor on `/ready` precisely
+so that this is what fails.
+
+**Why `latest` rather than `all`.** Readiness asks "is at least one worker alive". Requiring
+every row to be fresh would mean a removed container's stale row failed readiness forever. Rows
+older than two days are pruned by the heartbeat itself.
+
+**Why no `org_id` on a heartbeat, and a nullable one on an alert.** A process is not tenant data:
+it serves every org, and `/ready` is unauthenticated so it has no org to scope by. Inventing one
+would make readiness pick arbitrarily. Likewise a stalled worker or an unreachable database stops
+**every** org's work at once; attributing it to one org would hide it from the others. So
+`list_alerts` returns an org's own rows together with the system-wide ones, and `ack_alert`
+accepts either. ADR-004's rule stands everywhere it describes tenant data, which is everywhere
+else.
+
+**Why the table before the webhook.** The webhook is optional and allowed to fail. An alert that
+exists only inside a failed HTTP request is an alert nobody will ever see. And a push failure
+must not abort the worker cycle that noticed the problem, or the system stops working *because*
+it tried to say it was in trouble.
+
+**Cost, accepted.** One extra write per minute per worker, and `/ready` does two queries instead
+of one. An hour's cool-down per alert kind means a condition that changes in severity inside that
+hour is reported once, at its first severity — acceptable, because the dashboard and the logs
+carry the current state and the alert's job is only to make somebody look.
+
+**Alternatives rejected.** (a) `/ready` ignoring the worker — the status quo, and the thing that
+would have let a dead worker go unnoticed for a day. (b) The api probing the worker over HTTP —
+the worker serves no HTTP, and giving it a port so it can be asked whether it is alive adds a
+listening socket to the only process that holds the SMTP credentials. (c) A `system` org row to
+own infrastructure alerts — a fake tenant that every query would then have to remember to
+exclude. (d) Alerting on the first failed cycle — one failure is a blip, and alerting on blips
+trains whoever receives them to ignore them; three consecutive failures is a condition.
+
+**Tested by** `tests/integration/test_ops.py` (a fresh beat is ready, a stale one is 503, no beat
+at all is 503, the freshest of several wins, a system alert is listed for every org, the cool-down
+holds and an ack re-arms it) and `tests/integration/test_worker_heartbeat.py` (the beat survives
+an unreachable database, one failure raises nothing, three raise a critical alert, and the alert
+never carries the exception text — which is where a connection string would arrive).

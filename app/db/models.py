@@ -6,9 +6,9 @@ expensive kind of migration. Timestamps are `timestamptz` in UTC; conversion to 
 in `app.domain.scheduling`.
 
 Tables that belong to later phases — `research`, `domain_research`, `classifications`,
-`llm_usage`, `search_usage`, `imap_cursors`, `alerts`, `worker_heartbeats`, `imports`,
-`members` — are deliberately absent. They are added by the phase that first needs them rather
-than guessed at now.
+`llm_usage`, `search_usage`, `imap_cursors`, `imports`, `members` — were deliberately absent
+from the first migration and added by the phase that first needed them, rather than guessed at
+in advance. `alerts` and `worker_heartbeats` arrived with Phase 9.
 """
 
 from __future__ import annotations
@@ -650,4 +650,74 @@ class Suppression(Base):
             "reason IN ('opt_out','bounce','manual','complaint')",
             name="ck_suppressions_reason",
         ),
+    )
+
+
+class WorkerHeartbeat(Base):
+    """One row per worker process, rewritten every minute (§5, §18).
+
+    This is the one piece of state the api cannot get from memory. `app.worker.health` holds the
+    worker's self-knowledge in process — correctly, because a process that has died cannot write
+    a row saying so — but `/ready` runs in a *different* process and has no way to see it. The
+    signal it needs is not the row's presence, it is the row's **age**: a worker that has stopped
+    stops refreshing `last_seen_at`, and staleness is what readiness fails on. A ready api with a
+    dead worker looks perfectly healthy and sends nothing, which is the failure this exists to
+    make visible.
+
+    No `org_id`, deliberately, and the only table besides `orgs` without one: a process is not
+    tenant data, it serves every org, and inventing an org for it would make `/ready` pick one
+    arbitrarily. See ADR-009.
+    """
+
+    __tablename__ = "worker_heartbeats"
+
+    #: Stable for the life of the process. Host plus pid, so two workers on one box are two rows
+    #: rather than one row fighting over itself.
+    worker_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    #: Which process this is: `worker` today, room for a second role later.
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="worker")
+    last_seen_at: Mapped[datetime] = _now_col(nullable=False)
+    started_at: Mapped[datetime] = _now_col(nullable=False)
+    #: The health snapshot: cycles, last error and stall state per task. Read by `/ready` and by
+    #: the admin view, never by anything that makes a decision about sending.
+    info: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'"))
+
+    __table_args__ = (CheckConstraint("role IN ('worker')", name="ck_worker_heartbeats_role"),)
+
+
+class Alert(Base):
+    """Something an operator needs to know about, and acknowledge (§18).
+
+    Written to the table first and pushed to `ALERT_WEBHOOK_URL` second. That order matters: the
+    webhook is optional and allowed to fail, and an alert that exists only in a failed HTTP
+    request is an alert nobody will ever see. The table is the record; the webhook is the nudge.
+    """
+
+    __tablename__ = "alerts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: NULL means "the system", not "unknown": a stalled worker or an unreachable database is
+    #: nobody's tenant data, it concerns every org at once, and attributing it to one arbitrary
+    #: org would hide it from the others. This is the only nullable `org_id` in the schema, and
+    #: `list_alerts` returns an org's own rows together with these. See ADR-009.
+    org_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE")
+    )
+    #: info | warning | critical. Only `critical` is expected to wake anybody.
+    severity: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: A stable machine name — `smtp_auth_failed`, `worker_stale`, `jobs_dead`. Grouped on, and
+    #: used to suppress a repeat of the same condition within the cool-down.
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Plain text for a human. Never a secret and never an email body (§18).
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The Supabase `sub` of whoever acknowledged it.
+    acked_by: Mapped[str | None] = mapped_column(String(128))
+
+    __table_args__ = (
+        CheckConstraint("severity IN ('info','warning','critical')", name="ck_alerts_severity"),
+        Index("ix_alerts_org_created", "org_id", "created_at"),
+        Index("ix_alerts_org_kind_created", "org_id", "kind", "created_at"),
     )

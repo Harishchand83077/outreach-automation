@@ -11,6 +11,8 @@ and each unit of work builds its own, inside the transaction that will record wh
 
 from __future__ import annotations
 
+import os
+import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -72,6 +74,10 @@ class WorkerContext:
     poller: ImapPoller
     sender: SmtpSender
     health: WorkerHealth = field(default_factory=WorkerHealth)
+    #: Identifies this process in the `worker_heartbeats` table and in every log line it writes.
+    #: Host plus pid, so two workers on one box are two rows rather than one row fighting over
+    #: itself.
+    worker_id: str = field(default_factory=lambda: f"{socket.gethostname()}:{os.getpid()}")
 
     @classmethod
     def build(cls, settings: Settings | None = None) -> WorkerContext:

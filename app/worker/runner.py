@@ -20,12 +20,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import os
-import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from app.core.logging import log_context
 from app.db import queue
 from app.db.models import Job
 from app.db.queue import JobKind
@@ -62,11 +61,6 @@ class RunnerReport:
     errors: list[str] = field(default_factory=list)
 
 
-def default_worker_id() -> str:
-    """Identifies this process in `jobs.locked_by`, for debugging a stuck queue."""
-    return f"{socket.gethostname()}:{os.getpid()}"
-
-
 class JobRunner(WorkerTask):
     name = "job_runner"
 
@@ -79,7 +73,9 @@ class JobRunner(WorkerTask):
     ) -> None:
         super().__init__(ctx.health)
         self.ctx = ctx
-        self.worker_id = worker_id or default_worker_id()
+        # The same id the heartbeat row carries, so a job stuck in `locked_by` can be joined
+        # to the process holding it rather than guessed at from timestamps.
+        self.worker_id = worker_id or ctx.worker_id
         #: Only kinds with a registered handler are ever claimed, so a queued job the runner
         #: cannot do stays queued and visible rather than being claimed and failed repeatedly.
         self.kinds = kinds if kinds is not None else sorted(HANDLERS)
@@ -150,30 +146,40 @@ class JobRunner(WorkerTask):
 
         self._running[kind] = self._running.get(kind, 0) + 1
         keepalive = asyncio.create_task(self._keep_lease(job_id))
-        try:
-            async with self.ctx.session_factory() as session, session.begin():
-                job = await session.get(Job, job_id)
-                if job is None:
-                    return "failed"
-                await handler(self.ctx, session, job)
-                await queue.succeed(session, job_id)
-            return "succeeded"
-        except PermanentFailure as exc:
-            logger.warning(
-                "job permanently failed",
-                extra={"job": str(job_id), "kind": kind, "error": str(exc)},
-            )
-            return await self._finish(job_id, error=str(exc), permanent=True)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.exception("job failed", extra={"job": str(job_id), "kind": kind})
-            return await self._finish(job_id, error=f"{type(exc).__name__}: {exc}", permanent=False)
-        finally:
-            keepalive.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await keepalive
-            self._running[kind] = max(self._running.get(kind, 1) - 1, 0)
+        # Bound here rather than passed down: every line any service writes while this job runs
+        # carries the job and the org, including the ones written by code that has never heard
+        # of a job id. The task's context is its own copy, but it is restored anyway so a direct
+        # call from a test leaves nothing behind.
+        lead = payload.get("lead_id")
+        with log_context(
+            job_id=str(job_id), org_id=str(org_id), lead_id=str(lead) if lead else None
+        ):
+            try:
+                async with self.ctx.session_factory() as session, session.begin():
+                    job = await session.get(Job, job_id)
+                    if job is None:
+                        return "failed"
+                    await handler(self.ctx, session, job)
+                    await queue.succeed(session, job_id)
+                return "succeeded"
+            except PermanentFailure as exc:
+                logger.warning(
+                    "job permanently failed",
+                    extra={"job": str(job_id), "kind": kind, "error": str(exc)},
+                )
+                return await self._finish(job_id, error=str(exc), permanent=True)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("job failed", extra={"job": str(job_id), "kind": kind})
+                return await self._finish(
+                    job_id, error=f"{type(exc).__name__}: {exc}", permanent=False
+                )
+            finally:
+                keepalive.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await keepalive
+                self._running[kind] = max(self._running.get(kind, 1) - 1, 0)
 
     async def _finish(self, job_id: uuid.UUID, *, error: str, permanent: bool) -> str:
         """Record a failure in a fresh transaction, since the job's own has rolled back."""

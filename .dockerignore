@@ -1,0 +1,45 @@
+# What must never enter a build context.
+#
+# The first two blocks are the important ones. A build context is uploaded to the daemon and
+# every file in it can end up in a layer, so `.env` and `local/` being listed here is a safety
+# property rather than an optimisation: the image is the thing that gets copied to a server.
+
+# Secrets and the owner's own data
+.env
+.env.*
+!env.example
+local/
+*.pem
+*.key
+
+# Git history — a 40 MB context for a 2 MB application, and a copy of every file ever committed
+.git
+.gitignore
+.github
+
+# The host's virtualenv: built for Windows, useless in a Linux image, and large
+.venv
+__pycache__/
+*.py[cod]
+.mypy_cache
+.pytest_cache
+.ruff_cache
+
+# The frontend is built and served by Cloudflare, not by this image (ADR-001 §3)
+frontend/
+
+# Tests and docs do not run in production. They are read from the repository on the VM instead,
+# so `docs/DEPLOY.md` is still at hand during a deploy.
+tests/
+docs/
+*.md
+!README.md
+
+# Local tooling and scratch
+.claude/
+.vscode/
+.idea/
+uploads/
+*.sqlite
+*.db
+leads.db

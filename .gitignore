@@ -34,6 +34,13 @@ Thumbs.db
 uploads/
 local/
 
+# Database dumps. Every one of these is a full copy of every lead, every email body and every
+# reply, so a dump committed by accident is the worst single file this repository could hold.
+backups/
+*.sql
+*.sql.gz
+*.dump
+
 # Tooling
 .pytest_cache/
 .ruff_cache/

@@ -2,6 +2,13 @@
 
 No test in this suite may touch the network. SMTP is faked with aiosmtpd, the LLM is
 monkeypatched, and every recipient address is @example.com.
+
+**No test reads the developer's `.env` either.** `hermetic_settings` below is autouse, and it
+exists because of a real near-miss: a test built a bare `Settings()`, which loaded the real
+`.env`, and an assertion failure then printed every configured API key into the terminal. The
+values were real, the test was about something else entirely, and nothing in the test had asked
+for them. Removing the variables from `os.environ` is not enough — `pydantic-settings` reads the
+file itself — so the file is detached from the class for the whole session.
 """
 
 import socket
@@ -41,6 +48,23 @@ APP_ENV_VARS = (
 )
 
 
+@pytest.fixture(autouse=True, scope="session")
+def hermetic_settings():
+    """Detach `Settings` from `.env` for the whole test session.
+
+    Session-scoped and autouse: a test that forgets `_env_file=None` must still be hermetic,
+    because the cost of forgetting is a secret in the output of a failing assertion.
+    """
+    from app.core.settings import Settings
+
+    previous = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = None
+    try:
+        yield
+    finally:
+        Settings.model_config["env_file"] = previous
+
+
 @pytest.fixture
 def clean_env(monkeypatch):
     """Remove every app environment variable and stop pydantic reading a real .env."""
@@ -52,7 +76,7 @@ def clean_env(monkeypatch):
 @pytest.fixture
 def settings_factory(clean_env):
     """Build a Settings instance from explicit values, ignoring .env and .env.example."""
-    from config.config import Settings
+    from app.core.settings import Settings
 
     def _make(**overrides):
         return Settings(_env_file=None, **overrides)
