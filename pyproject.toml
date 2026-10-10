@@ -36,7 +36,14 @@ dependencies = [
     "httpx==0.28.1",
     # Local JWT verification against Supabase JWKS (ARCHITECTURE_TARGET.md §14). The crypto
     # extra brings the RSA/EC backends needed for asymmetric signing keys.
-    "pyjwt[crypto]==2.12.1",
+    #
+    # 2.15.0 at the earliest. Everything below it carries GHSA-42vr-xj54-vc7v, an unauthenticated
+    # RecursionError in the *pre-verification* payload parse that
+    # `PyJWKClient.get_signing_key_from_jwt` performs — which is precisely the call
+    # `app/api/security.py` makes on every request, before any signature has been checked. The
+    # same release also fixes OKP key-identity confusion (GHSA-x33g-cr3x-6449) and an
+    # options-dict mutation that could silently skip claim verification on a reused dict.
+    "pyjwt[crypto]==2.15.0",
     # Main-content extraction: strips nav, footers and boilerplate, so the evidence budget is
     # spent on prose rather than menus.
     "trafilatura==2.3.1",
@@ -102,5 +109,7 @@ warn_unreachable = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_groq.*", "langchain_core.*", "langgraph.*", "aiosmtpd.*"]
+# aiosmtpd is the in-process fake SMTP server used by the tests and ships no type hints.
+# The langchain and langgraph entries went with those dependencies in Phase 9.
+module = ["aiosmtpd.*"]
 ignore_missing_imports = true
