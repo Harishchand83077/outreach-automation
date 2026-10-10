@@ -39,8 +39,8 @@ also still showed Phase 0's fixes as unresolved while this file called them Done
 and every test citation in `ISSUES.md` has been checked to resolve to a real file and class.
 
 **Next up.**
-1. Push `feat/P6b-reply-actions`, open the PR (label `needs-human`: it changes reply behaviour and
-   adds a migration), merge.
+1. ~~Push `feat/P6b-reply-actions`, open the PR, merge.~~ Done — **PR #19 merged** as `089970a`
+   on 2026-10-10, so `main` now carries the whole reply engine.
 2. **The worker process is still not assembled.** `app/worker/` has `send_loop.py` only; the five
    asyncio tasks of §4 (`JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat`) and the job
    handlers that call `draft_reply`, `ingest_folder` and `recover_stuck_sends` do not exist yet.
@@ -49,11 +49,21 @@ and every test citation in `ISSUES.md` has been checked to resolve to a real fil
 3. Then Phase 7 (auth, multi-tenancy): C1, C3, C4, C7, NEW-4, NEW-6.
 
 **Still outstanding for the owner.**
-- The two `.claude/settings.json` fixes in `QUESTIONS.md` **Q-0**.
+- **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
+  confirmed by test to enforce nothing. The second item is closed: the undotted `env.example`
+  already works around it, and the broad `.env.*` deny should stay as it is.
 - Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
   call.
-- **Vercel is still deploying this repo on every push.** `ARCHITECTURE_TARGET.md` §3 specifies
-  Cloudflare Pages. Raised before; still live.
+- Confirm whether the Cloudflare dashboard shows the dashboard project as a **Worker** or as
+  **Pages**. `frontend/wrangler.jsonc` is written for a Worker; Pages wants
+  `"pages_build_output_dir": "./dist"` instead of the `assets` block, and that is a one-line swap.
+  Also set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as build-time
+  variables there.
+
+**Vercel is gone** (2026-10-10): the owner disconnected and deleted the project and connected this
+repo to Cloudflare, as `ARCHITECTURE_TARGET.md` §3 specifies. The repo never held any Vercel
+config — it was wired entirely through that dashboard — so nothing needed deleting here, and the
+`Vercel` / `Vercel Preview Comments` checks should stop appearing on new PRs.
 
 **Live environment notes.** Python 3.12 venv at `.venv`; dependencies from `pyproject.toml` +
 `uv.lock` (`uv sync --all-groups`). Postgres in Compose on **port 5433** (ADR-005), container
