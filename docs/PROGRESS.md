@@ -84,11 +84,28 @@ correctly — the draft was untouched — but answered with a server error. Now 
 (as everywhere else: confirming an id exists in another org is itself a leak) and `ValueError`
 is 409 for a stale queue.
 
+**Phase 7 slice 3 (this session): imports, suppressions, mailbox and admin.** 1062 tests.
+
+- `POST /campaigns/{id}/imports/preview` writes nothing; `commit` **re-reads and re-validates
+  the file** rather than accepting a verdict list from the caller, because a preview can be
+  minutes old (someone may have opted out since) or simply forged. A structural test asserts the
+  endpoint takes a file and no `rows`/`preview`/`verdicts` parameter.
+- Research is enqueued in the same transaction as the insert, so a lead never exists without the
+  work that moves it forward, and a rollback takes both.
+- Suppressions, mailbox pause/resume, `admin/usage`, `admin/jobs`, and `admin/needs-attention`
+  (unknown sends, dead jobs, paused mailboxes — the three counts worth a daily look, in one call
+  so the UI need not poll three).
+
+**A defect found by a test:** `POST /suppressions` passed `reason` straight through to a column
+with a check constraint, so an unexpected value became a 500 that told the caller nothing. The
+allowed set is now validated in the endpoint and mirrored from the constraint.
+
 **Next up.**
-1. The rest of §14: imports (preview/commit), replies, suppressions, mailbox, admin/usage.
-2. Then delete the legacy `api_server.py`. **That is what closes C1, C3, C4, C7, NEW-4 and
-   NEW-6** — they describe that file, and it still runs. Until then they stay open.
-3. Phase 8 (point the UI at the new API), Phase 9 (ops and deploy), Phase 10 (rehearsal).
+1. **Delete the legacy `api_server.py` and the flat prototype modules it drags in.** That is what
+   closes **C1, C3, C4, C7, NEW-4 and NEW-6** — they describe that file, and until it is gone the
+   unauthenticated API is still what runs on the owner's machine. Also kills B18, E1 and NEW-7.
+2. Phase 8: point the dashboard at `/api/v1` with Supabase login.
+3. Phase 9 (ops, Docker, deploy, `docs/DEPLOY.md`), Phase 10 (rehearsal, go-live gate).
 
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
@@ -146,7 +163,7 @@ Create new branches from `origin/main`.
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
-| 7 | Auth, multi-tenancy | **In progress** - 1034 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review queue. The legacy `api_server.py` still runs and is still unauthenticated. |
+| 7 | Auth, multi-tenancy | **In progress** - 1062 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. The legacy `api_server.py` still runs and is still unauthenticated. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
