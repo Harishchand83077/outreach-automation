@@ -54,14 +54,25 @@ and every test citation in `ISSUES.md` has been checked to resolve to a real fil
   already works around it, and the broad `.env.*` deny should stay as it is.
 - Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
   call.
-- **The Cloudflare build is failing and only you can fix it — it is in the dashboard, not in the
-  repo.** PR #20's check reads `Workers Builds: outreach-automation`, so it is a **Worker**, which
-  is what `frontend/wrangler.jsonc` is written for. The check gives no log through the GitHub API,
-  so the cause is unconfirmed, but the overwhelmingly likely one is the **root directory**: it
-  defaults to the repo root, where there is no `package.json`, so `npm install` fails before the
-  build starts. In Workers & Pages → the Worker → Settings → Build, set **root directory
-  `frontend`**, build command `npm run build`, deploy command `npx wrangler deploy`. If it still
-  fails, paste the last 20 lines of the build log and I will take it from there.
+- **The Cloudflare build fails instantly, which means nothing in the build is at fault.** PR #20's
+  check reads `Workers Builds: outreach-automation`, so the project is a **Worker** and
+  `frontend/wrangler.jsonc` is the right shape. Two separate builds (`93751644`, `eb8f3ebf`) both
+  failed with `started_at == completed_at` and zero elapsed seconds, the second one against a
+  commit that definitely contains `wrangler.jsonc`. A zero-duration failure means Cloudflare never
+  started a container: no Node, no `npm install`, no `wrangler`. So the root directory, the Node
+  version, the build command and the config file are all ruled out — as is retrying, which
+  produced the identical result.
+
+  What is left is Cloudflare refusing the build before it begins, and the likeliest reason is
+  **branch control**: builds for non-production branches are off or unavailable, so every push to
+  a PR branch is marked failed on arrival. Check Workers & Pages → the Worker → Settings → Build
+  → branch control, and either enable non-production branch builds or limit builds to the
+  production branch so PRs stop reporting a failure that is not one. The decisive test is the
+  merge to `main`: if the production build succeeds, this check was never about our code. On that
+  reading **#20 should not be held up by it** — it fails identically on any branch.
+
+  The build log is still worth a look if it has anything in it at all; the GitHub API exposes no
+  text for this check.
 - While you are in there: set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
   build-time variables. They are public by design and must not go in this repo.
 
