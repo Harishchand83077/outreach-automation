@@ -64,6 +64,37 @@ class Org(Base):
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
 
+class Member(Base):
+    """Who may act for an org, and in what capacity (§14).
+
+    `user_id` is Supabase's `sub` claim, kept as text rather than a foreign key: the identity
+    provider owns that table and we never want a join across the boundary. The row is the only
+    thing that grants access — a token proves who someone is, this proves what they may do here.
+
+    Public sign-ups are disabled, so a token with no row gets no org and therefore no data. That
+    is a deliberate default: an authenticated stranger is still a stranger.
+    """
+
+    __tablename__ = "members"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Supabase `sub`. Opaque to us.
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320))
+    #: owner | admin | member. Only `owner` is issued today; the others exist so adding them
+    #: later is a row, not a migration.
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="owner")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "user_id", name="uq_members_org_user"),
+        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_members_role"),
+    )
+
+
 class Mailbox(Base):
     """A sending identity. Secrets stay in the environment; `secret_ref` names the group."""
 
