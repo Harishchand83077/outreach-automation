@@ -276,3 +276,6 @@ optional. Two incidental findings worth keeping:
 | 2026-10-10 | List rows are summaries; bodies only on the single-item endpoint | C7 as a rule rather than a fix. Tests assert the absence of body fields so the rule survives new fields being added later |
 | 2026-10-10 | A resource in another org is 404, never 403 | Confirming that an id is real somewhere else is itself a leak, on reads and on writes alike |
 | 2026-10-10 | `LookupError` from a repository maps to 404, `ValueError` to 409 | They mean different things to a reviewer: "not yours or gone" versus "exists, but you are looking at a stale queue" |
+| 2026-10-10 | Import `commit` re-reads and re-validates the file instead of accepting the preview's verdicts | A preview can be minutes old — somebody may have opted out since — or forged. Anything deciding who receives email is checked against the database at the moment of writing |
+| 2026-10-10 | Research jobs are enqueued in the same transaction as the lead insert | A lead must never exist without the work that moves it forward, and a rollback should take both |
+| 2026-10-10 | Enum-like column values are validated in the endpoint as well as the database | A check-constraint violation surfaces as a 500 and tells the caller nothing about what to send instead |
