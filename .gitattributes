@@ -1,0 +1,26 @@
+# Line endings, with one case that actually matters.
+#
+# These files are executed by a Linux shell on the VM. A clone made on Windows with
+# `core.autocrlf=true` would otherwise give them CRLF endings, and a shebang with a trailing
+# carriage return fails as `bash\r: no such file or directory` — a twenty-minute mystery during a
+# deploy. `text eol=lf` pins them whatever the cloning machine is configured to do.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+Caddyfile       text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.dockerignore   text eol=lf
+
+# Everything else: normalise to LF in the repository and leave the working copy to the platform.
+*               text=auto
+
+# Never touched, never diffed as text.
+*.xlsx          binary
+*.png           binary
+*.ico           binary
+*.gz            binary
+
+# Generated. Marking it keeps a lock refresh out of a diff review, but it is still committed and
+# still reviewed when a dependency actually changes.
+uv.lock             linguist-generated=true
+frontend/package-lock.json  linguist-generated=true
