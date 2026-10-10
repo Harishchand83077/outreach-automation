@@ -109,5 +109,7 @@ warn_unreachable = true
 pretty = true
 
 [[tool.mypy.overrides]]
-module = ["langchain_groq.*", "langchain_core.*", "langgraph.*", "aiosmtpd.*"]
+# aiosmtpd is the in-process fake SMTP server used by the tests and ships no type hints.
+# The langchain and langgraph entries went with those dependencies in Phase 9.
+module = ["aiosmtpd.*"]
 ignore_missing_imports = true
