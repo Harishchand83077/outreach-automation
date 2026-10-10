@@ -54,25 +54,24 @@ and every test citation in `ISSUES.md` has been checked to resolve to a real fil
   already works around it, and the broad `.env.*` deny should stay as it is.
 - Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
   call.
-- **The Cloudflare build fails instantly, which means nothing in the build is at fault.** PR #20's
-  check reads `Workers Builds: outreach-automation`, so the project is a **Worker** and
-  `frontend/wrangler.jsonc` is the right shape. Two separate builds (`93751644`, `eb8f3ebf`) both
-  failed with `started_at == completed_at` and zero elapsed seconds, the second one against a
-  commit that definitely contains `wrangler.jsonc`. A zero-duration failure means Cloudflare never
-  started a container: no Node, no `npm install`, no `wrangler`. So the root directory, the Node
-  version, the build command and the config file are all ruled out — as is retrying, which
-  produced the identical result.
-
-  What is left is Cloudflare refusing the build before it begins, and the likeliest reason is
-  **branch control**: builds for non-production branches are off or unavailable, so every push to
-  a PR branch is marked failed on arrival. Check Workers & Pages → the Worker → Settings → Build
-  → branch control, and either enable non-production branch builds or limit builds to the
-  production branch so PRs stop reporting a failure that is not one. The decisive test is the
-  merge to `main`: if the production build succeeds, this check was never about our code. On that
-  reading **#20 should not be held up by it** — it fails identically on any branch.
-
-  The build log is still worth a look if it has anything in it at all; the GitHub API exposes no
-  text for this check.
+- **Cloudflare is sorted** (2026-10-10). The instant-failing `Workers Builds` check on PR branches
+  had nothing to do with this repo. Workers Builds keeps **two separate configurations**, and the
+  dashboard's Builds panel shows them as tabs: **Production** and **Previews Base**. Production was
+  corrected by the owner to build command `npm run build`, root directory `frontend`, deploy
+  `npx wrangler deploy`. Previews Base was still at its defaults — no build command, root `/`, and
+  preview command **`npx wrangler preview`**, a command removed back in Wrangler 2 and absent from
+  the 4.149 the builder installs. It died with an unknown-command error in under a second, which is
+  exactly the zero-duration failure we kept seeing. Preview-branch builds are now **off**, so PRs no
+  longer carry a check that could never pass; `main` deploys are unaffected. Turn them back on only
+  with the Previews tab configured like Production and the preview command set to
+  `npx wrangler versions upload`.
+- **The live site is wrong until the next `main` build, and that is expected.** The last production
+  build ran while root directory was still `/`, so Wrangler found no config, ran its onboarding
+  non-interactively, and generated one with `"assets": {"directory": "frontend"}` — publishing the
+  frontend **source** tree (`index.html`, `src/`, `package.json`) at
+  `outreach-automation.sanketyadavdohar123.workers.dev` instead of the built bundle. Nothing secret
+  is in those files, and merging #20 with the corrected settings replaces them with `dist/`. Worth
+  confirming the site actually renders after that build.
 - While you are in there: set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
   build-time variables. They are public by design and must not go in this repo.
 
