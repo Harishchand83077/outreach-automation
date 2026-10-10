@@ -1,0 +1,75 @@
+# Caddy terminates TLS and proxies to the api. Nothing else is exposed.
+#
+# Caddy is here rather than nginx for one reason: it obtains and renews the certificate itself,
+# over HTTP-01, with no cron job and no certbot to forget about. A certificate that expires
+# silently in ninety days is the most predictable outage this deployment could have.
+#
+# The dashboard is **not** served from here. It is built and served by Cloudflare
+# (ARCHITECTURE_TARGET §3), so this host answers for the api only — which is also why CORS
+# matters and is configured in the application through `CORS_ALLOWED_ORIGINS`, not here. Setting
+# CORS headers in both places is how you get two conflicting `Access-Control-Allow-Origin`
+# values and a browser that refuses the response.
+
+{
+	# A real address, so expiry and failure notices arrive somewhere. Set ACME_EMAIL in .env.
+	email {$ACME_EMAIL:admin@localhost}
+
+	# Logs go to stdout as JSON, to be read with `docker compose logs caddy` like everything
+	# else. A separate log file inside the container is a file nobody will ever look at.
+	log {
+		output stdout
+		format json
+	}
+}
+
+{$API_DOMAIN} {
+	encode zstd gzip
+
+	# Strip anything a caller sent that is only meaningful between Caddy and the api. Without
+	# this, a request can arrive claiming any X-Forwarded-For it likes, and the api's
+	# address-keyed rate limit becomes an honour system.
+	request_header -X-Forwarded-For
+	request_header -X-Forwarded-Proto
+	request_header -X-Real-IP
+
+	header {
+		# HSTS. One year, and only after the certificate is known to work — a wrong value here
+		# makes the domain unreachable in browsers that have already seen it.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# This host serves JSON, never a page, so nothing legitimate needs to run here.
+		Content-Security-Policy "default-src 'none'; frame-ancestors 'none'"
+		-Server
+	}
+
+	# The health endpoints are allowed through unlogged, so an uptime monitor pinging /ready
+	# every minute does not become the majority of the log.
+	@health path /health /ready
+	handle @health {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		log {
+			output stdout
+			format json
+		}
+		reverse_proxy api:8000 {
+			# A research or drafting call can take a while; an upload preview longer.
+			transport http {
+				read_timeout 120s
+				write_timeout 120s
+			}
+			health_uri /health
+			health_interval 30s
+		}
+	}
+}
+
+# A request to the bare IP, or to any other name pointing here, gets nothing. Without this
+# Caddy would answer on the default site and leak that something is running at all.
+:80, :443 {
+	respond "Not found" 404
+}

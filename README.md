@@ -12,10 +12,11 @@ by default nothing can send mail at all. Start with the documents below rather t
 |---|---|
 | [`docs/ARCHITECTURE_TARGET.md`](docs/ARCHITECTURE_TARGET.md) | The design we are building. **Authoritative** — deviating needs an ADR. |
 | [`docs/REPO_ANALYSIS.md`](docs/REPO_ANALYSIS.md) | What the code actually does today, module by module, and the top risks. |
-| [`docs/ISSUES.md`](docs/ISSUES.md) | 51 tracked issues, each with a verdict and file:line evidence. |
+| [`docs/ISSUES.md`](docs/ISSUES.md) | 59 tracked issues, each with a verdict, file:line evidence and the test that proves its resolution. |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | Phase status, what is done, and what is next. |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | ADRs: where and why we deviate from the target design. |
 | [`docs/SETUP.md`](docs/SETUP.md) | How to install and run it locally. |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | The runbook for the VM: Docker, Caddy, DNS, SPF/DKIM/DMARC, backups, rollback. |
 | [`docs/QUESTIONS.md`](docs/QUESTIONS.md) | Open questions, each with a default so nothing blocks. |
 | [`docs/SETUP_CHECKLIST.md`](docs/SETUP_CHECKLIST.md) | Accounts and keys to provision, by phase. |
 | [`CLAUDE.md`](CLAUDE.md) | Hard rules, conventions and gotchas. Read this first when working on the repo. |
@@ -23,7 +24,7 @@ by default nothing can send mail at all. Start with the documents below rather t
 ## Sending is off by default
 
 `SEND_MODE` is the only switch that decides whether mail can leave, and it is enforced in exactly
-one function (`email_utils.is_send_allowed`).
+one function (`allowlist_permits`, in `app/services/mail/smtp.py`).
 
 | Value | Behaviour |
 |---|---|
@@ -47,13 +48,17 @@ cp env.example .env          # then fill in GROQ_API_KEY, SMTP_EMAIL, SMTP_PASSW
 .venv/Scripts/python -m app.scripts.check_env    # prints OK/MISSING per NAME, never a value
 ```
 
-Then run the legacy prototype — which still works, but is being replaced module by module:
+Then run the system. The api and the worker are separate processes on purpose: the prototype ran
+its workers inside the api, so on a host that sleeps when idle, reply monitoring stopped exactly
+when a reply was expected (issue E1).
 
 ```bash
-.venv/Scripts/python main.py leads.xlsx --no-monitor
-.venv/Scripts/python -m uvicorn api_server:app --reload --port 8000
+.venv/Scripts/python -m app.worker                                   # the worker
+.venv/Scripts/python -m uvicorn app.api.app:create_app --factory --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
+
+To deploy, see [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 Full detail, including the checks below, is in [`docs/SETUP.md`](docs/SETUP.md).
 

@@ -88,6 +88,60 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
+  deploy-artifacts:
+    name: image and deploy config
+    runs-on: ubuntu-latest
+    # The production image and the Compose file are only exercised on the VM otherwise, which
+    # means a broken Dockerfile is discovered during a deploy — the worst moment to find out.
+    # Nothing here is pushed anywhere; the image is built and thrown away.
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the production image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: outreach:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: The image can import the app and run alembic
+        run: |
+          docker run --rm outreach:ci python -c 'import app.api.app, app.worker.main'
+          docker run --rm outreach:ci alembic --version
+          # Non-root, because both processes parse bytes chosen by somebody else.
+          test "$(docker run --rm outreach:ci id -un)" = outreach
+
+      - name: The configuration check runs inside the image
+        env:
+          # Fake values, shaped like real ones. The check prints variable NAMES only.
+          GROQ_API_KEY: gsk_ci_placeholder_value_1234567890
+          SMTP_EMAIL: sender@example.com
+          SMTP_PASSWORD: not-a-real-password
+        run: |
+          docker run --rm -e GROQ_API_KEY -e SMTP_EMAIL -e SMTP_PASSWORD             outreach:ci python -m app.scripts.check_env
+
+      - name: The Compose files are valid
+        env:
+          POSTGRES_PASSWORD: ci-only-not-a-real-password
+          API_DOMAIN: api.example.com
+        run: |
+          docker compose -f deploy/compose.yml config --quiet
+          docker compose -f deploy/compose.prod.yml config --quiet
+
+      - name: The deploy scripts parse
+        run: |
+          bash -n deploy/deploy.sh
+          bash -n deploy/backup.sh
+          # `set -euo pipefail` is what makes a half-finished deploy stop rather than continue.
+          grep -q 'set -euo pipefail' deploy/deploy.sh
+          grep -q 'set -euo pipefail' deploy/backup.sh
+          # deploy.sh must never be able to start sending or destroy the data volume.
+          ! grep -q 'SEND_MODE=' deploy/deploy.sh
+          ! grep -q 'down -v' deploy/deploy.sh
+
   secrets:
     name: secret scan
     runs-on: ubuntu-latest

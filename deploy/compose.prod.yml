@@ -1,0 +1,138 @@
+# The production stack: Postgres, the api, the worker and Caddy, on one small VM.
+#
+#   cd /opt/outreach && ./deploy/deploy.sh
+#
+# Read `docs/DEPLOY.md` before running anything here. The short version:
+#
+#   docker compose --env-file .env -f deploy/compose.prod.yml up -d
+#   docker compose --env-file .env -f deploy/compose.prod.yml logs -f worker
+#   docker compose --env-file .env -f deploy/compose.prod.yml down          # keeps the volume
+#
+# `--env-file .env` is not optional: Compose resolves a bare `.env` relative to this file's own
+# directory, not the repository root, so without it every value here silently falls back to its
+# default and Postgres initialises with a password that does not match `DATABASE_URL`.
+#
+# Why one image for the api and the worker: they are the same code with a different command, so
+# they cannot drift apart. A deploy updates both or neither.
+
+name: outreach
+
+x-app: &app
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: outreach:${IMAGE_TAG:-local}
+  restart: unless-stopped
+  env_file: ../.env
+  environment:
+    # The database is reached by service name on the Compose network, not through the host's
+    # loopback port. Overriding it here means `.env` can keep the developer's 127.0.0.1:5433
+    # URL and still be the file the server uses (`DATABASE_URL` in `.env` is ignored for these
+    # two services, deliberately — see docs/DEPLOY.md).
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-outreach}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-outreach}
+    APP_ENV: ${APP_ENV:-production}
+    # Caddy is the only thing that talks to the api, so it is the only address whose
+    # X-Forwarded-For may be trusted. Without this the rate limit sees one caller.
+    FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+  depends_on:
+    postgres:
+      condition: service_healthy
+  logging:
+    # A 1 GB free-tier disk fills in days at INFO without this, and a full disk stops Postgres
+    # rather than just the logs.
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: outreach-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-outreach}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-outreach}
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    # No `ports:` at all. The database is reachable only from the Compose network; nothing on
+    # the internet, and nothing else on the VM, can open a connection to it. A dump is taken by
+    # running pg_dump *inside* this network (see deploy/backup.sh).
+    volumes:
+      - outreach_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-outreach} -d ${POSTGRES_DB:-outreach}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          # Postgres gets the larger share: on a 1 GB VM the alternative to a limit is the
+          # kernel choosing what to kill, and it will not choose well.
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    <<: *app
+    container_name: outreach-api
+    # Not published to the host: Caddy reaches it over the Compose network. Publishing 8000
+    # would put an unauthenticated-at-the-edge HTTP port on the public internet beside the one
+    # that terminates TLS.
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        limits:
+          memory: 320M
+
+  worker:
+    <<: *app
+    container_name: outreach-worker
+    # The only process that sends mail. One replica, never more: two send loops would make the
+    # daily cap a race (hard rule 1, §9).
+    command: ["python", "-m", "app.worker"]
+    healthcheck:
+      # The worker serves no HTTP. Its liveness is the heartbeat row the api reads for /ready,
+      # so there is nothing useful to probe from in here.
+      disable: true
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+
+  caddy:
+    image: caddy:2.10-alpine
+    container_name: outreach-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The hostname the certificate is issued for. Caddy obtains and renews it automatically
+      # over HTTP-01, which needs port 80 open and DNS already pointing here.
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.example.com}
+      DASHBOARD_ORIGIN: ${DASHBOARD_ORIGIN:-https://outreach-automation.workers.dev}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates survive a redeploy. Without this, every `down`/`up` asks Let's Encrypt for
+      # a new certificate and the rate limit is reached in an afternoon.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  outreach_pgdata:
+  caddy_data:
+  caddy_config:
