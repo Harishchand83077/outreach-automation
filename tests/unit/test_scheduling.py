@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
-from hypothesis import assume, given
+from hypothesis import given
 from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
 
@@ -321,6 +321,29 @@ utc_datetimes = st.datetimes(
 ).map(lambda d: d.replace(tzinfo=UTC))
 
 
+def _in_window(parts: tuple[int, int, int]) -> datetime:
+    """Build an instant that is definitely inside the window.
+
+    Monday-to-Friday dates only, and a time strictly between 10:00 and 17:30 IST, returned as
+    UTC — which is how the system stores time.
+    """
+    day_offset, minute_offset, second = parts
+    # 2026-10-12 is a Monday; stepping in whole weeks plus 0-4 days stays on a weekday.
+    base = date(2026, 10, 12) + timedelta(days=(day_offset // 5) * 7 + (day_offset % 5))
+    minutes = 10 * 60 + minute_offset  # 10:00 plus up to 449 minutes = 17:29
+    local = datetime(
+        base.year, base.month, base.day, minutes // 60, minutes % 60, second, tzinfo=IST
+    )
+    return local.astimezone(UTC)
+
+
+in_window_datetimes = st.tuples(
+    st.integers(min_value=0, max_value=200),
+    st.integers(min_value=0, max_value=449),
+    st.integers(min_value=0, max_value=59),
+).map(_in_window)
+
+
 class TestInvariants:
     @given(utc_datetimes)
     @hyp_settings(max_examples=200, deadline=None)
@@ -400,8 +423,15 @@ class TestInvariants:
         assert in_window(opened, s)
         assert opened.astimezone(IST).weekday() == weekday
 
-    @given(utc_datetimes)
-    @hyp_settings(max_examples=100, deadline=None)
-    def test_window_close_is_after_the_window_opens_on_that_day(self, when):
-        assume(in_window(when, SETTINGS))
+    @given(in_window_datetimes)
+    @hyp_settings(max_examples=200, deadline=None)
+    def test_window_close_is_always_ahead_of_an_in_window_instant(self, when):
+        """Generated in-window rather than filtered for it.
+
+        `assume(in_window(...))` discarded about 95% of random instants — the window is 7.5 of
+        168 hours in a week — which tripped hypothesis's filtering health check and meant the
+        invariant was only ever checked against a handful of examples. Constructing valid
+        instants tests it properly.
+        """
+        assert in_window(when, SETTINGS), "the strategy must only produce in-window instants"
         assert window_close(when, SETTINGS) > when
