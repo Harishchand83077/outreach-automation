@@ -97,6 +97,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The default docker driver cannot export a build cache, so `cache-to: type=gha` fails
+      # outright without this: buildx has to run on the container driver.
+      - uses: docker/setup-buildx-action@v4
+
       - name: Build the production image
         uses: docker/build-push-action@v6
         with:
