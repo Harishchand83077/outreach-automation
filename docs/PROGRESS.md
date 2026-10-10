@@ -4,9 +4,13 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phases 0 through 8 slice 1 are merged, and Phase 9 slice 1 — ops — is on
-`feat/P9-ops`.** 1094 tests pass; ruff, ruff format and mypy strict are clean. **56 of 59 issues
-are resolved.**
+**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1094 tests
+pass; ruff, ruff format and mypy strict are clean. **56 of 59 issues are resolved.**
+
+**The infrastructure exists** (AWS EC2, Sydney — `docs/DEPLOY.md` §1 has the full record and the
+two surprises). The image builds and runs on the real instance, outbound 587 and 993 are open
+there, and the repository is cloned to `/opt/outreach`. **Two things remain and only the owner
+can do them: a DNS record, and `.env` on the box.**
 
 **Phase 9 slice 1 (this session): the system can be deployed, and it can be watched.**
 
@@ -34,9 +38,8 @@ existed nowhere else, which is why it showed nothing.
   and renamed only on success. ADR-001 put Postgres on the VM, which removed five problems and
   introduced one: the database dies with the box. The weekly off-box copy is the mitigation, and
   it is manual.
-- **`docs/DEPLOY.md`** — the runbook, Oracle Always Free assumed. Includes the two things that
-  waste an afternoon: Oracle has **two** firewalls and the Ubuntu image ships with iptables
-  closed, and `POSTGRES_PASSWORD` takes effect only on the first start of the volume.
+- **`docs/DEPLOY.md`** — the runbook. Rewritten after the fact against the AWS instance that now
+  exists, so §1 records what was actually done and found rather than what was planned.
 
 **Structured logging (E7).** `app/core/logging.py`: one JSON object per line, human-readable in
 development. The decision worth recording is that **context travels in `contextvars`, not in
@@ -93,6 +96,22 @@ and `aiosqlite` went with the prototype in Phase 7 but stayed in `pyproject.toml
 `app/` imports them. They are gone now rather than later because an image that ships six unused
 dependency trees ships their vulnerabilities too. The suite is green afterwards.
 
+**The server, as provisioned this session.** Full detail in `docs/DEPLOY.md` §1; the facts worth
+having in front of you:
+
+- `t3.small`, Ubuntu 24.04.4, 2 GB RAM, 30 GiB, Elastic IP **3.25.23.191**, SSH as `ubuntu`.
+- **Sydney, not Mumbai, and that was forced.** The AWS Free Plan pins a project to one region and
+  this account's is `ap-southeast-2`; the console refuses Mumbai outright. Reaching Mumbai means
+  activating advanced features, which changes billing, so it was not taken. The cost is ~150–200 ms
+  of latency that only the dashboard notices.
+- **Outbound 587 and 993 are open; 25 is blocked.** This was the one thing that could have stopped
+  the whole deployment, and it was checked on the instance rather than assumed. We send on 587.
+- **`t3.small` is not free forever** — roughly $19/month in Sydney once the plan's credits run
+  out. A €4–5 Hetzner box is the better long-term home and nothing here is AWS-specific.
+- A read-only, repository-scoped **deploy key** was added to the repo (Settings → Deploy keys) so
+  the private repository can be cloned without a personal token. Revoking it is one click.
+- A **$5 monthly budget alarm** (`outreach-automation-5usd`) emails at 85%, 100% and forecast-100%.
+
 **Next up.**
 1. **Phase 9 slice 2 — privacy and retention (D6).** `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
@@ -105,14 +124,17 @@ dependency trees ships their vulnerabilities too. The suite is green afterwards.
 3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
-- **Set up the Oracle VM** and send the address. `docs/DEPLOY.md` is written for it. Nothing in
-  this repository has ever been deployed, and nothing in Phase 9 was run against a real server —
-  hard rule 5 forbids creating cloud resources, so the first run of every command there is yours.
-  Expect §1.3 (Oracle's *two* firewalls) and §3.1 (`POSTGRES_PASSWORD` applies only on the first
-  start of the volume) to be where it bites.
-- **Q2 — the postal address in the email footer.** Still unanswered, and a go-live blocker for
-  CAN-SPAM posture. The recommendation is to include it. The default if nothing is said is to omit
-  it and record the gap.
+- **Two things on the VM, both of which only you can do** (`docs/DEPLOY.md` §2 and §3.1): a DNS
+  A record pointing at **3.25.23.191**, and `.env` on the box. Until the first exists Caddy
+  cannot get a certificate; until the second exists nothing can start. Everything else on that
+  instance is done.
+- **Q2 — the postal address in the email footer. Answered 2026-10-11: proceed without it for now,
+  the owner will supply one later.** So the footer ships without a postal address and
+  the gap is carried in `QUESTIONS.md` Q2 until Phase 10's `COMPLIANCE.md` records it: no postal
+  address weakens CAN-SPAM posture for any **US** recipient, and the audience is India-only, which
+  is why it is tolerable meanwhile. Revisit before the audience widens.
+- **API keys will be rotated by the owner later** (after the `.env` exposure recorded above). Not
+  blocking anything; worth doing before go-live.
 - Set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as Cloudflare **build**
   variables, then redeploy. Without `VITE_API_URL` the dashboard asks its own origin for
   `/api/v1`, gets `index.html` with a 200, and shows the `<!DOCTYPE` error.

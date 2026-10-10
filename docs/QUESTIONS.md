@@ -71,9 +71,13 @@ in the abstract.
 sends/day, which is reckless for a young mailbox. *Default:* all outbound, i.e. about 50 new
 leads/day plus 50 follow-ups at steady state.
 
-**Q2 — Postal address in the footer?** *Asked at:* before go-live (compliance copy needs a lawyer's
-eye regardless). *Recommendation:* include it — it costs nothing and materially helps both
-credibility and CAN-SPAM posture. *Default:* omit, and flag it in `COMPLIANCE.md` as a gap.
+**Q2 — Postal address in the footer? ANSWERED 2026-10-11: go without one for now; the owner will
+supply an address later.** The recommendation was to include it, and it stands for later — it
+costs nothing and materially helps both credibility and CAN-SPAM posture. Proceeding without it is
+a reasonable call while the audience is India-only, because CAN-SPAM binds US recipients; it would
+be a real exposure the moment anyone outside India is mailed. The gap is recorded here and carried into `COMPLIANCE.md`
+when Phase 10 writes it, rather than left implicit; adding the address later is a persona field,
+not a code change.
 
 **Q3 — How should a human be told a reply arrived?** *Asked at:* Phase 6. *Recommendation:* start
 with the dashboard badge plus a once-daily email digest; add Telegram only if replies are being
