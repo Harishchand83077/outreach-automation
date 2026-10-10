@@ -24,7 +24,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
+# `--project-directory` is pinned so the project name, the volume names and every relative path
+# are the same whether this is run from the repository root or anywhere else. `env_file` does not
+# need it — that resolves relative to the compose file — but a deploy that behaves differently
+# depending on the caller's working directory is not worth the saving.
+COMPOSE=(docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
 READY_URL="${READY_URL:-http://127.0.0.1:8000/health}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 

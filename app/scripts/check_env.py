@@ -108,8 +108,14 @@ def _diagnose_env_file() -> None:
     print("  (Values are never read or printed by this script.)")
 
 
-def main() -> int:
-    settings = Settings()
+def main(settings: Settings | None = None) -> int:
+    """Print the report. Returns a process exit code.
+
+    `settings` is injectable so this can be tested: the report's job is to be safe to paste into
+    a chat window, and that is only worth asserting against a configuration holding real-looking
+    secrets.
+    """
+    settings = settings or Settings()
     missing_required: list[str] = []
 
     print("Required")
@@ -145,10 +151,15 @@ def main() -> int:
         print("                 LIVE: may send to anyone")
     print(f"  AUTO_APPROVE = {'on — human review is SKIPPED' if settings.AUTO_APPROVE else 'off'}")
 
-    # ADR-005: a DATABASE_URL on the default port very likely belongs to another project.
+    # ADR-005: a DATABASE_URL on the default port very likely belongs to another project —
+    # but only on a developer machine, where another project's Postgres may already hold 5432.
+    # Inside the Compose network each container has its own address space and `postgres:5432` is
+    # both correct and unavoidable, so warning there is noise during a deploy, at exactly the
+    # moment somebody is deciding whether to trust what they are reading.
     parts = urlsplit(settings.DATABASE_URL)
     print(f"  DATABASE     = {parts.hostname}:{parts.port}/{(parts.path or '').lstrip('/')}")
-    if parts.port == 5432:
+    local_host = parts.hostname in {"localhost", "127.0.0.1", "::1"}
+    if parts.port == 5432 and local_host:
         print("                 WARNING: 5432 is the Postgres default and is very likely")
         print("                 another project's database. This project expects 5433.")
 

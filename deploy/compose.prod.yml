@@ -24,12 +24,17 @@ x-app: &app
   image: outreach:${IMAGE_TAG:-local}
   restart: unless-stopped
   env_file:
-    # `required: false` so this file can be validated (`config --quiet`) on a machine that has no
-    # `.env` — CI does exactly that, and a stat error there says nothing about whether the file
-    # is correct. Presence is enforced where it matters instead: `deploy.sh` refuses to run
-    # without it, and `Settings.validate_required()` refuses to start without real values.
-    - path: ../.env
-      required: false
+    # Relative to **this file's** directory, so it resolves to the repository root's `.env`
+    # whatever directory the command is run from. (Measured, not assumed: `../.env` and a
+    # project-directory-relative `.env` load identically here.)
+    #
+    # `required` is left at its default of true, deliberately. An earlier version set it false
+    # so `docker compose config` could validate on a machine with no `.env` — and a flag that
+    # turns a missing secrets file into a silent success is exactly the kind of safety
+    # mechanism this project does not accept. CI writes a throwaway `.env` before validating
+    # instead, and the regression test there checks the variables actually reach the container,
+    # because a config that merely *parses* proves nothing about that.
+    - ../.env
   environment:
     # The database is reached by service name on the Compose network, not through the host's
     # loopback port. Overriding it here means `.env` can keep the developer's 127.0.0.1:5433
