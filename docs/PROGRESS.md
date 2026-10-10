@@ -43,24 +43,32 @@ mailbox. One campaign per mailbox is the shape the product has today. When that 
 the loop must interleave campaigns under one shared cap, which is a scheduling decision rather
 than a lookup — better to meet that assumption loudly later than to guess at it now.
 
+**Phase 7 slice 1 (this session): the API exists, and it is authenticated from its first
+route.** `app/api/` was an empty package until now — a fact the plan had not noticed. Every
+C-series issue was written against the *legacy* `api_server.py`, which still runs the prototype
+on SQLite. So Phase 7 is not "add auth to the API"; it is "build the API, authenticated from the
+start", and this is the first vertical slice of it.
+
+- `app/api/security.py` verifies Supabase tokens locally against the project JWKS, cached for the
+  vendor's 10-minute edge window. Asymmetric algorithms only, `iss` and `exp` checked, `aud`
+  deliberately not (Supabase issues `authenticated` for everyone, so it distinguishes nothing).
+- `app/api/deps.py` resolves the verified `sub` to a `members` row, which yields the org and the
+  role. **`org_id` is never read from the request** — not from a path, query, body or header.
+- `app/api/app.py` adds a CORS allowlist (never `*`), a request id on every response and log
+  line, one uniform error envelope, and a rate limiter keyed on the caller rather than the
+  address.
+- Routes so far: `GET /health`, `GET /ready`, `GET /api/v1/me`. Migration `36178dafbbcb` adds
+  `members`, with `role` constrained to owner/admin/member.
+
+**Owner-only was the owner's decision (2026-10-10):** only `owner` is issued today; `admin` and
+`member` exist in the constraint so inviting people later is a row, not a migration.
+
 **Next up.**
-1. **Phase 7 (auth, multi-tenancy):** C1, C3, C4, C7, NEW-4, NEW-6. The API is still
-   unauthenticated, which is the largest remaining P0.
-2. Then Phase 8 (UI completion) and Phase 9 (ops), where `docs/DEPLOY.md`, the Compose file and
-   the `/health` + `/ready` endpoints that read `WorkerHealth` belong.
-
-**Known: the dashboard cannot reach an API yet, and now says so.** The owner hit
-`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`. Cause: no backend is deployed, so
-`VITE_API_URL` is unset, so the dashboard asks its own origin for `/api/...`, and Cloudflare's
-`not_found_handling: single-page-application` answers with `index.html` and a **200** — which
-means `if (!r.ok)` passes and `r.json()` is handed HTML. The SPA fallback added in PR #20 is what
-turned a 404 into this, so it is partly self-inflicted.
-
-`frontend/src/api.js` now checks the content type rather than only the status, and says what is
-actually wrong. The underlying fact is unchanged and is Phase 9 work: **there is no deployed
-backend**, so the hosted dashboard shows data only once `docs/DEPLOY.md` exists and
-`VITE_API_URL` points at a running API. Locally it works through the Vite dev proxy
-(`npm run dev` plus `uvicorn`); `npm run preview` has no proxy and will show the same message.
+1. The rest of Phase 7's endpoints (§14): campaigns, imports, leads, the review queue, replies,
+   suppressions, mailbox, admin. All paginated, none returning whole tables (C7).
+2. Then the legacy `api_server.py` can be deleted, which is what finally closes C1, C3, C4, C7,
+   NEW-4 and NEW-6 — they describe that file, and it still runs.
+3. Phase 8 (UI onto the new API), Phase 9 (ops and deploy), Phase 10 (rehearsal).
 
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
@@ -118,7 +126,7 @@ Create new branches from `origin/main`.
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
-| 7 | Auth, multi-tenancy | Not started. The API is still unauthenticated (C1) - the largest remaining P0. |
+| 7 | Auth, multi-tenancy | **In progress** - 1011 tests. Token verification, `members`, tenancy, CORS, rate limits, `/health`, `/ready`, `/me`. The legacy `api_server.py` still runs and is still unauthenticated. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |

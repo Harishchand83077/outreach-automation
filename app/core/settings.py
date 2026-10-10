@@ -194,6 +194,10 @@ class Settings(BaseSettings):
     REPLY_CHECK_INTERVAL_MINUTES: int = 5
     LOG_LEVEL: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    #: Which deployment this is. Production hides the interactive docs, because an unauthenticated
+    #: schema of every endpoint is a map for anyone who finds the URL.
+    APP_ENV: Literal["development", "staging", "production"] = "development"
+
     @field_validator("AUTO_APPROVE", "SMTP_USE_TLS", "PAID_LLM_ENABLED", "BCC_SELF", mode="before")
     @classmethod
     def _tolerate_empty_bool(cls, v: object) -> object:
