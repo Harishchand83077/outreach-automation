@@ -143,8 +143,12 @@ jobs:
           grep -q 'set -euo pipefail' deploy/deploy.sh
           grep -q 'set -euo pipefail' deploy/backup.sh
           # deploy.sh must never be able to start sending or destroy the data volume.
-          ! grep -q 'SEND_MODE=' deploy/deploy.sh
-          ! grep -q 'down -v' deploy/deploy.sh
+          # Comments are stripped first: both strings appear there on purpose, saying that the
+          # script does not do these things, and a check that cannot tell a comment from code
+          # would force the explanation out of the file to keep itself green.
+          code() { sed -e 's/[[:space:]]*#.*$//' "$1"; }
+          ! code deploy/deploy.sh | grep -q 'SEND_MODE='
+          ! code deploy/deploy.sh | grep -q 'down -v'
 
   secrets:
     name: secret scan
