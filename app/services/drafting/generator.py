@@ -30,6 +30,8 @@ from app.services.drafting.prompts import (
     CLAIM_CHECK_SYSTEM,
     DRAFT_PROMPT_VERSION,
     DRAFT_SYSTEM,
+    REPLY_PROMPT_VERSION,
+    REPLY_SYSTEM,
     build_claim_check_prompt,
     build_draft_prompt,
 )
@@ -137,6 +139,9 @@ async def generate_draft(
     kind: str = "initial",
     max_attempts: int = 3,
     check_claims: bool = True,
+    their_subject: str | None = None,
+    their_reply: str | None = None,
+    reply_label: str | None = None,
 ) -> DraftResult:
     """Produce a validated draft, or return the reasons it could not be produced.
 
@@ -144,7 +149,8 @@ async def generate_draft(
     decides what to do with it. Only an exhausted LLM chain propagates, because that is a
     capacity problem rather than a draft problem.
     """
-    result = DraftResult()
+    is_reply = kind == "reply"
+    result = DraftResult(prompt_version=REPLY_PROMPT_VERSION if is_reply else DRAFT_PROMPT_VERSION)
     feedback: str | None = None
 
     for _ in range(max(1, max_attempts)):
@@ -157,13 +163,16 @@ async def generate_draft(
             notes=notes,
             kind=kind,
             feedback=feedback,
+            their_subject=their_subject,
+            their_reply=their_reply,
+            reply_label=reply_label,
         )
 
         try:
             draft = await router.structured(
                 DraftOutput,
-                task="draft_email",
-                system=DRAFT_SYSTEM,
+                task="draft_reply" if is_reply else "draft_email",
+                system=REPLY_SYSTEM if is_reply else DRAFT_SYSTEM,
                 user=user_prompt,
                 lead_id=lead_id,
             )

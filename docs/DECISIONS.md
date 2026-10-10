@@ -191,6 +191,67 @@ a volume that SMTP handles comfortably. Worth revisiting if we ever outgrow 2,00
 
 ---
 
+## ADR-007 — Inbound mail may be an orphan; outbound never may
+
+**Date** 2026-10-10. **Status** accepted. **Supersedes** nothing; tightens the §5 schema.
+
+**Context.** `messages.lead_id` was `NOT NULL`. §10.2 requires that mail matching no lead is
+stored anyway — never deleted, never marked read — because the alternative is silently losing
+somebody's reply. The two cannot both hold, and the integration test for orphan storage failed
+with a not-null violation rather than passing with a workaround.
+
+**Decision.** `messages.lead_id` is nullable, and `CHECK (direction = 'in' OR lead_id IS NOT
+NULL)` keeps every outbound row attached to a lead. Migration `e6ad2939ee88`.
+
+**Why not the alternatives.**
+- *A synthetic "unmatched" lead per org* would put non-leads in the leads table, where the send
+  engine, the cap arithmetic and every count would have to learn to exclude them. One nullable
+  column is cheaper than a special case in ten places.
+- *A separate `unmatched_messages` table* means two places to look for a reply, and the matcher
+  would have to search both when a later message threads to one.
+
+**Consequence.** `outbox.mark_sent` raises if an outbound row somehow has no lead, rather than
+transitioning nothing: a send recorded against no lead would leave the lead eligible to be sent
+again, which breaks at-most-once. The check constraint makes that unreachable; the raise is there
+for the day it is not.
+
+---
+
+## ADR-008 — A clear refusal closes a lead without passing through `REPLIED`
+
+**Date** 2026-10-10. **Status** accepted.
+
+**Context.** `not_interested` has action `CLOSE` and no drafted reply. But the state machine only
+allowed `SENT → REPLIED`, so closing a lead meant routing it through `REPLIED` first — a state in
+`NEEDS_HUMAN`, which would put "we already have a vendor for this" in the review queue as though
+there were something to decide.
+
+**Decision.** `SENT → NOT_INTERESTED` and `FOLLOWUP_SENT → NOT_INTERESTED` are legal transitions.
+`NOT_INTERESTED` stays in `RECOVERABLE`, so a human who disagrees can reopen it to `REPLIED`.
+
+**Why this is safe.** `NOT_INTERESTED` is not a suppression: the address is not added to
+`suppressions`, and the lead can be reopened. The states that must never reopen — `OPTED_OUT`,
+`BOUNCED` — are unchanged and still reachable from anywhere.
+
+---
+
+## ADR-002 addendum — confirmed against the provider, 2026-10-10
+
+ADR-002 kept the `[VERIFY]` that `ARCHITECTURE_TARGET.md` §9.5 put on Sent-folder recovery. It is
+now verified, not assumed: a pre-generated `Message-ID`
+(`<9ec2b628-…@athenaedu.in>`) was found in `[Gmail]/Sent Mail` by a readonly `BODY.PEEK` search
+against the real Google Workspace mailbox, after an ordinary SMTP send. So
+`recover_stuck_sends` can resolve a `sending` row by asking the mailbox, and `BCC_SELF` stays
+optional. Two incidental findings worth keeping:
+
+- Gmail's special folder names must be quoted (`"[Gmail]/Sent Mail"`); unquoted gives
+  `BAD Could not parse command`. Handled by `_quote_folder`.
+- The copy in Sent is made by the provider, not by us, so a mailbox on a provider that does *not*
+  self-copy will fall through to `unknown` and ask a human — which is the correct outcome, not a
+  regression.
+
+---
+
 ## Minor decisions (inside spec latitude)
 
 | Date | Decision | Why |

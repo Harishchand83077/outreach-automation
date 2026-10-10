@@ -309,6 +309,34 @@ class LLMRouter:
         next one is tried, rather than unvalidated output being accepted. Subject lines, labels
         and claims are all fields here — never something parsed out of prose (issue B13).
         """
+        answer, _ = await self.structured_with_entry(
+            schema,
+            task=task,
+            system=system,
+            user=user,
+            lead_id=lead_id,
+            temperature=temperature,
+            contains_pii=contains_pii,
+        )
+        return answer
+
+    async def structured_with_entry[M: BaseModel](
+        self,
+        schema: type[M],
+        *,
+        task: str,
+        system: str,
+        user: str,
+        lead_id: uuid.UUID | None = None,
+        temperature: float = 0.0,
+        contains_pii: bool | None = None,
+    ) -> tuple[M, str]:
+        """`structured`, plus the name of the entry that answered.
+
+        Callers that store provenance need it: `drafts.llm_entry` and
+        `classifications.llm_entry` exist so a decision can be traced to the model that made it
+        (§11), and "some model in the chain" is not an answer when a label looks wrong.
+        """
         completion = await self.complete(
             task=task,
             system=system,
@@ -318,7 +346,7 @@ class LLMRouter:
             json_schema=schema.model_json_schema(),
             contains_pii=contains_pii,
         )
-        return parse_structured(completion, schema)
+        return parse_structured(completion, schema), completion.entry_name
 
     async def _call(
         self,

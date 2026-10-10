@@ -264,6 +264,13 @@ async def mark_sent(
         KIND_REPLY: LeadState.IN_CONVERSATION,
     }[str(message.kind)]
 
+    # `messages.lead_id` is nullable so that inbound mail matching no lead can still be stored
+    # (§10.2), and `ck_messages_out_has_lead` keeps every outbound row attached to one. If that
+    # ever fails to hold, stopping here is right: the alternative is a sent message whose lead
+    # never leaves `APPROVED` and is therefore eligible to be sent again.
+    if message.lead_id is None:
+        raise ValueError(f"outbound message {message_id} has no lead; refusing to record the send")
+
     lead = await transition(
         session,
         org_id=org_id,

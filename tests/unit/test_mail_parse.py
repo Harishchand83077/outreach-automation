@@ -117,11 +117,26 @@ class TestQuoteStripping:
         body = "Sounds good.\n\nSent from my iPhone\n"
         assert "iPhone" not in strip_quoted(body)
 
-    def test_stripping_never_returns_nothing(self):
-        """A one-line reply above an unrecognised quote block is better classified from the whole
-        message than from an empty string."""
-        body = "> only quoted text here\n> and more\n"
-        assert strip_quoted(body).strip() != ""
+    def test_an_unrecognised_quote_block_falls_back_to_the_whole_message(self):
+        """A reply above a quote shape we do not recognise is better classified whole.
+
+        The fixture has to contain an actual reply line for this to be the case it describes —
+        the earlier version of this test used an entirely quoted body, which is the opposite
+        situation and is covered below.
+        """
+        body = "No thanks.\n\n|> some client we have never seen quoting like this\n"
+        assert "No thanks" in strip_quoted(body)
+
+    def test_a_body_that_is_only_a_quote_strips_to_nothing(self):
+        """Returning the original here would hand the classifier our own pitch to read.
+
+        It then reports `interested` — correctly, about the wrong text. An empty result is the
+        honest answer, and the caller labels such a reply `other` and shows it to a person.
+        """
+        assert strip_quoted("> only quoted text here\n> and more\n") == ""
+
+    def test_a_body_that_is_only_a_signature_strips_to_nothing(self):
+        assert strip_quoted("--\nBen Shah\nCTO, Globex\n") == ""
 
     def test_the_full_body_is_kept_for_the_audit_trail(self):
         message = raw(
