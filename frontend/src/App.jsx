@@ -1,595 +1,761 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react'
-import { API, getJson, postJson } from './api'
+// The dashboard, against `/api/v1`.
+//
+// Rebuilt for Phase 8. Every endpoint the previous version called belonged to the prototype's API
+// and no longer exists, so this is a rewrite rather than a port.
+//
+// Two things shape the layout. **The review queue comes first**, because it is the only screen
+// where a person's attention is the bottleneck: nothing is ever sent without a human approving
+// it (§13), so a day's throughput is however many drafts somebody reads. **Evidence sits beside
+// the draft**, because a reviewer who cannot see what a claim rests on cannot check it, and will
+// approve.
+//
+// Plain text throughout. No `dangerouslySetInnerHTML` anywhere — a draft body is a lead's name
+// and a model's output, neither of which is trusted (hard rule 7).
 
-// Simple toast: id, message, type ('success'|'error'|'info')
-function Toast({ toast, onDismiss }) {
-  const style = {
-    success: { background: 'rgba(63, 185, 80, 0.2)', borderColor: 'var(--success)' },
-    error: { background: 'rgba(248, 81, 73, 0.2)', borderColor: 'var(--danger)' },
-    info: { background: 'rgba(88, 166, 255, 0.2)', borderColor: 'var(--accent)' },
-  }[toast.type] || style.info
-  return (
-    <div style={{ ...styles.toast, ...style }} role="alert">
-      <span>{toast.message}</span>
-      <button type="button" onClick={() => onDismiss(toast.id)} style={styles.toastDismiss} aria-label="Dismiss">×</button>
-    </div>
-  )
-}
+import React, { useCallback, useEffect, useState } from 'react'
+
+import { SignIn, useSession } from './Auth'
+import { ApiUnreachable, NotAuthenticated, deleteJson, getJson, postJson, uploadFile } from './api'
+import { signOut } from './supabase'
 
 export default function App() {
-  const [leads, setLeads] = useState([])
-  const [pending, setPending] = useState([])
-  const [running, setRunning] = useState(false)
-  const [lastRunError, setLastRunError] = useState(null)
-  const [groqConfigured, setGroqConfigured] = useState(null)
-  const [uploading, setUploading] = useState(false)
+  const session = useSession()
+
+  if (session === undefined) return <Centered>Checking your session…</Centered>
+  if (!session) return <SignIn />
+  return <Dashboard session={session} />
+}
+
+function Dashboard({ session }) {
+  const [me, setMe] = useState(null)
   const [error, setError] = useState(null)
-  const [rejectFeedback, setRejectFeedback] = useState({})
-  const [editedContent, setEditedContent] = useState({})
-  const [expandedLead, setExpandedLead] = useState(null)
-  const [stats, setStats] = useState(null)
   const [toasts, setToasts] = useState([])
-  const [onboardingDismissed, setOnboardingDismissed] = useState(() => {
-    try { return localStorage.getItem('outreach_onboarding_done') === '1' } catch { return false }
-  })
-  const toastIdRef = useRef(0)
+  const [campaigns, setCampaigns] = useState([])
+  const [campaignId, setCampaignId] = useState(null)
+  const [attention, setAttention] = useState(null)
 
-  const addToast = useCallback((message, type = 'info') => {
-    const id = ++toastIdRef.current
-    setToasts((t) => [...t, { id, message, type }])
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4500)
+  const toast = useCallback((message, kind = 'info') => {
+    const id = Math.random().toString(36).slice(2)
+    setToasts((current) => [...current, { id, message, kind }])
+    setTimeout(() => setToasts((current) => current.filter((t) => t.id !== id)), 6000)
   }, [])
 
-  const removeToast = useCallback((id) => {
-    setToasts((t) => t.filter((x) => x.id !== id))
-  }, [])
-
-  const fetchLeads = useCallback(async () => {
-    try {
-      const data = await getJson('/leads')
-      setLeads(data.leads || [])
-    } catch (e) {
-      setError(e.message)
-    }
-  }, [])
-
-  const fetchPending = useCallback(async () => {
-    try {
-      const data = await getJson('/leads/pending')
-      setPending(data.pending || [])
-    } catch (_) {}
-  }, [])
-
-  const fetchRunStatus = useCallback(async () => {
-    try {
-      const data = await getJson('/run/status')
-      setRunning(data.running === true)
-      setLastRunError(data.last_error || null)
-    } catch (_) {}
-  }, [])
-
-  const fetchStats = useCallback(async () => {
-    try {
-      const data = await getJson('/stats')
-      setStats(data)
-    } catch (_) {}
-  }, [])
-
-  const fetchConfigCheck = useCallback(async () => {
-    try {
-      const data = await getJson('/config/check')
-      setGroqConfigured(data.groq_configured === true)
-    } catch (_) {}
-  }, [])
-
-  useEffect(() => {
-    fetchLeads()
-    fetchPending()
-    fetchRunStatus()
-    fetchStats()
-    fetchConfigCheck()
-    const t = setInterval(() => {
-      fetchLeads()
-      fetchPending()
-      fetchRunStatus()
-      fetchStats()
-      fetchConfigCheck()
-    }, 2500)
-    return () => clearInterval(t)
-  }, [fetchLeads, fetchPending, fetchRunStatus, fetchStats, fetchConfigCheck])
-
-  const handleUpload = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setUploading(true)
-    setError(null)
-    try {
-      const form = new FormData()
-      form.append('file', file)
-      const data = await postJson('/upload', { body: form })
-      await fetchLeads()
-      addToast(`Uploaded ${data.count || 0} lead(s). You can run outreach now.`, 'success')
-    } catch (err) {
-      setError(String(err.message))
-      addToast(err.message, 'error')
-    } finally {
-      setUploading(false)
-      e.target.value = ''
-    }
-  }
-
-  const handleRun = async () => {
-    setError(null)
-    try {
-      const data = await postJson('/run?use_existing=true')
-      if (data.status === 'no_leads') throw new Error('No leads in INIT status. Upload an Excel file first.')
-      if (data.status === 'already_running') {
-        setRunning(true)
-        addToast('A run is already in progress.', 'info')
+  // One place that decides what an error means. An expired session is not something to show in a
+  // red box — it is a reason to send somebody back to the sign-in screen.
+  const handle = useCallback(
+    (err) => {
+      if (err instanceof NotAuthenticated) {
+        signOut()
         return
       }
-      setRunning(true)
-      setLastRunError(null)
-      addToast(`Run started for ${data.lead_count || 0} lead(s). Wait for "Pending your approval" cards below, or check the lead row for insights/draft.`, 'success')
-      await fetchRunStatus()
-    } catch (err) {
-      setError(String(err.message))
-      addToast(err.message, 'error')
-    }
-  }
+      setError(err instanceof ApiUnreachable ? err.message : String(err.message || err))
+    },
+    [setError]
+  )
 
-  const handleRetryFailed = async () => {
-    setError(null)
-    try {
-      const data = await postJson('/run/retry-failed')
-      if (data.reset_count > 0) {
-        addToast(data.message || `${data.reset_count} lead(s) reset. Click Run outreach to retry.`, 'success')
-        await fetchLeads()
-        await fetchStats()
-      } else {
-        addToast('No failed leads to retry.', 'info')
-      }
-    } catch (err) {
-      setError(String(err.message))
-      addToast(err.message, 'error')
-    }
-  }
-
-  const handleExportCsv = () => {
-    window.open(`${API}/leads/export/csv`, '_blank')
-    addToast('CSV download started.', 'success')
-  }
-
-  const dismissOnboarding = () => {
-    try { localStorage.setItem('outreach_onboarding_done', '1') } catch (_) {}
-    setOnboardingDismissed(true)
-  }
-
-  const setReject = (key, value) => setRejectFeedback((s) => ({ ...s, [key]: value }))
-
-  const pendingKey = (p) => `${p.email}-${p.type}`
-  const getContent = (p) => {
-    if (p.type === 'question_reply') return editedContent[pendingKey(p)] ?? ''
-    return editedContent[pendingKey(p)] ?? (p.type === 'insights' ? p.insights : p.email_draft) ?? ''
-  }
-  const setContent = (p, value) => setEditedContent((s) => ({ ...s, [pendingKey(p)]: value }))
-
-  const approve = async (p) => {
-    const { email, type } = p
-    let url, body
-    if (type === 'question_reply') {
-      url = `/leads/${encodeURIComponent(email)}/approve-question-reply`
-      body = { response_text: getContent(p) }
-    } else {
-      url = `/leads/${encodeURIComponent(email)}/approve-${type}`
-      body = type === 'insights' ? { edited_insights: getContent(p) } : { edited_email_draft: getContent(p) }
-    }
-    try {
-      await postJson(url, { json: body })
-      setEditedContent((s) => ({ ...s, [pendingKey(p)]: undefined }))
-      await fetchPending()
-      await fetchLeads()
-      addToast(type === 'insights' ? 'Insights approved.' : type === 'email' ? 'Email approved. Sending…' : 'Response sent.', 'success')
-    } catch (err) {
-      setError(err.message)
-      addToast(err.message, 'error')
-    }
-  }
-  const reject = async (email, type) => {
-    const feedback = rejectFeedback[`${email}-${type}`] || ''
-    try {
-      await postJson(`/leads/${encodeURIComponent(email)}/reject-${type}`, {
-        json: { feedback: feedback || undefined },
+  useEffect(() => {
+    getJson('/me')
+      .then(setMe)
+      .catch((err) => {
+        if (err instanceof NotAuthenticated) {
+          signOut()
+          return
+        }
+        // 403 means authenticated but not a member: say so plainly rather than showing an
+        // empty dashboard that looks broken.
+        setError(String(err.message || err))
       })
-      setRejectFeedback((s) => ({ ...s, [`${email}-${type}`]: '' }))
-      await fetchPending()
-      await fetchLeads()
-      addToast('Rejected. LLM will regenerate with your feedback.', 'info')
-    } catch (err) {
-      setError(err.message)
-      addToast(err.message, 'error')
-    }
+  }, [])
+
+  const refreshCampaigns = useCallback(() => {
+    getJson('/campaigns')
+      .then((data) => {
+        setCampaigns(data.campaigns)
+        setCampaignId((current) => current || data.campaigns[0]?.id || null)
+      })
+      .catch(handle)
+  }, [handle])
+
+  const refreshAttention = useCallback(() => {
+    getJson('/admin/needs-attention').then(setAttention).catch(handle)
+  }, [handle])
+
+  useEffect(() => {
+    if (!me) return
+    refreshCampaigns()
+    refreshAttention()
+  }, [me, refreshCampaigns, refreshAttention])
+
+  if (error && !me) {
+    return (
+      <Centered>
+        <h1 style={styles.title}>Cannot load the dashboard</h1>
+        <p style={styles.muted}>{error}</p>
+        <button type="button" onClick={() => signOut()} style={styles.button}>
+          Sign out
+        </button>
+      </Centered>
+    )
   }
 
-  const failedCount = (stats?.by_status?.EMAIL_FAILED || 0) + (stats?.by_status?.ERROR || 0)
+  if (!me) return <Centered>Loading…</Centered>
 
   return (
     <div style={styles.container}>
       <header style={styles.header}>
-        <h1 style={styles.title}>Funding Outreach Automation</h1>
-        <p style={styles.subtitle}>
-          AI drafts. You decide. — Human-in-the-loop outreach: approve or edit every insight and email before it’s sent.
-        </p>
+        <div>
+          <h1 style={styles.title}>Outreach</h1>
+          <p style={styles.subtitle}>
+            Signed in as {me.email || session.user?.email} · {me.role}
+          </p>
+        </div>
+        <button type="button" onClick={() => signOut()} style={styles.button}>
+          Sign out
+        </button>
       </header>
 
-      {!onboardingDismissed && (
-        <div style={styles.onboarding}>
-          <div>
-            <strong>Quick start:</strong> 1) Upload Excel (Name, Email, Company) → 2) Click &quot;Run outreach&quot; → 3) Approve or edit insights and email drafts when they appear. Nothing is sent without your approval.
-          </div>
-          <button type="button" onClick={dismissOnboarding} style={styles.onboardingDismiss}>Got it</button>
-        </div>
-      )}
-
-      {toasts.length > 0 && (
-        <div style={styles.toastContainer}>
-          {toasts.map((t) => (
-            <Toast key={t.id} toast={t} onDismiss={removeToast} />
-          ))}
-        </div>
-      )}
-
-      {error && (
-        <div style={styles.error}>
-          {error}
-          <button type="button" onClick={() => setError(null)} style={styles.dismiss}>Dismiss</button>
-        </div>
-      )}
-
-      {lastRunError && !running && (
-        <div style={styles.error}>
-          Last run failed: {lastRunError}
-          <button type="button" onClick={() => setLastRunError(null)} style={styles.dismiss}>Dismiss</button>
-        </div>
-      )}
-
-      {groqConfigured === false && (
-        <div style={styles.configWarning}>
-          <div style={{ flex: 1 }}>
-            <strong>LLM not configured.</strong> Insights and emails will not generate until you set <code>GROQ_API_KEY</code> on the backend.
-            <span style={{ marginTop: 8, display: 'block', fontSize: 13 }}>
-              On Render: open your service → left sidebar click <strong>Environment</strong> → &quot;Add Environment Variable&quot; → Key: <code>GROQ_API_KEY</code>, Value: your key from <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)' }}>console.groq.com/keys</a> → Save and redeploy.
-            </span>
-          </div>
-          <button type="button" onClick={() => setGroqConfigured(null)} style={styles.dismiss}>Dismiss</button>
-        </div>
-      )}
-
-      {stats != null && (
-        <section style={styles.statsStrip}>
-          <span>Total leads: <strong>{stats.total_leads}</strong></span>
-          <span>Emails sent: <strong>{stats.emails_sent}</strong></span>
-          <span>Meetings booked: <strong>{stats.meeting_booked}</strong></span>
-          {stats.last_activity && (
-            <span style={styles.muted}>Last activity: {new Date(stats.last_activity).toLocaleString()}</span>
-          )}
-        </section>
-      )}
-
-      <section style={styles.actions}>
-        <label style={styles.fileLabel}>
-          <input type="file" accept=".xlsx,.xls" onChange={handleUpload} disabled={uploading} style={{ display: 'none' }} />
-          <span style={styles.button}>{uploading ? 'Uploading…' : 'Upload Excel'}</span>
-        </label>
-        <button
-          type="button"
-          onClick={handleRun}
-          disabled={running || uploading}
-          style={{ ...styles.button, ...styles.primary }}
-        >
-          {running ? 'Run in progress…' : 'Run outreach'}
-        </button>
-        {running && (
-          <span style={styles.muted}>Wait 15–30 s, then check &quot;Pending your approval&quot; or expand the lead row for insights/draft.</span>
-        )}
-        <button type="button" onClick={handleExportCsv} style={styles.button} title="Download leads as CSV">
-          Export CSV
-        </button>
-        {failedCount > 0 && (
-          <button type="button" onClick={handleRetryFailed} style={styles.button} title="Reset failed leads and run again">
-            Retry failed ({failedCount})
+      {error ? (
+        <div style={styles.error} role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError(null)} style={styles.dismiss}>
+            ×
           </button>
-        )}
-      </section>
+        </div>
+      ) : null}
 
-      {pending.length > 0 && (
-        <section style={styles.section}>
-          <h2 style={styles.sectionTitle}>Pending your approval</h2>
-          <p style={styles.muted}>
-            Edit the content below if needed. Approve to continue (or Reject with feedback so the LLM regenerates).
-          </p>
-          <div style={styles.pendingGrid}>
-            {pending.map((p) => (
-              <div key={`${p.email}-${p.type}`} style={styles.card}>
-                <div style={styles.cardHeader}>
-                  <strong>{p.name || p.email}</strong>
-                  <span style={styles.badge}>
-                    {p.type === 'insights' ? 'Insights' : p.type === 'email' ? 'Email draft' : 'Reply to lead (QUESTION)'}
-                  </span>
-                </div>
-                {p.company && <div style={styles.muted}>{p.company}</div>}
+      <NeedsAttention counts={attention} />
 
-                {p.type === 'question_reply' ? (
-                  <>
-                    <h4 style={styles.expandedLabel}>Their reply</h4>
-                    <pre style={styles.pre}>{p.reply || '—'}</pre>
-                    <h4 style={styles.expandedLabel}>Your response</h4>
-                    <textarea
-                      style={styles.textarea}
-                      value={getContent(p)}
-                      onChange={(e) => setContent(p, e.target.value)}
-                      placeholder="Type your reply to send…"
-                      spellCheck={false}
-                    />
-                    <div style={styles.cardActions}>
-                      <button type="button" onClick={() => approve(p)} style={styles.approveBtn}>Send response</button>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <textarea
-                      style={styles.textarea}
-                      value={getContent(p)}
-                      onChange={(e) => setContent(p, e.target.value)}
-                      placeholder={p.type === 'insights' ? 'Edit insights…' : 'Edit email draft…'}
-                      spellCheck={false}
-                    />
-                    <div style={styles.cardActions}>
-                      <input
-                        type="text"
-                        placeholder="Feedback (if rejecting)"
-                        value={rejectFeedback[`${p.email}-${p.type}`] || ''}
-                        onChange={(e) => setReject(`${p.email}-${p.type}`, e.target.value)}
-                        style={styles.input}
-                      />
-                      <div style={styles.buttons}>
-                        <button type="button" onClick={() => approve(p)} style={styles.approveBtn}>Approve</button>
-                        <button type="button" onClick={() => reject(p.email, p.type)} style={styles.rejectBtn}>Reject</button>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            ))}
-          </div>
-        </section>
+      <CampaignPicker
+        campaigns={campaigns}
+        value={campaignId}
+        onChange={setCampaignId}
+        onRefresh={refreshCampaigns}
+      />
+
+      {campaignId ? (
+        <>
+          <ReviewQueue
+            campaignId={campaignId}
+            onError={handle}
+            onToast={toast}
+            onChanged={refreshAttention}
+          />
+          <Leads campaignId={campaignId} onError={handle} />
+          <Import campaignId={campaignId} onError={handle} onToast={toast} />
+        </>
+      ) : (
+        <p style={styles.muted}>No campaigns yet.</p>
       )}
 
-      <section style={styles.section}>
-        <h2 style={styles.sectionTitle}>Leads ({leads.length})</h2>
-        <div style={styles.tableWrap}>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th style={{ ...styles.th, width: 36 }}></th>
-                <th style={styles.th}>Name</th>
-                <th style={styles.th}>Email</th>
-                <th style={styles.th}>Company</th>
-                <th style={styles.th}>Status</th>
-                <th style={styles.th}>Classification</th>
-                <th style={styles.th}>Meeting</th>
-              </tr>
-            </thead>
-            <tbody>
-              {leads.map((lead) => (
-                <React.Fragment key={lead.email}>
-                  <tr
-                    style={{ ...styles.tr, cursor: 'pointer' }}
-                    onClick={() => setExpandedLead((e) => (e === lead.email ? null : lead.email))}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(ev) => (ev.key === 'Enter' || ev.key === ' ') && setExpandedLead((e) => (e === lead.email ? null : lead.email))}
-                    title="Click to view insights and email"
-                  >
-                    <td style={styles.td}>
-                      <span style={styles.expandIcon}>{expandedLead === lead.email ? '▼' : '▶'}</span>
-                    </td>
-                    <td style={styles.td}>{lead.name}</td>
-                    <td style={styles.td}>{lead.email}</td>
-                    <td style={styles.td}>{lead.company}</td>
-                    <td style={styles.td}><span style={statusStyle(lead.status)}>{lead.status}</span></td>
-                    <td style={styles.td}>{lead.classification || '–'}</td>
-                    <td style={styles.td}>{lead.meeting_booked ? 'Yes' : '–'}</td>
-                  </tr>
-                  {expandedLead === lead.email && (
-                    <tr style={styles.tr}>
-                      <td colSpan={7} style={styles.expandedCell}>
-                        <div style={styles.expandedWrap}>
-                          <div style={styles.expandedBlock}>
-                            <h4 style={styles.expandedLabel}>Insights (AI research for {lead.company})</h4>
-                            <p style={styles.transparencyNote}>Generated from company research. You approved or edited this before the email was drafted.</p>
-                            <pre style={styles.pre}>
-                              {lead.insights || '— No insights yet —'}
-                            </pre>
-                          </div>
-                          <div style={styles.expandedBlock}>
-                            <h4 style={styles.expandedLabel}>Email draft / sent</h4>
-                            <p style={styles.transparencyNote}>Nothing is sent without your approval. This is what was (or will be) sent to the lead.</p>
-                            <pre style={styles.pre}>
-                              {lead.email_draft || '— No email draft yet —'}
-                            </pre>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {leads.length === 0 && <p style={styles.muted}>No leads yet. Upload an Excel file (columns: Name, Email, Company).</p>}
-      </section>
+      <Suppressions onError={handle} onToast={toast} />
 
-      <footer style={styles.footer}>
-        <p style={styles.muted}>
-          Nothing is sent without your approval, and SEND_MODE must be set before any mail can leave at all. Data is stored in your backend only — use Export CSV to back it up. Data handling: PRIVACY.md.
-        </p>
-      </footer>
+      <div style={styles.toastHost}>
+        {toasts.map((t) => (
+          <div key={t.id} style={{ ...styles.toast, ...toastStyle(t.kind) }} role="status">
+            {t.message}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
 
-function statusStyle(status) {
-  const colors = {
-    INIT: '#8b949e',
-    INSIGHTS_GENERATED: '#58a6ff',
-    INSIGHTS_APPROVED: '#58a6ff',
-    EMAIL_DRAFTED: '#58a6ff',
-    EMAIL_APPROVED: '#58a6ff',
-    EMAIL_SENT: '#3fb950',
-    REPLIED: '#d29922',
-    MEETING_BOOKED: '#3fb950',
-    CLOSED: '#8b949e',
-    ERROR: '#f85149',
-    EMAIL_FAILED: '#f85149',
+function NeedsAttention({ counts }) {
+  if (!counts) return null
+  const items = [
+    ['Sends needing confirmation', counts.unknown_sends, 'var(--danger)'],
+    ['Dead jobs', counts.dead_jobs, 'var(--warning)'],
+    ['Paused mailboxes', counts.paused_mailboxes, 'var(--warning)'],
+  ].filter(([, value]) => value > 0)
+
+  if (items.length === 0) return null
+
+  return (
+    <section style={styles.section}>
+      <div style={styles.attention}>
+        {items.map(([label, value, colour]) => (
+          <span key={label} style={{ ...styles.attentionItem, borderColor: colour }}>
+            <strong>{value}</strong> {label}
+          </span>
+        ))}
+      </div>
+      <p style={styles.muted}>
+        A send that could not be confirmed is never retried automatically — a duplicate cold email
+        is worse than one that needs checking. Look in the mailbox and decide.
+      </p>
+    </section>
+  )
+}
+
+function CampaignPicker({ campaigns, value, onChange, onRefresh }) {
+  return (
+    <section style={styles.section}>
+      <div style={styles.row}>
+        <label htmlFor="campaign" style={styles.label}>
+          Campaign
+        </label>
+        <select
+          id="campaign"
+          value={value || ''}
+          onChange={(event) => onChange(event.target.value)}
+          style={styles.select}
+        >
+          {campaigns.map((campaign) => (
+            <option key={campaign.id} value={campaign.id}>
+              {campaign.name}
+              {campaign.paused ? ' (paused)' : ''}
+              {campaign.has_persona ? '' : ' — no persona'}
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={onRefresh} style={styles.button}>
+          Refresh
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
+  const [items, setItems] = useState([])
+  const [edits, setEdits] = useState({})
+  const [busy, setBusy] = useState(null)
+
+  const load = useCallback(() => {
+    getJson(`/review/drafts?campaign_id=${campaignId}`)
+      .then((data) => setItems(data.drafts))
+      .catch(onError)
+  }, [campaignId, onError])
+
+  useEffect(load, [load])
+
+  const approve = async (item) => {
+    setBusy(item.draft_id)
+    try {
+      const edit = edits[item.draft_id]
+      await postJson(`/drafts/${item.draft_id}/approve`, { json: edit ? edit : {} })
+      onToast('Approved. The send loop decides when it actually goes.', 'success')
+      load()
+      onChanged()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(null)
+    }
   }
-  return { color: colors[status] || '#8b949e', fontWeight: 500 }
+
+  const reject = async (item) => {
+    const feedback = (edits[item.draft_id] || {}).feedback || ''
+    if (!feedback.trim()) {
+      onToast('Rejecting needs a reason — it is what the next draft is written from.', 'error')
+      return
+    }
+    setBusy(item.draft_id)
+    try {
+      await postJson(`/drafts/${item.draft_id}/reject`, { json: { feedback } })
+      onToast('Rejected. It will be regenerated with your note.', 'info')
+      load()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const setEdit = (id, patch) =>
+    setEdits((current) => ({ ...current, [id]: { ...(current[id] || {}), ...patch } }))
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>
+        Review queue <span style={styles.badge}>{items.length}</span>
+      </h2>
+      <p style={styles.muted}>
+        Nothing is sent without a decision here. Approving makes a lead eligible; the send loop
+        re-checks the suppression list, the window and today's cap before anything leaves.
+      </p>
+
+      {items.length === 0 ? (
+        <p style={styles.muted}>Nothing waiting.</p>
+      ) : (
+        items.map((item) => (
+          <article key={item.draft_id} style={styles.card}>
+            <div style={styles.row}>
+              <strong>{item.lead.full_name || item.lead.email}</strong>
+              <span style={styles.badge}>{item.lead.company_name || 'no company'}</span>
+              <span style={styles.badge}>{item.kind}</span>
+              <span style={styles.badge}>v{item.version}</span>
+              {item.status === 'validation_failed' ? (
+                <span style={{ ...styles.badge, color: 'var(--danger)' }}>validation failed</span>
+              ) : null}
+            </div>
+
+            <label style={styles.label}>Subject</label>
+            <input
+              value={(edits[item.draft_id] || {}).subject ?? item.subject}
+              onChange={(event) => setEdit(item.draft_id, { subject: event.target.value })}
+              style={styles.input}
+            />
+
+            <label style={styles.label}>Body</label>
+            <textarea
+              rows={10}
+              value={(edits[item.draft_id] || {}).body ?? item.body}
+              onChange={(event) => setEdit(item.draft_id, { body: event.target.value })}
+              style={styles.textarea}
+            />
+
+            <Evidence item={item} />
+
+            <label style={styles.label}>Reason, if rejecting</label>
+            <input
+              value={(edits[item.draft_id] || {}).feedback || ''}
+              onChange={(event) => setEdit(item.draft_id, { feedback: event.target.value })}
+              placeholder="Too long; lead with the pipeline rebuild"
+              style={styles.input}
+            />
+
+            <div style={styles.buttons}>
+              <button
+                type="button"
+                onClick={() => approve(item)}
+                disabled={busy === item.draft_id || item.status === 'validation_failed'}
+                style={{ ...styles.button, ...styles.primary }}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                onClick={() => reject(item)}
+                disabled={busy === item.draft_id}
+                style={styles.button}
+              >
+                Reject
+              </button>
+            </div>
+            {item.status === 'validation_failed' ? (
+              <p style={styles.muted}>
+                This draft failed the grounding checks, so it cannot be approved. Reject it with a
+                note and it will be rewritten.
+              </p>
+            ) : null}
+          </article>
+        ))
+      )}
+    </section>
+  )
+}
+
+function Evidence({ item }) {
+  const hooks = item.hooks || []
+  return (
+    <details style={styles.evidence}>
+      <summary style={styles.summary}>
+        Evidence — {hooks.length} research hook{hooks.length === 1 ? '' : 's'}
+        {item.thin_research ? ' · thin' : ''} · confidence{' '}
+        {Number(item.research_confidence || 0).toFixed(2)}
+      </summary>
+      {hooks.length === 0 ? (
+        <p style={styles.muted}>
+          No verified research. Anything specific in this draft has nothing behind it.
+        </p>
+      ) : (
+        <ul style={styles.hooks}>
+          {hooks.map((hook) => (
+            <li key={hook.id || hook.text} style={styles.hook}>
+              <strong>{hook.id}</strong> — {hook.text}
+              {hook.snippet ? <div style={styles.snippet}>“{hook.snippet}”</div> : null}
+              {hook.source_url ? (
+                <div style={styles.muted}>
+                  <a href={hook.source_url} target="_blank" rel="noreferrer noopener">
+                    {hook.source_url}
+                  </a>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  )
+}
+
+function Leads({ campaignId, onError }) {
+  const [page, setPage] = useState({ leads: [], next_cursor: null })
+  const [state, setState] = useState('')
+  const [cursor, setCursor] = useState(null)
+
+  useEffect(() => {
+    const params = new URLSearchParams({ limit: '25' })
+    if (state) params.set('state', state)
+    if (cursor) params.set('cursor', cursor)
+    getJson(`/campaigns/${campaignId}/leads?${params}`).then(setPage).catch(onError)
+  }, [campaignId, state, cursor, onError])
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>Leads</h2>
+      <div style={styles.row}>
+        <label htmlFor="state" style={styles.label}>
+          State
+        </label>
+        <select
+          id="state"
+          value={state}
+          onChange={(event) => {
+            setCursor(null)
+            setState(event.target.value)
+          }}
+          style={styles.select}
+        >
+          <option value="">all</option>
+          {STATES.map((value) => (
+            <option key={value} value={value}>
+              {value}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th style={styles.th}>Email</th>
+            <th style={styles.th}>Name</th>
+            <th style={styles.th}>Company</th>
+            <th style={styles.th}>State</th>
+            <th style={styles.th}>Next action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {page.leads.map((lead) => (
+            <tr key={lead.id} style={styles.tr}>
+              <td style={styles.td}>{lead.email}</td>
+              <td style={styles.td}>{lead.full_name || '—'}</td>
+              <td style={styles.td}>{lead.company_name || '—'}</td>
+              <td style={styles.td}>{lead.state}</td>
+              <td style={styles.td}>
+                {lead.next_action_at ? new Date(lead.next_action_at).toLocaleString() : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {page.leads.length === 0 ? <p style={styles.muted}>No leads in this view.</p> : null}
+
+      <div style={styles.buttons}>
+        <button type="button" onClick={() => setCursor(null)} disabled={!cursor} style={styles.button}>
+          First page
+        </button>
+        <button
+          type="button"
+          onClick={() => setCursor(page.next_cursor)}
+          disabled={!page.next_cursor}
+          style={styles.button}
+        >
+          Next page
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function Import({ campaignId, onError, onToast }) {
+  const [preview, setPreview] = useState(null)
+  const [file, setFile] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const choose = async (event) => {
+    const chosen = event.target.files?.[0]
+    event.target.value = ''
+    if (!chosen) return
+    setFile(chosen)
+    setBusy(true)
+    try {
+      setPreview(await uploadFile(`/campaigns/${campaignId}/imports/preview`, chosen))
+    } catch (err) {
+      setPreview(null)
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const commit = async () => {
+    setBusy(true)
+    try {
+      const result = await uploadFile(`/campaigns/${campaignId}/imports/commit`, file)
+      onToast(`Imported ${result.imported} lead(s). Research is queued.`, 'success')
+      setPreview(null)
+      setFile(null)
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>Import leads</h2>
+      <p style={styles.muted}>
+        The preview writes nothing. Committing re-reads the file and re-checks every row against
+        the suppression list, so anyone who opted out between the two is still excluded.
+      </p>
+      <input type="file" accept=".csv,.xlsx" onChange={choose} disabled={busy} />
+
+      {preview ? (
+        <div style={styles.card}>
+          <div style={styles.row}>
+            {Object.entries(preview.counts).map(([verdict, count]) => (
+              <span key={verdict} style={styles.badge}>
+                {count} {verdict}
+              </span>
+            ))}
+            {preview.truncated ? (
+              <span style={{ ...styles.badge, color: 'var(--warning)' }}>
+                {preview.truncated} rows beyond the cap were dropped
+              </span>
+            ) : null}
+          </div>
+
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th style={styles.th}>Row</th>
+                <th style={styles.th}>Email</th>
+                <th style={styles.th}>Verdict</th>
+                <th style={styles.th}>Why</th>
+              </tr>
+            </thead>
+            <tbody>
+              {preview.rows.slice(0, 50).map((row) => (
+                <tr key={row.row_number} style={styles.tr}>
+                  <td style={styles.td}>{row.row_number}</td>
+                  <td style={styles.td}>{row.email || '—'}</td>
+                  <td style={{ ...styles.td, color: verdictColour(row.verdict) }}>
+                    {row.verdict}
+                  </td>
+                  <td style={styles.td}>{row.reasons.join('; ') || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <button
+            type="button"
+            onClick={commit}
+            disabled={busy || !preview.can_commit}
+            style={{ ...styles.button, ...styles.primary }}
+          >
+            Import the importable rows
+          </button>
+          {!preview.can_commit ? (
+            <p style={styles.muted}>
+              Nothing here can be imported. Check that the sheet has email, name and company
+              columns.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  )
+}
+
+function Suppressions({ onError, onToast }) {
+  const [rows, setRows] = useState([])
+  const [value, setValue] = useState('')
+
+  const load = useCallback(() => {
+    getJson('/suppressions')
+      .then((data) => setRows(data.suppressions))
+      .catch(onError)
+  }, [onError])
+
+  useEffect(load, [load])
+
+  const add = async (event) => {
+    event.preventDefault()
+    try {
+      await postJson('/suppressions', { json: { value, reason: 'manual' } })
+      setValue('')
+      onToast('Added. Nothing will be sent to that address again.', 'success')
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  const remove = async (id) => {
+    try {
+      await deleteJson(`/suppressions/${id}`)
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>Suppression list</h2>
+      <p style={styles.muted}>
+        Checked immediately before every send. Removing someone is deliberate and never automatic.
+      </p>
+      <form onSubmit={add} style={styles.row}>
+        <input
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder="someone@example.com"
+          style={{ ...styles.input, marginBottom: 0, maxWidth: 320 }}
+        />
+        <button type="submit" style={styles.button}>
+          Suppress
+        </button>
+      </form>
+
+      <table style={styles.table}>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id} style={styles.tr}>
+              <td style={styles.td}>{row.value}</td>
+              <td style={styles.td}>{row.kind}</td>
+              <td style={styles.td}>{row.reason}</td>
+              <td style={styles.td}>
+                <button type="button" onClick={() => remove(row.id)} style={styles.button}>
+                  Remove
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {rows.length === 0 ? <p style={styles.muted}>Nobody suppressed yet.</p> : null}
+    </section>
+  )
+}
+
+function Centered({ children }) {
+  return (
+    <div style={{ display: 'grid', placeItems: 'center', minHeight: '70vh', padding: 20 }}>
+      <div style={{ textAlign: 'center', maxWidth: 460 }}>{children}</div>
+    </div>
+  )
+}
+
+const STATES = [
+  'NEW',
+  'ENRICHING',
+  'RESEARCHED',
+  'DRAFTED',
+  'AWAITING_APPROVAL',
+  'APPROVED',
+  'SENT',
+  'FOLLOWUP_SENT',
+  'REPLIED',
+  'IN_CONVERSATION',
+  'MEETING_BOOKED',
+  'NOT_INTERESTED',
+  'OPTED_OUT',
+  'BOUNCED',
+  'NO_RESPONSE',
+  'SKIPPED',
+  'FAILED',
+]
+
+function verdictColour(verdict) {
+  if (verdict === 'reject') return 'var(--danger)'
+  if (verdict === 'warn') return 'var(--warning)'
+  return 'var(--success)'
+}
+
+function toastStyle(kind) {
+  if (kind === 'success') return { borderColor: 'var(--success)' }
+  if (kind === 'error') return { borderColor: 'var(--danger)' }
+  return { borderColor: 'var(--accent)' }
 }
 
 const styles = {
   container: { maxWidth: 1100, margin: '0 auto', padding: '24px 20px' },
-  header: { marginBottom: 24 },
-  title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px' },
-  subtitle: { color: 'var(--textMuted)', margin: 0, fontSize: 15, maxWidth: 560 },
-  onboarding: {
+  header: {
     display: 'flex',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 16,
-    padding: '14px 18px',
-    marginBottom: 24,
-    background: 'rgba(88, 166, 255, 0.1)',
-    border: '1px solid var(--accent)',
-    borderRadius: 10,
-    fontSize: 14,
-  },
-  onboardingDismiss: { background: 'var(--accent)', color: '#fff', padding: '8px 14px' },
-  toastContainer: { position: 'fixed', top: 16, right: 16, zIndex: 1000, display: 'flex', flexDirection: 'column', gap: 8 },
-  toast: {
-    padding: '12px 16px',
-    borderRadius: 8,
-    border: '1px solid',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    minWidth: 280,
-    boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
-  },
-  toastDismiss: { background: 'transparent', color: 'inherit', padding: '0 4px', fontSize: 18 },
-  statsStrip: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '16px 24px',
-    marginBottom: 20,
-    padding: '12px 16px',
-    background: 'var(--surface)',
-    border: '1px solid var(--border)',
-    borderRadius: 8,
-    fontSize: 14,
-  },
-  error: {
-    background: 'rgba(248,81,73,0.15)',
-    border: '1px solid var(--danger)',
-    color: 'var(--danger)',
-    padding: '12px 16px',
-    borderRadius: 8,
-    marginBottom: 24,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-  },
-  configWarning: {
-    background: 'rgba(210,153,34,0.15)',
-    border: '1px solid var(--warning)',
-    color: 'var(--warning)',
-    padding: '12px 16px',
-    borderRadius: 8,
-    marginBottom: 24,
-    display: 'flex',
-    flexWrap: 'wrap',
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: 12,
+    gap: 16,
+    marginBottom: 24,
   },
-  dismiss: { background: 'transparent', color: 'inherit', padding: '4px 8px' },
-  actions: { display: 'flex', gap: 12, marginBottom: 32, flexWrap: 'wrap' },
-  button: {
-    background: 'var(--surface2)',
-    color: 'var(--text)',
-    border: '1px solid var(--border)',
-  },
-  primary: { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' },
-  fileLabel: { display: 'inline-block' },
+  title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px' },
+  subtitle: { color: 'var(--textMuted)', margin: 0, fontSize: 15 },
+  heading: { fontSize: 20, fontWeight: 700, margin: '0 0 8px' },
   section: { marginBottom: 40 },
-  sectionTitle: { fontSize: 18, fontWeight: 600, marginBottom: 16 },
-  pendingGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(380px, 1fr))', gap: 20 },
+  row: { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 },
   card: {
     background: 'var(--surface)',
     border: '1px solid var(--border)',
-    borderRadius: 12,
-    padding: 20,
+    borderRadius: 10,
+    padding: 18,
+    marginBottom: 16,
   },
-  cardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  badge: { fontSize: 12, color: 'var(--textMuted)', background: 'var(--surface2)', padding: '4px 8px', borderRadius: 6 },
-  pre: {
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontSize: 13,
-    maxHeight: 220,
-    overflow: 'auto',
-    background: 'var(--bg)',
-    padding: 12,
+  badge: {
+    fontSize: 12,
+    color: 'var(--textMuted)',
+    background: 'var(--surface2)',
+    padding: '4px 8px',
+    borderRadius: 6,
+  },
+  attention: { display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 8 },
+  attentionItem: {
+    border: '1px solid',
     borderRadius: 8,
-    margin: '12px 0',
-    border: '1px solid var(--border)',
+    padding: '8px 12px',
+    fontSize: 14,
   },
-  textarea: {
-    width: '100%',
-    minHeight: 180,
-    maxHeight: 280,
-    resize: 'vertical',
-    whiteSpace: 'pre-wrap',
-    wordBreak: 'break-word',
-    fontSize: 13,
-    fontFamily: 'inherit',
-    background: 'var(--bg)',
-    color: 'var(--text)',
-    padding: 12,
-    borderRadius: 8,
-    margin: '12px 0',
-    border: '1px solid var(--border)',
-    boxSizing: 'border-box',
-  },
-  cardActions: { marginTop: 12 },
+  label: { display: 'block', fontSize: 13, margin: '12px 0 6px', color: 'var(--textMuted)' },
   input: { width: '100%', marginBottom: 10 },
-  buttons: { display: 'flex', gap: 8 },
-  approveBtn: { background: 'var(--success)', color: '#fff' },
-  rejectBtn: { background: 'var(--danger)', color: '#fff' },
-  tableWrap: { overflowX: 'auto', border: '1px solid var(--border)', borderRadius: 8 },
-  table: { width: '100%', borderCollapse: 'collapse' },
-  th: { textAlign: 'left', padding: '12px 14px', background: 'var(--surface2)', fontWeight: 600, fontSize: 13 },
+  select: { minWidth: 220 },
+  textarea: { width: '100%', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.6 },
+  buttons: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' },
+  button: { background: 'var(--surface2)', color: 'var(--text)' },
+  primary: { background: 'var(--accent)', color: '#fff', borderColor: 'var(--accent)' },
+  table: { width: '100%', borderCollapse: 'collapse', marginTop: 12 },
+  th: {
+    textAlign: 'left',
+    padding: '10px 12px',
+    background: 'var(--surface2)',
+    fontWeight: 600,
+    fontSize: 13,
+  },
   tr: { borderBottom: '1px solid var(--border)' },
-  td: { padding: '12px 14px', fontSize: 14 },
-  expandIcon: { fontSize: 10, color: 'var(--textMuted)', cursor: 'pointer' },
-  expandedCell: { padding: 0, verticalAlign: 'top', borderBottom: '1px solid var(--border)', background: 'var(--bg)' },
-  expandedWrap: { padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: 20 },
-  expandedBlock: {},
-  expandedLabel: { fontSize: 12, fontWeight: 600, color: 'var(--textMuted)', margin: '0 0 8px' },
-  transparencyNote: { fontSize: 11, color: 'var(--textMuted)', margin: '0 0 6px', fontStyle: 'italic' },
-  muted: { color: 'var(--textMuted)', fontSize: 14 },
-  footer: { marginTop: 48, paddingTop: 24, borderTop: '1px solid var(--border)' },
-  code: { background: 'var(--surface2)', padding: '2px 6px', borderRadius: 4, fontSize: 13 },
+  td: { padding: '10px 12px', fontSize: 14 },
+  muted: { color: 'var(--textMuted)', fontSize: 14, lineHeight: 1.6 },
+  evidence: {
+    background: 'var(--surface2)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    padding: 12,
+    marginTop: 12,
+  },
+  summary: { cursor: 'pointer', fontSize: 14 },
+  hooks: { margin: '12px 0 0', paddingLeft: 18 },
+  hook: { fontSize: 14, marginBottom: 10, lineHeight: 1.6 },
+  snippet: { color: 'var(--textMuted)', fontStyle: 'italic', margin: '4px 0' },
+  error: {
+    background: 'rgba(248, 81, 73, 0.15)',
+    border: '1px solid var(--danger)',
+    borderRadius: 8,
+    padding: '12px 14px',
+    marginBottom: 20,
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: 12,
+    fontSize: 14,
+  },
+  dismiss: { background: 'transparent', color: 'inherit', padding: '0 6px' },
+  toastHost: { position: 'fixed', right: 20, bottom: 20, display: 'grid', gap: 10, maxWidth: 360 },
+  toast: {
+    background: 'var(--surface)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    padding: '12px 14px',
+    fontSize: 14,
+  },
 }

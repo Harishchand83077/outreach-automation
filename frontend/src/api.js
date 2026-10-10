@@ -1,29 +1,39 @@
 // One place where every API call goes through, so a non-JSON response produces a sentence a
-// person can act on instead of a parser error.
+// person can act on instead of a parser error, and so the bearer token is attached in exactly
+// one place rather than at twenty call sites.
 //
 // The failure this exists for: when the dashboard is served by Cloudflare and no backend origin
-// is configured, a request to /api/leads is answered by the static-asset handler with
-// index.html and a **200**. `if (!r.ok)` therefore passes, `r.json()` is handed `<!DOCTYPE html>`
-// and React shows "Unexpected token '<', "<!DOCTYPE "... is not valid JSON" — which says nothing
-// about the actual problem, that the API is not reachable.
+// is configured, a request to /api/v1/campaigns is answered by the static-asset handler with
+// index.html and a **200**. `if (!response.ok)` therefore passes, `response.json()` is handed
+// `<!DOCTYPE html>` and React shows "Unexpected token '<', "<!DOCTYPE "... is not valid JSON" —
+// which says nothing about the actual problem, that the API is not reachable.
 
-const _base = import.meta.env.VITE_API_URL || ''
-export const API = _base ? _base.replace(/\/api\/?$/, '') + '/api' : '/api'
+import { accessToken } from './supabase'
+
+const base = import.meta.env.VITE_API_URL || ''
+export const API = base ? base.replace(/\/api(\/v1)?\/?$/, '') + '/api/v1' : '/api/v1'
 
 // True when the page was loaded from somewhere that cannot also be serving the API.
-const SAME_ORIGIN = !_base
+const SAME_ORIGIN = !base
 
 export class ApiUnreachable extends Error {
   constructor(path) {
     super(
       SAME_ORIGIN
         ? `The API did not answer ${path}. This build has no VITE_API_URL set, so it is asking ` +
-          `the site's own origin for /api, and getting the dashboard's HTML back. Set ` +
+          `the site's own origin for /api/v1, and getting the dashboard's HTML back. Set ` +
           `VITE_API_URL to the backend's address and rebuild.`
-        : `The API at ${_base} did not answer ${path} with JSON. Check that the backend is ` +
+        : `The API at ${base} did not answer ${path} with JSON. Check that the backend is ` +
           `running and that VITE_API_URL points at it.`
     )
     this.name = 'ApiUnreachable'
+  }
+}
+
+export class NotAuthenticated extends Error {
+  constructor() {
+    super('Your session has expired. Sign in again.')
+    this.name = 'NotAuthenticated'
   }
 }
 
@@ -34,15 +44,24 @@ async function parse(response, path) {
   return response.json()
 }
 
-// GET returning parsed JSON. Throws ApiUnreachable for an HTML answer, Error for an API error.
-export async function getJson(path) {
+async function request(path, init = {}) {
+  const token = await accessToken()
+  const headers = { ...(init.headers || {}) }
+  if (token) headers.Authorization = `Bearer ${token}`
+
   let response
   try {
-    response = await fetch(`${API}${path}`)
+    response = await fetch(`${API}${path}`, { ...init, headers })
   } catch {
     // A network-level failure: nothing answered at all.
     throw new ApiUnreachable(path)
   }
+
+  // 401 is its own case, not a generic error: the UI must send the person back to the sign-in
+  // screen rather than showing them a message about a request they cannot retry.
+  if (response.status === 401) throw new NotAuthenticated()
+  if (response.status === 204) return null
+
   if (!response.ok) {
     const body = await parse(response, path).catch(() => null)
     throw new Error((body && body.detail) || response.statusText || `HTTP ${response.status}`)
@@ -50,8 +69,9 @@ export async function getJson(path) {
   return parse(response, path)
 }
 
-// POST, with an optional body. Same contract as getJson.
-export async function postJson(path, { body, json } = {}) {
+export const getJson = (path) => request(path)
+
+export function postJson(path, { body, json } = {}) {
   const init = { method: 'POST' }
   if (json !== undefined) {
     init.headers = { 'Content-Type': 'application/json' }
@@ -59,16 +79,14 @@ export async function postJson(path, { body, json } = {}) {
   } else if (body !== undefined) {
     init.body = body
   }
+  return request(path, init)
+}
 
-  let response
-  try {
-    response = await fetch(`${API}${path}`, init)
-  } catch {
-    throw new ApiUnreachable(path)
-  }
-  if (!response.ok) {
-    const parsed = await parse(response, path).catch(() => null)
-    throw new Error((parsed && parsed.detail) || response.statusText || `HTTP ${response.status}`)
-  }
-  return parse(response, path)
+export const deleteJson = (path) => request(path, { method: 'DELETE' })
+
+// Upload goes through the same path so it gets the same token and the same error handling.
+export function uploadFile(path, file) {
+  const form = new FormData()
+  form.append('file', file)
+  return postJson(path, { body: form })
 }

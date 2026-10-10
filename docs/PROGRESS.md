@@ -110,11 +110,41 @@ exist: **C1** (zero authentication), **C3** (wildcard CORS), **C4** (IP-keyed ra
 injection — the endpoint is deleted, not re-guarded), **NEW-6** (`os.chdir` at import), **NEW-7**
 (string-interpolated SQL).
 
+**Phase 8 slice 1 (this session): the dashboard talks to the new API, with Supabase login.**
+
+Every endpoint the old `App.jsx` called belonged to the prototype's API and no longer exists, so
+this is a rewrite, not a port.
+
+- `frontend/src/supabase.js` — auth only (ADR-001). No table is ever read through this client;
+  all data comes from our API, which verifies the token and resolves it to a `members` row.
+- `frontend/src/Auth.jsx` — **magic link only, no password field anywhere, no sign-up form.**
+  Public sign-ups are disabled, so an invite is a database row; a password would add a credential
+  to phish and rotate for an application with one user. The "check your email" message is
+  identical whether or not the address is a member, because telling a stranger which addresses
+  exist is a free target list.
+- `frontend/src/api.js` — attaches the bearer token in **one** place, and treats a 401 as its own
+  case so the UI returns somebody to sign-in rather than showing a red box they cannot act on.
+- `frontend/src/App.jsx` — review queue first (it is the only screen where human attention is the
+  bottleneck), with the research hooks beside each draft. Then leads (cursor-paginated), import
+  (preview then commit), and the suppression list. Plain text throughout; no
+  `dangerouslySetInnerHTML` anywhere.
+
+**The frontend now has tests** — `frontend/src/api.test.js`, 12 of them, run by `npm test` and
+wired into CI. They cover the three things that have already gone wrong: an HTML answer with a
+200 status, the token being attached everywhere, and a 401 meaning "sign in again" rather than
+"something went wrong".
+
+**A dependency note:** `vitest@3.2.4` pulls a `tinypool` with two critical advisories. PR #15
+cleared every frontend advisory and reintroducing them would undo that, so the dev dependency is
+`vitest@^5` instead, which audits clean.
+
 **Next up.**
-1. **Phase 8:** point the dashboard at `/api/v1` with Supabase login. `frontend/src/api.js`
-   already centralises the calls, so this is adding a token and changing paths. Closes E8, NEW-3.
-2. **Phase 9 (ops):** Docker, Compose, Caddy, `docs/DEPLOY.md`, structured logs, backups. This is
-   what finally makes the hosted dashboard show real data. Closes C6, D6, E7, the D5 runbook.
+1. **Phase 9 (ops):** Docker, Compose, Caddy, `docs/DEPLOY.md`, structured logs, `/ready` wired
+   to the worker heartbeat, backups. **This is what finally makes the hosted dashboard show real
+   data** — it is still pointing at an API that exists only on this machine. Closes C6, D6, E7.
+2. Remaining Phase 8 polish: TypeScript and TanStack Query (the target in `CLAUDE.md`; this slice
+   stayed in plain JS to keep the rewrite reviewable), campaign creation and persona editing,
+   lead detail with its timeline. E8 and NEW-3 close with those.
 3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the go-live gate.
 
 **Still outstanding for the owner.**
@@ -174,7 +204,7 @@ Create new branches from `origin/main`.
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
 | 7 | Auth, multi-tenancy | **Done** - 1026 tests. The legacy API is deleted. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. The legacy `api_server.py` still runs and is still unauthenticated. |
-| 8 | UI completion | Not started |
+| 8 | UI completion | **In progress** - dashboard rewired to `/api/v1` with Supabase magic-link login; 12 frontend tests. TypeScript, TanStack Query, campaign editing and lead detail remain. |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
 
