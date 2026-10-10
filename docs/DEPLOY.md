@@ -3,17 +3,17 @@
 This is the runbook for putting the api and the worker on a VM, pointing the Cloudflare
 dashboard at them, and getting mail to arrive in inboxes rather than spam folders.
 
-**Where this stands.** The VM exists, Docker is on it, the repository is cloned, and the
-production image has been built and run there — §1 records what was done and what was found.
-**Two things are not done and are yours**, because nothing automated should do either:
+**Where this stands.** The VM exists, Docker is on it, the repository is cloned, the production
+image has been built and run there, and **`api.arkvane.in` resolves to it**. §1 and §2 record
+what was done and found.
 
-1. **`.env` on the VM** (§3.1). It holds every secret.
-2. **A DNS record** pointing at the instance (§2). Until one exists, Caddy cannot get a
-   certificate, so §4 has deliberately not been run.
+**One thing is left, and it is yours: `.env` on the VM** (§3.1). It holds every secret, so
+nothing automated should write it — and `deploy.sh` refuses to run without it. Once it exists,
+§4 is a single command.
 
-Read §1 and §2 before starting. The order matters in two places and both are annoying to undo:
-DNS must resolve before Caddy first starts, and `POSTGRES_PASSWORD` takes effect only on the very
-first start of the database volume.
+`POSTGRES_PASSWORD` is the one value that is painful to get wrong: it takes effect only on the
+very first start of the database volume, and changing it later means destroying the data to fix
+it. Read §3.1 before typing.
 
 ---
 
@@ -154,24 +154,61 @@ sudo dpkg-reconfigure --priority=low unattended-upgrades
 
 ---
 
-## 2. DNS
+## 2. DNS — done
 
-Point a name at the VM **before** starting Caddy. Caddy asks Let's Encrypt for a certificate on
-first start, Let's Encrypt resolves the name and connects back on port 80, and a failure there
-counts against a rate limit that is measured in hours.
+**`api.arkvane.in` → `3.25.23.191`**, an A record with a 600-second TTL, added at GoDaddy and
+resolving on both Google and Cloudflare public resolvers. Nothing else needs doing here.
 
-| Record | Name | Value |
+```
+$ nslookup -type=A api.arkvane.in. 8.8.8.8   →  3.25.23.191
+$ nslookup -type=A api.arkvane.in. 1.1.1.1   →  3.25.23.191
+```
+
+**The domain is `arkvane.in`**, whose DNS is at GoDaddy (`ns29/ns30.domaincontrol.com`). An
+earlier draft of this runbook guessed `athenaedu.in` from the `Message-ID` in ADR-002's addendum;
+that was a test mailbox, not the sending domain.
+
+Why a subdomain and not the apex: the dashboard is served by Cloudflare and the api lives on the
+VM, so separate names let either move without touching the other. The apex `arkvane.in` still
+points at GoDaddy's parking address (`216.198.79.1`) and was left alone.
+
+### 2.1 If you ever point it somewhere else
+
+Add the record wherever the domain's nameservers say DNS is managed — `nslookup -type=NS` on the
+domain answers that. The record is:
+
+| Record | Name | Value | TTL |
+|---|---|---|---|
+| A | `api` (just the label, not the full hostname) | the server's IP | 600 |
+
+GoDaddy's panel takes the **Name relative to the domain**, so `api`, never `api.arkvane.in` —
+the latter creates `api.arkvane.in.arkvane.in`, which silently resolves to nothing.
+
+If the domain is ever moved to Cloudflare DNS, set this record to **DNS only** (grey cloud), not
+proxied. Proxying puts Cloudflare in front of the api, which breaks Caddy's HTTP-01 challenge and
+hides the real client address from the rate limiter.
+
+**Order matters.** Caddy must not start before the name resolves: it asks Let's Encrypt for a
+certificate on first start, and a failed challenge counts against a rate limit measured in hours.
+
+### 2.2 The mail records on this domain were not touched
+
+`arkvane.in` is a live Google Workspace mail domain, and its records are what make mail from it
+deliverable. Adding the `api` A record took the zone from 16 records to 17; everything below was
+re-checked afterwards and is unchanged:
+
+| Record | Value | State |
 |---|---|---|
-| A | `api.yourdomain.com` | the VM's public IPv4 |
+| MX | `aspmx.l.google.com` + 4 alternates | 5 records, intact |
+| SPF | `v=spf1 include:_spf.google.com include:dc-aa8e722993._spfm.arkvane.in ~all` | exactly **one** record |
+| DKIM | `google._domainkey`, 2048-bit | published |
+| DMARC | `v=DMARC1; p=none; rua=mailto:rahul@arkvane.in` | reporting on, enforcement off |
+| apex A | `216.198.79.1` | unchanged |
 
-Wait until `dig +short api.yourdomain.com` returns the address from somewhere other than the VM.
-
-**Use a subdomain, not the apex.** The dashboard lives on Cloudflare and the api lives here;
-giving them separate names means either can move without touching the other.
-
-If the domain is on Cloudflare DNS, set this record to **DNS only** (grey cloud), not proxied.
-Proxying it would put Cloudflare in front of the api as well, which breaks Caddy's HTTP-01
-challenge and hides the real client address from the rate limiter.
+**This means most of §6 is already done**, and done correctly — one SPF record rather than two
+(two is a permanent failure, not a merge), DKIM published, and DMARC starting at `p=none` with
+reporting, which is exactly the right opening posture. §6 is now a verification step rather than
+a setup step.
 
 ---
 
@@ -213,7 +250,7 @@ nano .env
 | `APP_ENV` | `production` | Closes `/docs` and switches logs to JSON. |
 | `SEND_MODE` | `disabled` | **Leave it.** §8 is where this changes. |
 | `POSTGRES_PASSWORD` | a long random string | `openssl rand -base64 32`. See the warning below. |
-| `API_DOMAIN` | `api.yourdomain.com` | Caddy issues the certificate for this name. |
+| `API_DOMAIN` | `api.arkvane.in` | Caddy issues the certificate for this name. The record exists (§2). |
 | `ACME_EMAIL` | a real address | Where Let's Encrypt sends expiry warnings. |
 | `DASHBOARD_ORIGIN` | the Cloudflare URL | Informational; CORS is set below. |
 | `CORS_ALLOWED_ORIGINS` | the Cloudflare URL | **Exact origin**, scheme included, no trailing slash, never `*`. |
@@ -258,8 +295,8 @@ answers. It never touches `SEND_MODE` and never runs `down -v`.
 Then, from your own machine:
 
 ```bash
-curl -s https://api.yourdomain.com/health   # {"status":"ok"}
-curl -s https://api.yourdomain.com/ready    # 503 until the worker's first heartbeat, then 200
+curl -s https://api.arkvane.in/health   # {"status":"ok"}
+curl -s https://api.arkvane.in/ready    # 503 until the worker's first heartbeat, then 200
 ```
 
 `/ready` being 503 for the first minute is correct and is the point of it: it checks the database
@@ -297,7 +334,7 @@ the bundle and are public by design):
 
 | Variable | Value |
 |---|---|
-| `VITE_API_URL` | `https://api.yourdomain.com` |
+| `VITE_API_URL` | `https://api.arkvane.in` |
 | `VITE_SUPABASE_URL` | the Supabase project URL |
 | `VITE_SUPABASE_ANON_KEY` | the Supabase anon key |
 
@@ -352,7 +389,7 @@ GET /api/v1/admin/worker       # the worker's last heartbeat and per-task detail
 ### 5.3 Uptime
 
 Point a free external monitor (UptimeRobot, Better Stack, Healthchecks.io) at
-`https://api.yourdomain.com/ready` every five minutes. **`/ready`, not `/health`** — `/health`
+`https://api.arkvane.in/ready` every five minutes. **`/ready`, not `/health`** — `/health`
 only says the api process is up, while `/ready` fails when the database is unreachable or the
 worker's heartbeat is stale. The failure worth being woken for is the silent one: a worker that
 died at 2am and sent nothing all day.
@@ -361,14 +398,28 @@ died at 2am and sent nothing all day.
 
 ## 6. Deliverability: SPF, DKIM, DMARC
 
-This section closes issue **D5** (the runbook ADR-006 promised) and finishes **C6**. It has a
-lead time measured in days, not minutes — start it before you intend to send.
+This section closes issue **D5** (the runbook ADR-006 promised) and finishes **C6**.
 
-**What is already settled** (ADR-006): the sending mailbox is **Google Workspace (paid Starter)**
-on a **dedicated domain** whose DNS is at **GoDaddy**. So the separate-sending-domain question —
-`MASTER_PROMPT.md` Q4 — is answered, and the client-facing domain is not at risk from cold-mail
-reputation. What remains is authenticating that domain, which is the one part of deliverability
-no amount of code can substitute for.
+**Most of it is already done on `arkvane.in`, and done correctly.** Checked against public DNS
+(§2.2): exactly one SPF record including Google, a 2048-bit DKIM key published at
+`google._domainkey`, and DMARC at `p=none` with reporting to `rahul@arkvane.in`. That is the
+right opening posture, so what follows is now **verification**, not setup. §6.1 is kept as the
+reference for rebuilding these or setting them up on a second domain.
+
+| | Published | Still to do |
+|---|---|---|
+| SPF | ✅ one record, `include:_spf.google.com`, `~all` | tighten to `-all` once mail lands reliably |
+| DKIM | ✅ `google._domainkey`, 2048-bit | confirm **Start authentication** was pressed in the Workspace admin console — DNS cannot show this |
+| DMARC | ✅ `p=none` with `rua` | move to `p=quarantine` after a clean week of reports |
+
+**What DNS cannot tell you**, and what therefore still needs checking by hand: whether Google is
+actually *signing* with that DKIM key. The record existing is necessary but not sufficient —
+somebody has to press **Start authentication** in the admin console. §6.2 is how you find out.
+
+**One thing to confirm about the sending address.** SPF, DKIM and DMARC protect the domain in the
+**From** header. These records are on `arkvane.in`, so `SMTP_EMAIL` must be an `@arkvane.in`
+address. If it is still the `@athenaedu.in` mailbox used during testing, mail will go out
+unauthenticated against a domain with no matching records, which is worse than no setup at all.
 
 Two prerequisites from ADR-006, worth confirming before anything else:
 
@@ -380,12 +431,12 @@ Two prerequisites from ADR-006, worth confirming before anything else:
 ### 6.1 The three records, at GoDaddy
 
 GoDaddy: **My Products → Domain → DNS → Manage Zones → Add New Record**. Replace
-`outreachdomain.com` with the sending domain. Verify each with `dig +short TXT <name>` from your
+`arkvane.in` with the sending domain. Verify each with `dig +short TXT <name>` from your
 own machine before moving to the next.
 
 A GoDaddy quirk worth knowing: its panel shows the **Name** relative to the domain, so the name
 for a record at the apex is `@`, and for DKIM it is `google._domainkey` — not the full hostname.
-Pasting the full name produces `google._domainkey.outreachdomain.com.outreachdomain.com`, which
+Pasting the full name produces `google._domainkey.arkvane.in.arkvane.in`, which
 is a silent failure.
 
 **SPF** — one TXT record, Name `@`. Exactly one: two SPF records is a permanent failure, not a
@@ -413,7 +464,7 @@ unsigned. Google may take up to 48 hours to see the record; it will say so rathe
 to reject anything.
 
 ```
-Type: TXT   Name: _dmarc   Value: v=DMARC1; p=none; rua=mailto:dmarc@outreachdomain.com; fo=1; adkim=r; aspf=r   TTL: 1 hour
+Type: TXT   Name: _dmarc   Value: v=DMARC1; p=none; rua=mailto:rahul@arkvane.in; fo=1; adkim=r; aspf=r   TTL: 1 hour
 ```
 
 Make sure that `rua` mailbox exists, or the reports go nowhere. After a week of clean reports move
@@ -423,7 +474,7 @@ to `p=quarantine`; only then consider `p=reject`.
 
 - Send one message to `mail-tester.com` (or to a Gmail address and use **Show original**) and
   confirm **SPF: PASS, DKIM: PASS, DMARC: PASS** — all three, on the message *as received*.
-- Confirm there is exactly one SPF record: `dig +short TXT outreachdomain.com | grep spf1`.
+- Confirm there is exactly one SPF record: `dig +short TXT arkvane.in | grep spf1`.
 - Send to one Gmail and one Outlook address you control. Both must land in the inbox, not spam.
 
 Do not go to §8 until all three pass. Everything the application does for deliverability — plain

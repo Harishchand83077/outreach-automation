@@ -100,6 +100,13 @@ dependency trees ships their vulnerabilities too. The suite is green afterwards.
 having in front of you:
 
 - `t3.small`, Ubuntu 24.04.4, 2 GB RAM, 30 GiB, Elastic IP **3.25.23.191**, SSH as `ubuntu`.
+- **`api.arkvane.in` → 3.25.23.191**, an A record at GoDaddy with a 600-second TTL, resolving on
+  both Google and Cloudflare public resolvers. The domain is **arkvane.in** — an earlier draft
+  guessed `athenaedu.in` from the Message-ID in ADR-002's addendum, which was a test mailbox.
+- **`arkvane.in`'s mail records were already correct and were not touched**: Google Workspace MX,
+  exactly one SPF record, a 2048-bit DKIM key, and DMARC at `p=none` with reporting. So D5's
+  runbook (`DEPLOY.md` §6) is now a verification step rather than a setup step. The zone went
+  from 16 records to 17 and every mail record was re-checked afterwards.
 - **Sydney, not Mumbai, and that was forced.** The AWS Free Plan pins a project to one region and
   this account's is `ap-southeast-2`; the console refuses Mumbai outright. Reaching Mumbai means
   activating advanced features, which changes billing, so it was not taken. The cost is ~150–200 ms
@@ -124,10 +131,13 @@ having in front of you:
 3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
-- **Two things on the VM, both of which only you can do** (`docs/DEPLOY.md` §2 and §3.1): a DNS
-  A record pointing at **3.25.23.191**, and `.env` on the box. Until the first exists Caddy
-  cannot get a certificate; until the second exists nothing can start. Everything else on that
-  instance is done.
+- **One thing on the VM, and only you can do it: `.env`** (`docs/DEPLOY.md` §3.1). It holds every
+  secret, so nothing automated writes it, and `deploy.sh` refuses to run without it. Everything
+  else is done — DNS included.
+- **`SMTP_EMAIL` must be an `@arkvane.in` address.** SPF, DKIM and DMARC protect the domain in
+  the From header, and those records are on `arkvane.in`. If the sending mailbox is still the
+  `@athenaedu.in` one used in testing, mail goes out unauthenticated against a domain with no
+  matching records, which is worse than no setup at all.
 - **Q2 — the postal address in the email footer. Answered 2026-10-11: proceed without it for now,
   the owner will supply one later.** So the footer ships without a postal address and
   the gap is carried in `QUESTIONS.md` Q2 until Phase 10's `COMPLIANCE.md` records it: no postal
