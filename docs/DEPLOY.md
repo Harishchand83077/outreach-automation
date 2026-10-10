@@ -3,14 +3,17 @@
 This is the runbook for putting the api and the worker on a VM, pointing the Cloudflare
 dashboard at them, and getting mail to arrive in inboxes rather than spam folders.
 
-**Nothing here has been run.** Every command below was written from the configuration in this
-repository, not from a successful deploy — the assistant that wrote it is not permitted to create
-cloud resources or spend money (hard rule 5), so the first run of each step is yours. Where a
-step is likely to behave differently than described, it says so.
+**Where this stands.** The VM exists, Docker is on it, the repository is cloned, and the
+production image has been built and run there — §1 records what was done and what was found.
+**Two things are not done and are yours**, because nothing automated should do either:
 
-Read the whole of §1 before starting. The order matters in two places and both are annoying to
-undo: DNS must resolve before Caddy first starts, and `POSTGRES_PASSWORD` takes effect only on
-the very first start of the database volume.
+1. **`.env` on the VM** (§3.1). It holds every secret.
+2. **A DNS record** pointing at the instance (§2). Until one exists, Caddy cannot get a
+   certificate, so §4 has deliberately not been run.
+
+Read §1 and §2 before starting. The order matters in two places and both are annoying to undo:
+DNS must resolve before Caddy first starts, and `POSTGRES_PASSWORD` takes effect only on the very
+first start of the database volume.
 
 ---
 
@@ -32,67 +35,92 @@ both or neither, and a schema the api expects is a schema the worker has.
 
 ## 1. The VM
 
-### 1.1 Which provider
+**This section is no longer hypothetical.** The instance below exists and the steps in §1.2 to
+§1.5 have been run against it. What is recorded here is what actually happened, including the two
+places where the plan and reality differed.
 
-In the order `MASTER_PROMPT.md` gives:
+### 1.1 The instance that exists
 
-1. **Oracle Cloud Always Free** — an Ampere A1 (ARM) instance with up to 4 OCPU and 24 GB RAM,
-   free indefinitely. By far the most capable free tier, and the one these instructions assume.
-2. Google Cloud `e2-micro` — free, but 1 GB of RAM is tight for Postgres plus two Python
-   processes. Workable with the memory limits in `compose.prod.yml`; not comfortable.
-3. A ~₹400/month VPS (Hetzner, DigitalOcean, Linode). Simpler, predictable, costs money.
+| | |
+|---|---|
+| Provider | **AWS EC2** (Oracle Cloud sign-up failed on their card/address check) |
+| Region | **ap-southeast-2 (Sydney)** — see the note below, it was not a free choice |
+| Instance | `i-02ca5f650887fc66c`, name `outreach-automation` |
+| Type | `t3.small` — 2 vCPU, 2 GB RAM, x86_64 |
+| Image | Ubuntu Server 24.04.4 LTS (`ami-020728ad6199d7fa0`) |
+| Storage | 30 GiB gp3 |
+| Elastic IP | **3.25.23.191** (allocated and associated, so it survives a stop/start) |
+| SSH | `ssh -i ~/.ssh/outreach-automation-key.pem ubuntu@3.25.23.191` |
+| Security group | `outreach-automation-sg` — 22 from the owner's IP only, 80 and 443 from anywhere |
+| Budget alarm | `outreach-automation-5usd`, notifies at 85%, 100% and forecast-100% of $5/month |
 
-**Oracle's free tier is reclaimable.** Oracle may stop an Always Free instance that is idle, and
-"idle" is measured on CPU, network and memory — this workload is idle by that definition for most
-of the day. The nightly off-box backup in §7 is what makes that survivable, and it is the reason
-it is not optional.
+**Sydney, not Mumbai, and that was forced.** Mumbai is the right region for sending to Indian
+founders, and it is what this runbook originally said. The AWS account is on the new **Free
+Plan**, which pins a project to **one** region, and this one was assigned to Sydney. The console
+answers a Mumbai URL with "Region Asia Pacific (Mumbai) unavailable", offering only to activate
+advanced features — which upgrades the plan and changes billing, so it was not taken. The cost of
+Sydney is roughly 150–200 ms of extra latency to India, which this workload does not notice:
+sends are paced minutes apart and IMAP polls every few minutes. Only the dashboard feels it.
 
-**ARM matters for one reason only:** every image in the stack (`python:3.12-slim-bookworm`,
-`postgres:17-alpine`, `caddy:2.10-alpine`) is multi-architecture, so `docker compose build` on an
-Ampere instance just works. If you add an image later, check it has an `arm64` tag before you
-rely on it.
+**`t3.small`, not `t4g.small`.** ARM would be about 20% cheaper and every image in the stack is
+multi-architecture, so it would have worked. It was not taken because the image that has actually
+been built and smoke-tested — locally, in CI and on this VM — is amd64, and discovering a missing
+`aarch64` wheel during a deploy costs more than the saving. Revisit it if the bill matters more
+than the certainty later.
 
-### 1.2 Create it
+**This is not free forever.** `t3.small` is **not** the old always-free tier (that was
+`t2.micro`); under the Free Plan it draws down credits, and at list price it is roughly
+**$19/month** in Sydney once they run out. A €4–5/month Hetzner box is the better long-term home,
+and nothing in this repository is AWS-specific — the stack is Docker Compose and a Caddyfile, so
+moving is a `git clone`, a `.env` and a DNS change.
 
-- **Shape:** VM.Standard.A1.Flex, 2 OCPU, 12 GB (inside the free allowance, and leaves room).
-- **Image:** Ubuntu 24.04 LTS (not Oracle Linux — the commands below assume `apt`).
-- **Boot volume:** 50 GB. The free allowance is 200 GB total; this is comfortable for the
-  database, fourteen days of dumps and the images.
-- **SSH:** paste your public key. Oracle does not offer password login, which is correct.
+### 1.2 If you are rebuilding it from scratch
 
-Record the **public IPv4 address** when it appears. Reserve it (Oracle: "Reserved public IP")
-rather than leaving it ephemeral, or a stop/start will change it and the DNS record will be wrong.
+Launch wizard: Ubuntu Server **24.04** LTS (the console now defaults to 26.04 — take 24.04, it is
+what `get.docker.com` and these instructions are known to work with), `t3.small`, 30 GiB gp3, a
+new key pair (RSA, `.pem`), and a new security group with:
 
-### 1.3 Open the firewall — twice
+| Port | Source | Why |
+|---|---|---|
+| 22 | **My IP** | Not `0.0.0.0/0`. The wizard defaults to anywhere; change it. |
+| 80 | Anywhere | Let's Encrypt's HTTP-01 challenge needs it, and Caddy redirects to 443. |
+| 443 | Anywhere | The API itself. |
 
-This is the step that wastes an afternoon, every time, for everyone.
+Then **allocate an Elastic IP and associate it**. Without one the public address changes on every
+stop/start, and DNS silently points at nothing — or worse, at somebody else's instance.
 
-Oracle has **two** firewalls, and the Ubuntu image ships with the second one closed:
+**SSH is pinned to one IP, which will expire.** If your ISP gives you a new address, SSH stops
+working and nothing else does. Fix it in EC2 → Security Groups → `outreach-automation-sg` → edit
+the port 22 rule → My IP. This is the intended failure: it is far better than leaving 22 open to
+the internet.
 
-1. **Security List / NSG** (in the Oracle console, on the subnet): add ingress rules for
-   TCP **80** and TCP **443** from `0.0.0.0/0`.
-2. **The instance's own iptables.** Oracle's Ubuntu images come with a default `INPUT` policy
-   that drops everything except SSH, and it persists across reboots:
+### 1.3 Outbound mail ports — verified on this instance
 
-```bash
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 80 -j ACCEPT
-sudo iptables -I INPUT 6 -m state --state NEW -p tcp --dport 443 -j ACCEPT
-sudo netfilter-persistent save
+AWS throttles outbound **port 25** by default, which is the one thing that would have stopped this
+deployment dead. Tested from the instance:
+
+```
+port 587 OPEN      ← SMTP submission; this is what the sender uses
+port 993 OPEN      ← IMAP; this is what the reply engine uses
+port 25  blocked   ← expected on AWS, and we never use it
 ```
 
-Do **not** open 5432, 5433 or 8000. Nothing outside the Compose network needs them: Postgres
-publishes no port at all, and the api is reached only through Caddy.
+Nothing here needs a support request to AWS. Re-run the check after any instance change:
 
-Check from your own machine, not from the VM: `nc -vz <ip> 443` should connect once Caddy is up.
+```bash
+timeout 10 bash -c 'cat < /dev/null > /dev/tcp/smtp.gmail.com/587' && echo open || echo blocked
+```
 
-### 1.4 Install Docker
+### 1.4 Docker
 
 ```bash
 sudo apt-get update && sudo apt-get upgrade -y
 curl -fsSL https://get.docker.com | sudo sh
 sudo usermod -aG docker "$USER"   # log out and back in for this to take effect
-docker compose version            # expect v2.x
+docker compose version
 ```
+
+Installed on this instance: Docker **29.9.0**, Compose **v5.6.0**.
 
 ### 1.5 Unattended security updates
 
@@ -102,6 +130,27 @@ A VM nobody logs into for three months is a VM with three months of unpatched ke
 sudo apt-get install -y unattended-upgrades
 sudo dpkg-reconfigure --priority=low unattended-upgrades
 ```
+
+### 1.6 What is already done on this instance
+
+- Docker and Compose installed; `ubuntu` is in the `docker` group.
+- `unattended-upgrades` installed.
+- The repository cloned to **`/opt/outreach`**, using a repository-scoped **read-only deploy key**
+  (`ec2-outreach-automation (read-only)`, in the repo's Settings → Deploy keys). A deploy key
+  rather than a personal token because it grants one repository and nothing else, and revoking it
+  is one click. The private half never leaves the VM.
+- **The production image builds and runs on this instance** — `docker build` succeeds, the app
+  imports, `alembic` runs, and the container is `outreach` rather than root.
+- `deploy/compose.prod.yml` validates there, and both scripts parse with LF endings and their
+  executable bit intact.
+
+**What is deliberately not done**, because it cannot be done for you:
+
+1. **`.env` does not exist on the VM.** It holds every secret, and nothing automated should ever
+   write or read it. §3.1 is yours.
+2. **No DNS record points at 3.25.23.191 yet**, so Caddy has not been started: it would ask
+   Let's Encrypt for a certificate, fail the challenge, and burn into an hourly rate limit. §2
+   first, then §4.
 
 ---
 
@@ -128,15 +177,23 @@ challenge and hides the real client address from the rate limiter.
 
 ## 3. The code and the configuration
 
-The repository is **private**. Use a read-only deploy key rather than a personal token: a deploy
-key grants one repository, a token grants every repository you can see.
+**Already done on this instance** (§1.6): the repository is at `/opt/outreach` and pulls with a
+repository-scoped, read-only deploy key. To bring it up to date:
+
+```bash
+cd /opt/outreach && git pull --ff-only
+```
+
+If you ever rebuild the VM, this is how it was set up. A deploy key rather than a personal access
+token, because it grants exactly one repository and revoking it is one click; the private half
+never leaves the VM.
 
 ```bash
 sudo mkdir -p /opt/outreach && sudo chown "$USER" /opt/outreach
 ssh-keygen -t ed25519 -f ~/.ssh/outreach_deploy -N ''
-cat ~/.ssh/outreach_deploy.pub     # add this under Settings → Deploy keys, read-only
-git -c core.sshCommand='ssh -i ~/.ssh/outreach_deploy' \
-    clone git@github.com:Harishchand83077/outreach-automation.git /opt/outreach
+cat ~/.ssh/outreach_deploy.pub     # add under Settings → Deploy keys, **read-only**
+git -c core.sshCommand='ssh -i ~/.ssh/outreach_deploy' clone \
+    git@github.com:Harishchand83077/outreach-automation.git /opt/outreach
 cd /opt/outreach
 git config core.sshCommand 'ssh -i ~/.ssh/outreach_deploy'
 ```
@@ -412,9 +469,10 @@ every dump is a complete copy of every lead, every email body and every reply.
 ### 7.2 The weekly off-box copy is the one that matters
 
 ADR-001 put the database on this VM, which removed five problems and introduced one: **the
-database dies with the box.** No point-in-time recovery, no vendor holding a copy. On an Oracle
-Always Free instance that can be reclaimed for idleness, this is a real scenario, not a
-hypothetical.
+database dies with the box.** No point-in-time recovery, no vendor holding a copy. The Elastic IP
+and the EBS volume survive a stop/start, but not a terminated instance, a deleted volume or a
+closed account — and an account on a free plan with a $5 budget alarm is exactly the kind that
+gets suspended over a billing surprise.
 
 ```bash
 scp -r <vm>:/opt/outreach/backups/ ~/outreach-backups/
@@ -481,8 +539,8 @@ The sequence, which is Phase 10:
 | Dashboard shows `Unexpected token '<'` | `VITE_API_URL` is unset or wrong in the Cloudflare build. §4.2. |
 | Dashboard says "no organisation for your account" | No `members` row for that Supabase `sub`. §4.1. |
 | A browser CORS error | `CORS_ALLOWED_ORIGINS` must be the **exact** origin, scheme included, no trailing slash. |
-| Certificate never issued | Port 80 blocked (both firewalls — §1.3), or DNS not resolving yet, or the record is Cloudflare-proxied. |
-| Nothing is being sent | `check_env` first — `SEND_MODE` is `disabled` by default and that is deliberate. Then the mailbox: a paused mailbox stops sending and raises an alert. |
+| Certificate never issued | No A record yet, the record is Cloudflare-proxied (must be grey cloud), or port 80 is closed in `outreach-automation-sg`. |
+| Nothing is being sent | `check_env` first — `SEND_MODE` is `disabled` by default and that is deliberate. Then the mailbox: a paused mailbox stops sending and raises an alert. Port 587 is open on this instance (§1.3), so the network is not the cause. |
 | Jobs piling up as `dead` | `GET /api/v1/admin/jobs?status=dead` for the error, then `logs worker`. |
 | A message stuck in `unknown` | ADR-002: a send whose outcome could not be determined is left for a human rather than retried into a possible duplicate. Check the Sent folder, then resolve it in the dashboard. |
 
