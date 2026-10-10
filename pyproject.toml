@@ -93,20 +93,13 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# The legacy flat modules are superseded module-by-module during the rewrite. Lint them for real
-# defects (B, F, ASYNC correctness) but do not churn them for style that is about to be deleted:
-# E501/E402 formatting, DTZ naive datetimes and UP modernisation are all fixed by the rewrite
-# itself, and reflowing them now would bury the real changes in review noise.
-"{main,api_server,runner,graph,nodes,decision_engine,reply_monitor,approval_store,database,llm_client,logger,state,email_utils}.py" = [
-    "DTZ", "S", "UP", "E501", "E402", "ASYNC109", "ASYNC240",
-]
 "tests/**" = ["S", "ASYNC"]
 
 # ──────────────────────────────────────────────────────────────────────────────
 [tool.mypy]
 python_version = "3.12"
 # Strict where the rewrite lives; the legacy modules are excluded until they are replaced.
-files = ["app", "config"]
+files = ["app"]
 strict = true
 warn_unreachable = true
 pretty = true

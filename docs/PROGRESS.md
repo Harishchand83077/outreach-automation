@@ -84,28 +84,38 @@ correctly — the draft was untouched — but answered with a server error. Now 
 (as everywhere else: confirming an id exists in another org is itself a leak) and `ValueError`
 is 409 for a stale queue.
 
-**Phase 7 slice 3 (this session): imports, suppressions, mailbox and admin.** 1062 tests.
+**Phase 7 is complete, and the prototype is gone.** 1026 tests. The legacy flat modules —
+`api_server.py`, `decision_engine.py`, `email_utils.py`, `nodes.py`, `graph.py`, `runner.py`,
+`database.py`, `reply_monitor.py`, `approval_store.py`, `excel_loader.py`, `llm_client.py`,
+`logger.py`, `main.py`, `state.py` and the `config/` package — are deleted. `app/` is the whole
+system.
 
-- `POST /campaigns/{id}/imports/preview` writes nothing; `commit` **re-reads and re-validates
-  the file** rather than accepting a verdict list from the caller, because a preview can be
-  minutes old (someone may have opted out since) or simply forged. A structural test asserts the
-  endpoint takes a file and no `rows`/`preview`/`verdicts` parameter.
-- Research is enqueued in the same transaction as the insert, so a lead never exists without the
-  work that moves it forward, and a rollback takes both.
-- Suppressions, mailbox pause/resume, `admin/usage`, `admin/jobs`, and `admin/needs-attention`
-  (unknown sends, dead jobs, paused mailboxes — the three counts worth a daily look, in one call
-  so the UI need not poll three).
+**The test count went down, from 1062 to 1026, and that is the point of the change.** Thirty-six
+tests of deleted code went with it. Before deleting anything, the guarantees those tests held
+were re-proved against the new modules:
 
-**A defect found by a test:** `POST /suppressions` passed `reason` straight through to a column
-with a check constraint, so an unexpected value became a 500 that told the caller nothing. The
-allowed set is now validated in the endpoint and mirrored from the constraint.
+- `tests/unit/test_send_guard.py` — the `SEND_MODE` gate in `app/services/mail/smtp.py`:
+  `disabled` is the default and blocks everyone including allowlisted addresses, an unlisted
+  recipient is refused before a socket opens, a substring is not a match, and a structural test
+  asserts nothing outside that one function *decides* on `SEND_MODE`.
+- `tests/unit/test_settings.py` — placeholder rejection, the `DRY_RUN_EMAILS` refusal, and that
+  the committed template is never in the `env_file` chain.
+
+Writing those first was deliberate: deleting a test and its subject together looks tidy and
+quietly removes the proof.
+
+**Nine issues close with this deletion**, because they described that file and it now does not
+exist: **C1** (zero authentication), **C3** (wildcard CORS), **C4** (IP-keyed rate limit), **C7**
+(whole-table responses), **B18**, **E1** (workers inside the API process), **NEW-4** (CSV formula
+injection — the endpoint is deleted, not re-guarded), **NEW-6** (`os.chdir` at import), **NEW-7**
+(string-interpolated SQL).
 
 **Next up.**
-1. **Delete the legacy `api_server.py` and the flat prototype modules it drags in.** That is what
-   closes **C1, C3, C4, C7, NEW-4 and NEW-6** — they describe that file, and until it is gone the
-   unauthenticated API is still what runs on the owner's machine. Also kills B18, E1 and NEW-7.
-2. Phase 8: point the dashboard at `/api/v1` with Supabase login.
-3. Phase 9 (ops, Docker, deploy, `docs/DEPLOY.md`), Phase 10 (rehearsal, go-live gate).
+1. **Phase 8:** point the dashboard at `/api/v1` with Supabase login. `frontend/src/api.js`
+   already centralises the calls, so this is adding a token and changing paths. Closes E8, NEW-3.
+2. **Phase 9 (ops):** Docker, Compose, Caddy, `docs/DEPLOY.md`, structured logs, backups. This is
+   what finally makes the hosted dashboard show real data. Closes C6, D6, E7, the D5 runbook.
+3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the go-live gate.
 
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
@@ -163,7 +173,7 @@ Create new branches from `origin/main`.
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
-| 7 | Auth, multi-tenancy | **In progress** - 1062 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. The legacy `api_server.py` still runs and is still unauthenticated. |
+| 7 | Auth, multi-tenancy | **Done** - 1026 tests. The legacy API is deleted. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. The legacy `api_server.py` still runs and is still unauthenticated. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
@@ -178,14 +188,14 @@ test that proves each resolution.
 
 | Status | Count | IDs |
 |---|---|---|
-| **Superseded-by-rewrite** (each with a test) | 29 | A1–A8, B5, B7–B17, C5, D1, D2, D3, D4, E2–E5 |
+| **Superseded-by-rewrite** (each with a test) | 38 | A1-A8, B5, B7-B18, C1, C3, C4, C5, C7, D1-D4, E1-E5, NEW-4, NEW-6, NEW-7 |
 | **Done** | 14 | B1, B2, B3, B4, B6, C2, C8, E6, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
-| Partly | 2 | D5 (headers, plain text and the footer done; the SPF/DKIM/DMARC runbook is Phase 9) · NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1–F3 rewrite) |
-| Verified, not yet fixed | 14 | B18, C1, C3, C4, C6, C7, D6, E1, E7, E8, NEW-3, NEW-4, NEW-6, NEW-7 |
+| Partly | 2 | D5 (headers, plain text and the footer done; the SPF/DKIM/DMARC runbook is Phase 9) - NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1-F3 rewrite) |
+| Verified, not yet fixed | 5 | C6, D6, E7, E8, NEW-3 |
 
-**43 of 59 resolved.** What is left is Phase 7 (C1, C3, C4, C7, NEW-4, NEW-6), Phase 8 (E8, NEW-3),
-Phase 9 (C6, D6, E7, the D5 runbook) and the legacy-module leftovers that die with it (B18, E1,
-NEW-7).
+**52 of 59 resolved.** Everything left is Phase 8 (E8, NEW-3) or Phase 9 (C6, D6, E7, the D5
+runbook). Counts are computed from `ISSUES.md`, which holds the evidence and the test proving
+each resolution.
 
 **What the safety patch actually guarantees** (each with a test):
 
