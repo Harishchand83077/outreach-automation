@@ -100,9 +100,23 @@ You need: a VM with SSH access (Ubuntu), Docker installed (Claude Code will prov
 
 Env vars (production only): `APP_ENV=production`, `API_PUBLIC_URL`, `ALLOWED_ORIGINS`, `CRON_SECRET` (generate: `openssl rand -hex 32`), `SEND_MODE` (starts as `disabled`; you flip to `allowlist` for rehearsal, then `live`).
 
-## 7. Cloudflare (frontend hosting) — free
+## 7. Cloudflare (frontend hosting) — free — **done 2026-10-10**
 
-Vercel's free Hobby plan prohibits commercial use (an agency counts), so use Cloudflare Pages, whose free tier has no such restriction. cloudflare.com → sign up → Workers & Pages → connect GitHub repo (root `frontend`, build `npm run build`, output `dist`). Env (build-time): `VITE_API_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` (these are public by design).
+Vercel's free Hobby plan prohibits commercial use (an agency counts), so the dashboard is hosted on Cloudflare, whose free tier has no such restriction. The owner disconnected and deleted the Vercel project on 2026-10-10 and connected this repo to Cloudflare instead.
+
+Dashboard settings: Workers & Pages → connect GitHub repo, **root directory `frontend`**, build `npm run build`, output `dist`. Env (build-time): `VITE_API_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY` — these are public by design and belong in the Cloudflare dashboard, not in this repo.
+
+The build is configured by **`frontend/wrangler.jsonc`**, committed. It declares an assets-only
+Worker — no server code, just the Vite output — and sets `not_found_handling` to
+`single-page-application`, which is what makes a browser refresh on a client-side route such as
+`/leads/<id>` work. Without it Cloudflare looks for a file at that path, does not find one, and
+returns 404 before the router's JavaScript is ever served. This replaces the `_redirects` file the
+older Pages flow needed; do not add both.
+
+**If the project was created as Pages rather than as a Worker**, the same file needs the Pages key
+instead — delete the `assets` block and use `"pages_build_output_dir": "./dist"`. Tell Claude Code
+which one the dashboard shows and it will adjust. Either way the repo carries no Vercel config,
+because Vercel was wired up entirely through its dashboard; nothing needed deleting here.
 
 ## 8. Booking link
 Cal.com (free) or Google Calendar appointment scheduling or Calendly → create a "20-min intro call" → copy the public link. It goes into the **campaign persona** in the UI (not an env var).

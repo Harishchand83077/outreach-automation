@@ -70,7 +70,10 @@
       "Bash(git filter-branch:*)",
       "Bash(gh repo delete:*)",
       "Bash(gh repo edit --visibility public:*)",
-      "Bash(curl:*|*sh*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(iwr:*)",
+      "Bash(Invoke-WebRequest:*)",
       "Bash(*SEND_MODE=live*)",
       "Bash(*SEND_MODE='live'*)",
       "Bash(*SEND_MODE=\"live\"*)"

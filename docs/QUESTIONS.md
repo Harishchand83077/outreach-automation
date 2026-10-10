@@ -6,42 +6,44 @@ name the environment variable and where to set it.
 
 ## Needs your hand (I am not permitted to do these)
 
-**Q-0 — Two fixes to `.claude/settings.json`.** I created the file, but editing it afterwards is
-blocked as self-modification (correctly — it is my own permissions file). Two lines need your
-attention:
+**Q-0 — One fix to `.claude/settings.json`, now measured rather than guessed.** I created the
+file, but editing it afterwards is blocked as self-modification (correctly — it is my own
+permissions file). Both items below were re-tested on 2026-10-10 by running commands and watching
+what the permission layer actually did.
 
-1. **`"Bash(curl:*|*sh*)"` in `deny` is not valid pattern syntax**, so it matches nothing and the
-   intended "never pipe a download into a shell" rule is **not actually enforced**. Replace that one
-   entry with these four — nothing in this project needs an HTTP client at the shell, since every
-   test fakes the network:
+1. **`"Bash(curl:*|*sh*)"` in `deny` enforces nothing — confirmed.** `curl --version` ran without a
+   prompt under the current file. Bash permission rules are a prefix match with an optional
+   trailing `*`; there is no `|` alternation operator, so that entry is read as one literal pattern
+   that no command can match, and the intended "never pipe a download into a shell" rule has never
+   been in force.
+
+   Replace that one entry with these four. Nothing in this project needs an HTTP client at the
+   shell — every test fakes the network, and `uv` and `npm` fetch packages through their own
+   allowed entries:
    ```json
    "Bash(curl:*)",
    "Bash(wget:*)",
    "Bash(iwr:*)",
    "Bash(Invoke-WebRequest:*)",
    ```
-2. **`"Read(./.env.*)"` also blocks `.env.example`** — and this is not merely cosmetic, as I first
-   assumed. It **blocked part of the Phase 0 safety patch**: `.env.example` still documents the
-   deleted `DRY_RUN_EMAILS` flag, including the sentence that caused issue B1 ("Leave unset or 0
-   to send real emails"), and it does not mention `SEND_MODE` at all. Startup now refuses to run
-   if `DRY_RUN_EMAILS` is set, so a stale copy cannot silently mislead, but the template itself is
-   wrong until it is edited.
+   What this buys and what it does not: it stops the ordinary path, and Claude Code splits a
+   compound command on `&&` and `|` and checks each part, so `echo x && curl ...` is caught too.
+   It is not a sandbox — `bash -c "curl ..."` or an alias would still get through. It is
+   defence-in-depth against an accidental `curl ... | sh`, not a containment boundary.
 
-   Recommended fix — narrow the rule so the committed template stays maintainable while every
-   real secret file stays blocked. Replace `"Read(./.env.*)"` and `"Read(./**/.env.*)"` with:
-   ```json
-   "Read(./.env.local)",
-   "Read(./.env.*.local)",
-   "Read(./.env.production)",
-   "Read(./.env.development)",
-   "Read(./**/.env.local)",
-   ```
-   Keep `"Read(./.env)"` and `"Read(./**/.env)"` exactly as they are. Then tell me and I will
-   finish the `.env.example` rewrite. Alternatively, paste the replacement block into
-   `.env.example` yourself — the exact text is in the Phase 0 PR description.
+2. **`"Read(./.env.*)"` blocking `.env.example` is already worked around — no change needed.** The
+   committed template is now **`env.example`** (undotted), which the rule does not match, so it is
+   readable and maintainable and the stale `DRY_RUN_EMAILS` text that caused issue B1 was rewritten
+   long ago. My earlier recommendation was to narrow the rule to five specific filenames;
+   **I now recommend against that.** The broad `.env.*` deny is the stronger rule — it covers a
+   file neither of us has thought of yet, such as a `.env.staging` you create next month — and the
+   undotted template costs nothing. Leave these two lines exactly as they are.
 
-Nothing else in the file needs changing — the `allow`/`ask`/`deny` lists otherwise match §00.3 plus
-the two extra denies (`Read(./local/**)`, `Bash(gh repo edit --visibility public:*)`).
+**Also verified, and reassuring:** `"Bash(*SEND_MODE=live*)"` **does** enforce. An attempt to run
+`echo SEND_MODE=live` was refused, so the leading-and-trailing-wildcard form works in this build
+and hard rule 1 has the permission-layer backstop it was meant to have. The `curl` entry's problem
+is the `|`, not the wildcards. That backstop is the third line of defence anyway, behind
+`SEND_MODE=disabled` as the default and the single `is_send_allowed` gate.
 
 ## Needed soon
 
