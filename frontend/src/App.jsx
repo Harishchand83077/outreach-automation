@@ -1,8 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
-
-// When deployed, VITE_API_URL is the backend origin (e.g. https://xxx.onrender.com). We need /api for routes.
-const _base = import.meta.env.VITE_API_URL || ''
-const API = _base ? (_base.replace(/\/api\/?$/, '') + '/api') : '/api'
+import { API, getJson, postJson } from './api'
 
 // Simple toast: id, message, type ('success'|'error'|'info')
 function Toast({ toast, onDismiss }) {
@@ -49,9 +46,7 @@ export default function App() {
 
   const fetchLeads = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/leads`)
-      if (!r.ok) throw new Error(r.statusText)
-      const data = await r.json()
+      const data = await getJson('/leads')
       setLeads(data.leads || [])
     } catch (e) {
       setError(e.message)
@@ -60,18 +55,14 @@ export default function App() {
 
   const fetchPending = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/leads/pending`)
-      if (!r.ok) return
-      const data = await r.json()
+      const data = await getJson('/leads/pending')
       setPending(data.pending || [])
     } catch (_) {}
   }, [])
 
   const fetchRunStatus = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/run/status`)
-      if (!r.ok) return
-      const data = await r.json()
+      const data = await getJson('/run/status')
       setRunning(data.running === true)
       setLastRunError(data.last_error || null)
     } catch (_) {}
@@ -79,18 +70,14 @@ export default function App() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/stats`)
-      if (!r.ok) return
-      const data = await r.json()
+      const data = await getJson('/stats')
       setStats(data)
     } catch (_) {}
   }, [])
 
   const fetchConfigCheck = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/config/check`)
-      if (!r.ok) return
-      const data = await r.json()
+      const data = await getJson('/config/check')
       setGroqConfigured(data.groq_configured === true)
     } catch (_) {}
   }, [])
@@ -119,9 +106,7 @@ export default function App() {
     try {
       const form = new FormData()
       form.append('file', file)
-      const r = await fetch(`${API}/upload`, { method: 'POST', body: form })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || data.message || r.statusText)
+      const data = await postJson('/upload', { body: form })
       await fetchLeads()
       addToast(`Uploaded ${data.count || 0} lead(s). You can run outreach now.`, 'success')
     } catch (err) {
@@ -136,9 +121,7 @@ export default function App() {
   const handleRun = async () => {
     setError(null)
     try {
-      const r = await fetch(`${API}/run?use_existing=true`, { method: 'POST' })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || data.message || r.statusText)
+      const data = await postJson('/run?use_existing=true')
       if (data.status === 'no_leads') throw new Error('No leads in INIT status. Upload an Excel file first.')
       if (data.status === 'already_running') {
         setRunning(true)
@@ -158,9 +141,7 @@ export default function App() {
   const handleRetryFailed = async () => {
     setError(null)
     try {
-      const r = await fetch(`${API}/run/retry-failed`, { method: 'POST' })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || data.message || r.statusText)
+      const data = await postJson('/run/retry-failed')
       if (data.reset_count > 0) {
         addToast(data.message || `${data.reset_count} lead(s) reset. Click Run outreach to retry.`, 'success')
         await fetchLeads()
@@ -197,19 +178,14 @@ export default function App() {
     const { email, type } = p
     let url, body
     if (type === 'question_reply') {
-      url = `${API}/leads/${encodeURIComponent(email)}/approve-question-reply`
+      url = `/leads/${encodeURIComponent(email)}/approve-question-reply`
       body = { response_text: getContent(p) }
     } else {
-      url = `${API}/leads/${encodeURIComponent(email)}/approve-${type}`
+      url = `/leads/${encodeURIComponent(email)}/approve-${type}`
       body = type === 'insights' ? { edited_insights: getContent(p) } : { edited_email_draft: getContent(p) }
     }
     try {
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      if (!r.ok) throw new Error((await r.json()).detail || r.statusText)
+      await postJson(url, { json: body })
       setEditedContent((s) => ({ ...s, [pendingKey(p)]: undefined }))
       await fetchPending()
       await fetchLeads()
@@ -222,12 +198,9 @@ export default function App() {
   const reject = async (email, type) => {
     const feedback = rejectFeedback[`${email}-${type}`] || ''
     try {
-      const r = await fetch(`${API}/leads/${encodeURIComponent(email)}/reject-${type}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback: feedback || undefined }),
+      await postJson(`/leads/${encodeURIComponent(email)}/reject-${type}`, {
+        json: { feedback: feedback || undefined },
       })
-      if (!r.ok) throw new Error((await r.json()).detail || r.statusText)
       setRejectFeedback((s) => ({ ...s, [`${email}-${type}`]: '' }))
       await fetchPending()
       await fetchLeads()

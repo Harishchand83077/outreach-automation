@@ -49,6 +49,19 @@ than a lookup — better to meet that assumption loudly later than to guess at i
 2. Then Phase 8 (UI completion) and Phase 9 (ops), where `docs/DEPLOY.md`, the Compose file and
    the `/health` + `/ready` endpoints that read `WorkerHealth` belong.
 
+**Known: the dashboard cannot reach an API yet, and now says so.** The owner hit
+`Unexpected token '<', "<!DOCTYPE "... is not valid JSON`. Cause: no backend is deployed, so
+`VITE_API_URL` is unset, so the dashboard asks its own origin for `/api/...`, and Cloudflare's
+`not_found_handling: single-page-application` answers with `index.html` and a **200** — which
+means `if (!r.ok)` passes and `r.json()` is handed HTML. The SPA fallback added in PR #20 is what
+turned a 404 into this, so it is partly self-inflicted.
+
+`frontend/src/api.js` now checks the content type rather than only the status, and says what is
+actually wrong. The underlying fact is unchanged and is Phase 9 work: **there is no deployed
+backend**, so the hosted dashboard shows data only once `docs/DEPLOY.md` exists and
+`VITE_API_URL` points at a running API. Locally it works through the Vite dev proxy
+(`npm run dev` plus `uvicorn`); `npm run preview` has no proxy and will show the same message.
+
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
   confirmed by test to enforce nothing. The second item is closed: the undotted `env.example`
