@@ -63,12 +63,32 @@ start", and this is the first vertical slice of it.
 **Owner-only was the owner's decision (2026-10-10):** only `owner` is issued today; `admin` and
 `member` exist in the constraint so inviting people later is a row, not a migration.
 
+**Phase 7 slice 2 (this session): the endpoints the dashboard needs.** Cursor pagination
+(`app/api/pagination.py`), campaigns, leads, lead detail and the review queue. 1034 tests.
+
+- **Every list row is a summary.** That is issue C7 stated as a rule: the prototype's
+  `GET /api/leads` returned each lead's full insights, draft body and reply text and the UI
+  polled it every 2.5 seconds. Bodies now live behind `GET /leads/{id}`, one lead at a time.
+  Tests assert the *absence* of those fields, which is the only way the rule survives new fields
+  being added later.
+- **Cursors, not offsets.** An offset shifts under inserts, so a reviewer paging while leads
+  arrive silently skips rows. The cursor is unsigned on purpose: it holds a timestamp and an id
+  the caller already has, and every query is still scoped by `org_id`.
+- **Approval still sends nothing.** It makes a lead eligible; the send loop re-checks
+  suppression, the window, the cap and the lead's state. A structural test proves the review
+  router imports nothing that can send.
+
+**A defect found by a test, fixed here:** a cross-org approve returned **500**. The repository
+raises `LookupError` for "not in this org" and the router caught only `ValueError`. It refused
+correctly — the draft was untouched — but answered with a server error. Now `LookupError` is 404
+(as everywhere else: confirming an id exists in another org is itself a leak) and `ValueError`
+is 409 for a stale queue.
+
 **Next up.**
-1. The rest of Phase 7's endpoints (§14): campaigns, imports, leads, the review queue, replies,
-   suppressions, mailbox, admin. All paginated, none returning whole tables (C7).
-2. Then the legacy `api_server.py` can be deleted, which is what finally closes C1, C3, C4, C7,
-   NEW-4 and NEW-6 — they describe that file, and it still runs.
-3. Phase 8 (UI onto the new API), Phase 9 (ops and deploy), Phase 10 (rehearsal).
+1. The rest of §14: imports (preview/commit), replies, suppressions, mailbox, admin/usage.
+2. Then delete the legacy `api_server.py`. **That is what closes C1, C3, C4, C7, NEW-4 and
+   NEW-6** — they describe that file, and it still runs. Until then they stay open.
+3. Phase 8 (point the UI at the new API), Phase 9 (ops and deploy), Phase 10 (rehearsal).
 
 **Still outstanding for the owner.**
 - **One** `.claude/settings.json` fix in `QUESTIONS.md` **Q-0** — the `curl` deny entry, now
@@ -126,7 +146,7 @@ Create new branches from `origin/main`.
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
 | 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
-| 7 | Auth, multi-tenancy | **In progress** - 1011 tests. Token verification, `members`, tenancy, CORS, rate limits, `/health`, `/ready`, `/me`. The legacy `api_server.py` still runs and is still unauthenticated. |
+| 7 | Auth, multi-tenancy | **In progress** - 1034 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review queue. The legacy `api_server.py` still runs and is still unauthenticated. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
