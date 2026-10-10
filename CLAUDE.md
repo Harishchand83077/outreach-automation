@@ -11,8 +11,8 @@ company from real sources, draft a grounded email, get human approval, send on a
 handle replies, bounces, opt-outs and follow-ups until each lead reaches a terminal state. Each
 *campaign* carries its own sender persona and goal, so the tool is general purpose.
 
-Status: rewriting a prototype into production. The prototype (tagged `baseline-pre-rewrite`) is
-audited in `docs/ISSUES.md` — 51 tracked issues — and analysed in `docs/REPO_ANALYSIS.md`.
+Status: the rewrite is done through Phase 7; the prototype is deleted. `docs/ISSUES.md` tracks
+59 issues (52 resolved) and `docs/REPO_ANALYSIS.md` analyses the original.
 
 ## Hard rules — never break these
 
@@ -50,9 +50,9 @@ uv venv --python 3.12 && uv sync          # create/refresh the env
 .venv/Scripts/python -m mypy app          # types
 .venv/Scripts/python -m app.scripts.check_env   # prints OK/MISSING per var NAME only
 
-# legacy prototype (being replaced; do not extend)
-.venv/Scripts/python main.py leads.xlsx --no-monitor
-uvicorn api_server:app --reload --port 8000
+# the system
+.venv/Scripts/python -m app.worker            # the worker: five asyncio tasks
+uvicorn app.api.app:create_app --factory --reload --port 8000
 cd frontend && npm install && npm run dev
 ```
 
@@ -108,14 +108,9 @@ or defaults (`SEND_MODE`, caps, window, footer), or changes deploy config.
 ## Gotchas in this repo
 
 - The working directory path contains a space (`Desktop\email automation`). **Quote every path.**
-- The legacy flat modules are importable only from the repo root — there is no `pyproject.toml` yet.
-- `config/config.py` loads `.env.example` as defaults *and copies its placeholders into the
-  environment*, so the prototype's `validate()` passes with fake credentials (B3). The replacement
-  must reject `your_`-prefixed values at startup.
-- `DRY_RUN_EMAILS=0` means *dry run*, not "send real", because `bool("0")` is `True` (B1). This flag
-  is being deleted in favour of `SEND_MODE`.
-- A reply reading "not positive" currently classifies as **positive** (B17, substring matching) and,
-  pre-patch, auto-sends (B4).
+- The prototype is **deleted** (Phase 7). `app/` is the whole system; the flat modules and the
+  `config/` package are gone, along with `DRY_RUN_EMAILS` and the substring reply matching. Their
+  history is in `ISSUES.md` and the tag `baseline-pre-rewrite`.
 - `sample_leads.xlsx` is deleted; use `tests/fixtures/leads_example.csv`. The owner's real test
   sheet lives at `local/test_leads.xlsx` — gitignored, and **never read it**.
 - The repo is **private**. Do not make it public.
