@@ -272,3 +272,7 @@ optional. Two incidental findings worth keeping:
 | 2026-10-10 | A valid token with no membership gets 403, not an empty result | Public sign-ups are disabled, so that case is an authenticated stranger and is worth saying plainly |
 | 2026-10-10 | Rate limiting keyed on the token subject, falling back to the address only for public paths | Keyed on IP (C4), every client behind a proxy shares one bucket, so the limit is either useless or an outage |
 | 2026-10-10 | Owner-only roles for now, with `admin` and `member` already in the check constraint | The owner's call (2026-10-10): invite-only comes later, and leaving the roles in the constraint makes that a row rather than a migration |
+| 2026-10-10 | Cursor pagination, not offsets; the cursor is opaque but unsigned | An offset shifts under inserts, so paging while leads arrive skips rows. Nothing in the cursor is secret — it is a timestamp and an id the caller already received — and every query is still scoped by `org_id` |
+| 2026-10-10 | List rows are summaries; bodies only on the single-item endpoint | C7 as a rule rather than a fix. Tests assert the absence of body fields so the rule survives new fields being added later |
+| 2026-10-10 | A resource in another org is 404, never 403 | Confirming that an id is real somewhere else is itself a leak, on reads and on writes alike |
+| 2026-10-10 | `LookupError` from a repository maps to 404, `ValueError` to 409 | They mean different things to a reviewer: "not yours or gone" versus "exists, but you are looking at a stale queue" |
