@@ -235,20 +235,30 @@ def classify_response(
     )
 
 
-def cooldown_for(error: LLMError, *, consecutive_failures: int) -> timedelta:
+def cooldown_for(
+    error: LLMError, *, consecutive_failures: int, now: datetime | None = None
+) -> timedelta:
     """How long to rest an entry after a failure.
 
     The provider's own hint wins. Otherwise exponential backoff on consecutive failures, so a
     persistently broken entry drops out of rotation quickly instead of being retried every call.
+
+    `now` is injectable because the daily-quota branch is measured against the clock, and a test
+    that reads the wall clock is a test that fails at a particular time of day. This one did: CI
+    ran at 23:56 UTC and the computed rest was four minutes, not the hours the test expected.
     """
     if isinstance(error, RateLimitedError):
         if error.retry_after is not None:
             return min(error.retry_after, MAX_COOLDOWN)
         if error.daily_quota:
-            # No hint and a daily quota: rest until the next UTC midnight, the usual reset.
-            now = datetime.now(tz=UTC)
-            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            return min(tomorrow - now, MAX_COOLDOWN)
+            # No hint and a daily quota: rest until the next UTC midnight, which is when
+            # providers reset. Close to midnight that is a short wait, and correctly so — the
+            # quota really is about to come back.
+            current = now or datetime.now(tz=UTC)
+            tomorrow = (current + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            return min(tomorrow - current, MAX_COOLDOWN)
 
     if isinstance(error, PermanentError):
         # Effectively disabled until someone fixes the configuration.

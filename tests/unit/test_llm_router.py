@@ -540,9 +540,22 @@ class TestErrorClassification:
         for a minute would re-fail repeatedly for hours."""
         assert looks_like_daily_quota(429, body) is is_daily
 
-    def test_a_daily_quota_cools_down_until_the_reset(self):
+    def test_a_daily_quota_cools_down_until_the_next_utc_midnight(self):
+        """Providers reset daily quotas at UTC midnight, so that is the correct wait.
+
+        The clock is injected because the earlier version of this test read the wall clock and
+        asserted "more than five minutes" — which is false for the last five minutes of any UTC
+        day. CI ran at 23:56 and caught it, having passed locally every time.
+        """
         error = RateLimitedError("429", entry_name="a", daily_quota=True)
-        assert cooldown_for(error, consecutive_failures=1) > timedelta(minutes=5)
+
+        midday = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+        assert cooldown_for(error, consecutive_failures=1, now=midday) == timedelta(hours=12)
+
+        # Just before midnight the rest is short, and correctly so: the quota really is about
+        # to come back.
+        late = datetime(2026, 10, 12, 23, 56, tzinfo=UTC)
+        assert cooldown_for(error, consecutive_failures=1, now=late) == timedelta(minutes=4)
 
     def test_backoff_grows_with_consecutive_failures(self):
         first = cooldown_for(RetryableError("503"), consecutive_failures=1)

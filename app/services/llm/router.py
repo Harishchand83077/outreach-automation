@@ -104,12 +104,17 @@ class LLMRouter:
         if self._on_alert is not None:
             self._on_alert(alert)
 
-    def cool_down(self, entry: LLMEntry, error: LLMError) -> None:
-        """Rest an entry after a failure, honouring the provider's own hint where given."""
+    def cool_down(self, entry: LLMEntry, error: LLMError, *, now: datetime | None = None) -> None:
+        """Rest an entry after a failure, honouring the provider's own hint where given.
+
+        One clock for both the delay and the deadline: computing the delay against a different
+        instant than the one it is added to is how an off-by-a-few-seconds cool-down appears.
+        """
         state = self.health(entry.name)
         state.consecutive_failures += 1
-        delay = cooldown_for(error, consecutive_failures=state.consecutive_failures)
-        state.cooldown_until = datetime.now(tz=UTC) + delay
+        moment = now or datetime.now(tz=UTC)
+        delay = cooldown_for(error, consecutive_failures=state.consecutive_failures, now=moment)
+        state.cooldown_until = moment + delay
 
         if isinstance(error, PermanentError):
             # Not transient: failing over quietly would leave a broken key in place for weeks.
