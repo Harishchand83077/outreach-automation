@@ -157,7 +157,7 @@ def validate_draft(
     normalised_corpus = _normalise(corpus)
 
     _check_subject(draft, report, kind=kind)
-    _check_length(draft, persona, report)
+    _check_length(draft, persona, report, kind=kind)
     _check_plain_text(draft, report)
     _check_placeholders(draft, report)
     _check_forbidden_phrases(draft, persona, report)
@@ -178,13 +178,17 @@ def validate_draft(
 
 def _check_subject(draft: DraftOutput, report: ValidationReport, *, kind: str) -> None:
     words = draft.subject_word_count
-    if words > 6:
+    # A reply keeps the thread's subject, so its length is whatever they chose and is not ours
+    # to shorten. Rewriting it would break threading in some clients and looks evasive in all.
+    if words > 6 and kind != "reply":
         # Long subjects read as marketing and get truncated on a phone anyway.
         report.fail(f"the subject is {words} words; keep it to 6 or fewer")
     if not draft.subject.strip():
         report.fail("the subject is empty")
 
     lowered = draft.subject.lower()
+    if kind == "reply" and not lowered.startswith("re:"):
+        report.fail("a reply must keep the thread's subject, prefixed with 'Re:'")
     if kind == "initial" and lowered.startswith(("re:", "fwd:", "fw:")):
         # Faking a reply to a conversation that never happened is a deception, and recipients
         # recognise it instantly.
@@ -195,13 +199,19 @@ def _check_subject(draft: DraftOutput, report: ValidationReport, *, kind: str) -
         report.warn("exclamation marks in a subject hurt deliverability")
 
 
-def _check_length(draft: DraftOutput, persona: Persona, report: ValidationReport) -> None:
+def _check_length(
+    draft: DraftOutput, persona: Persona, report: ValidationReport, *, kind: str = "initial"
+) -> None:
     words = draft.body_word_count
     if words > persona.max_words:
         report.fail(
             f"the body is {words} words; the limit for this campaign is {persona.max_words}"
         )
-    if words < 20:
+    # A cold email under 20 words has not said anything. A reply can legitimately be
+    # "Thursday at 3 works, I will send an invite" — holding a reply to the same floor would
+    # pad it, and padding an answer is how a short email becomes an annoying one.
+    floor = 8 if kind == "reply" else 20
+    if words < floor:
         report.fail(f"the body is only {words} words, which is too short to be a real message")
 
 

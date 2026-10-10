@@ -119,6 +119,10 @@ _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
             LeadState.REPLIED,
             LeadState.NO_RESPONSE,
             LeadState.BOUNCED,
+            # A reply that is an unambiguous refusal closes the lead directly. Routing it
+            # through REPLIED would briefly mark it as needing a human, and there is nothing
+            # for a person to decide about "we already have a vendor for this".
+            LeadState.NOT_INTERESTED,
         }
     ),
     LeadState.FOLLOWUP_SENT: frozenset(
@@ -126,6 +130,7 @@ _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
             LeadState.REPLIED,
             LeadState.NO_RESPONSE,
             LeadState.BOUNCED,
+            LeadState.NOT_INTERESTED,
         }
     ),
     LeadState.REPLIED: frozenset(

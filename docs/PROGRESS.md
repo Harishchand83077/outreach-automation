@@ -1,49 +1,69 @@
 # Progress
 
-Updated 2026-10-10 (Phase 1 in progress). Read this with `CLAUDE.md` at the start of every session.
+Updated 2026-10-10 (Phase 6 complete). Read this with `CLAUDE.md` at the start of every session.
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phase 0 is complete.**
+**Where we are. Phases 0 through 6 are complete and merged, except Phase 6 which is on its
+branch.** 952 tests pass; ruff and mypy strict are clean.
 
-- §00 bootstrap and §0 repo analysis: done. Every tracked file read, all 43 original issue IDs
-  verified (all confirmed — none "Partly", none "Not reproducible"), 8 new issues added, baseline
-  measured and tagged `baseline-pre-rewrite`.
-- **Safety patch: merged to `main`** (squashed as `fb64407`). The prototype can no longer send to a
-  stranger, cannot email error text, cannot act on a reply without a human, and refuses to start on
-  placeholder credentials.
-- **CI and docs: on branch `chore/P0-ci`**, pushed, PR not yet opened. Everything green locally:
-  ruff, ruff format, mypy strict, 76 tests, none touching the network.
+- Phase 6a (merged, `b1d6aa4`): inbound mail parsing — type decided from headers first, hard and
+  soft bounces split, quoted text stripped — plus the ten reply labels, the keyword opt-out rules
+  including the Hinglish forms, and the `reconcile` precedence (bounce > auto-reply > keyword
+  opt-out > model).
+- Phase 6b (branch `feat/P6b-reply-actions`, this session): the `ImapPoller`, the reply service
+  that matches, stores and acts, the LLM classifier, the reply drafter, the ingest loop and the
+  ADR-002 send recovery.
 
-**Decisions taken** (see `DECISIONS.md`): Postgres in Compose with Supabase for Auth only (ADR-001);
-no `BCC_SELF` dependency for send recovery (ADR-002); vertical-slice sequencing rather than the
-spec's P0→P10 breadth-first order (ADR-003); `org_id` in the first migration but the members/roles
-UI deferred (ADR-004).
+**What Phase 6b closes:** A6, A8, B5, B10, B11, B17, C5, D2 — each with a test named in
+`ISSUES.md`. A7 (follow-ups) closed in Phase 5.
+
+**Three design gaps the tests found, all fixed here rather than worked around:**
+1. `messages.lead_id` was `NOT NULL`, which made §10.2's "unmatched mail is never deleted"
+   impossible. Now nullable, with `ck_messages_out_has_lead` keeping every *outbound* row attached
+   to a lead (migration `e6ad2939ee88`).
+2. The state machine had no `SENT → NOT_INTERESTED` edge, so a clear "no thanks" could not close a
+   lead. Added to `SENT` and `FOLLOWUP_SENT`.
+3. `strip_quoted` returned the original body when stripping left nothing — so a reply consisting
+   only of our quoted pitch was handed to the classifier, which read our own enthusiasm and said
+   `interested`. It now returns empty when the quote starts at the first line, and such a reply is
+   labelled `other` for a human.
+
+**ADR-002 is confirmed empirically**, not just by design: a pre-generated `Message-ID` was found in
+`[Gmail]/Sent Mail` by `BODY.PEEK` search against the real Google Workspace mailbox. That is what
+`recover_stuck_sends` relies on, and it needs no `BCC_SELF`.
+
+**The issue register was wrong and is now recomputed from `ISSUES.md`.** The "43 original / 51
+total" figures undercounted: there are **51 lettered IDs plus 8 NEW = 59 tracked**. `ISSUES.md`
+also still showed Phase 0's fixes as unresolved while this file called them Done; both now agree,
+and every test citation in `ISSUES.md` has been checked to resolve to a real file and class.
 
 **Next up.**
-1. Open and merge the `chore/P0-ci` PR. First CI run will be the first ever on this repo, so expect
-   to fix workflow details (the `uv sync --frozen` step and the gitleaks action are the likely ones).
-2. Then **Phase 1**: the `app/` data layer — SQLAlchemy models with `org_id` everywhere, Alembic
-   migration 1, `domain/state.transition()` as the single writer of `leads.state`, the `jobs` queue
-   claimed with `FOR UPDATE SKIP LOCKED`, lease and reaper, and the outbox with a unique
-   `idempotency_key`. Targets B9, B12, B16, E2, E3, E4, and B8 structurally.
-3. Owner action still outstanding: the two `.claude/settings.json` fixes in `QUESTIONS.md` **Q-0**.
-   Nothing is blocked by them any more — the template was renamed to `env.example` (undotted) so it
-   stays editable — but `"Bash(curl:*|*sh*)"` is invalid syntax and currently matches nothing.
+1. Push `feat/P6b-reply-actions`, open the PR (label `needs-human`: it changes reply behaviour and
+   adds a migration), merge.
+2. **The worker process is still not assembled.** `app/worker/` has `send_loop.py` only; the five
+   asyncio tasks of §4 (`JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat`) and the job
+   handlers that call `draft_reply`, `ingest_folder` and `recover_stuck_sends` do not exist yet.
+   Everything they need is built and tested; this is wiring. It is the first thing Phase 7 or a
+   short `feat/P6c-worker` should do, and nothing runs end-to-end until it is done.
+3. Then Phase 7 (auth, multi-tenancy): C1, C3, C4, C7, NEW-4, NEW-6.
 
-**Live environment notes.** Python 3.12.1 venv at `.venv`; dependencies now come from
-`pyproject.toml` + `uv.lock` (`uv sync --all-groups`). `gh` is authenticated as `Harishchand83077`.
-The repo is private. `.env` is fully populated and verified via `python -m app.scripts.check_env`,
-with `SEND_MODE=disabled`. Branch protection on `main` is **not yet confirmed** — see `QUESTIONS.md`
-Q-A. GitHub reported 16 Dependabot vulnerabilities against the old unpinned `requirements.txt`;
-re-check once `chore/P0-ci` is merged.
+**Still outstanding for the owner.**
+- The two `.claude/settings.json` fixes in `QUESTIONS.md` **Q-0**.
+- Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
+  call.
+- **Vercel is still deploying this repo on every push.** `ARCHITECTURE_TARGET.md` §3 specifies
+  Cloudflare Pages. Raised before; still live.
 
-**Note on local `main`.** The safety patch was squash-merged, so local `main` diverged from
-`origin/main`. Create new branches from `origin/main`, not from local `main`.
+**Live environment notes.** Python 3.12 venv at `.venv`; dependencies from `pyproject.toml` +
+`uv.lock` (`uv sync --all-groups`). Postgres in Compose on **port 5433** (ADR-005), container
+`outreach-pg`. `gh` is authenticated as `Harishchand83077`; the repo is private. `.env` is
+populated and verified with `python -m app.scripts.check_env`, `SEND_MODE=disabled`. IMAP and SMTP
+both verified against the real mailbox. Integration tests need Postgres running and use a separate
+`_test` database.
 
-**New lead statuses introduced by the patch** (the legacy flat schema has no enum, so these are
-just strings): `SKIPPED_NOT_ALLOWLISTED`, `INSIGHTS_FAILED`, `EMAIL_DRAFT_FAILED`,
-`REPLIED_NEEDS_REVIEW`. They are superseded by the Phase 1 state machine.
+**Note on local `main`.** Merges have been squashed, so local `main` diverges from `origin/main`.
+Create new branches from `origin/main`.
 
 ## Phase status
 
@@ -57,23 +77,30 @@ just strings): `SKIPPED_NOT_ALLOWLISTED`, `INSIGHTS_FAILED`, `EMAIL_DRAFT_FAILED
 | 3 | LLM router, research engine | **Done** - 539 tests |
 | 4 | Drafting, grounding, review queue | **Done** - 633 tests |
 | 5 | Send engine | **Done** - 757 tests. The first allowlist send gate is now runnable. |
-| 6 | Reply engine, follow-ups | Not started |
-| 7 | Auth, multi-tenancy | Not started |
+| 6 | Reply engine, follow-ups | **Done** - 952 tests. Poller, classifier, actions, reply drafter, ingest loop, ADR-002 recovery. |
+| 7 | Auth, multi-tenancy | Not started. **Assemble the worker's five tasks first** - see the handoff note. |
 | 8 | UI completion | Not started |
 | 9 | Ops: Docker, deploy, logs, alerts, backups | Not started |
 | 10 | Rehearsal, go-live gate | Not started |
 
 ## Issue register
 
-51 tracked issues. Every one must end `Done`, `Superseded-by-rewrite` (with a test proving the
-behaviour) or `Won't fix` (with a reason). Full text and evidence in `ISSUES.md`.
+**59 tracked issues**, not the 51 this file claimed until now: 51 lettered IDs (A1–A8, B1–B18,
+C1–C8, D1–D6, E1–E8, F1–F3) plus NEW-1…8. The old figure counted the lettered IDs as 43. Every one
+must end `Done`, `Superseded-by-rewrite` (with a test proving the behaviour) or `Won't fix` (with a
+reason). Counts below are computed from `ISSUES.md`, which holds the full text, evidence and the
+test that proves each resolution.
 
 | Status | Count | IDs |
 |---|---|---|
+| **Superseded-by-rewrite** (each with a test) | 29 | A1–A8, B5, B7–B17, C5, D1, D2, D3, D4, E2–E5 |
 | **Done** | 14 | B1, B2, B3, B4, B6, C2, C8, E6, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
-| **Superseded-by-rewrite** (each with a test proving the behaviour) | 21 | A1, A2, A3, A4, A5, A7, B7, B8, B9, B12, B13, B14, B15, B16, D1, D3, D4, E2, E3, E4, E5 |
-| Partly done | 3 | B7 (crash on a long row fixed; header aliasing deferred to Phase 2) · B18 (numeric/bool parsing and `get_event_loop` fixed; `utcnow`, import-time semaphore, `on_event` and the timestamp-format mismatch deferred) · NEW-8 (`.xls` now rejected with a clear message and `.csv` accepted; the `--skip-monitor` docstring is part of the F1–F3 rewrite) |
-| Verified, not yet fixed | 39 | everything else |
+| Partly | 2 | D5 (headers, plain text and the footer done; the SPF/DKIM/DMARC runbook is Phase 9) · NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1–F3 rewrite) |
+| Verified, not yet fixed | 14 | B18, C1, C3, C4, C6, C7, D6, E1, E7, E8, NEW-3, NEW-4, NEW-6, NEW-7 |
+
+**43 of 59 resolved.** What is left is Phase 7 (C1, C3, C4, C7, NEW-4, NEW-6), Phase 8 (E8, NEW-3),
+Phase 9 (C6, D6, E7, the D5 runbook) and the legacy-module leftovers that die with it (B18, E1,
+NEW-7).
 
 **What the safety patch actually guarantees** (each with a test):
 

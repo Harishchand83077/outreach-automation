@@ -212,19 +212,30 @@ def strip_quoted(body: str) -> str:
     Conservative on purpose: if stripping would leave nothing, the original is returned. A
     one-line reply above an unrecognised quote block is better classified from the whole thing
     than from an empty string.
+
+    With one exception, because that fallback has a sharp edge. When the quote starts at the
+    very first line there is nothing of theirs above it, and returning the original hands the
+    classifier our own pitch — the precise failure the paragraph above warns about. So that
+    case returns empty, and the caller treats a reply with no text of its own as `other` and
+    shows it to a person.
     """
     lines = (body or "").split("\n")
     kept: list[str] = []
+    quoted_from_the_start = False
 
-    for line in lines:
-        if any(pattern.match(line) for pattern in _QUOTE_STARTERS):
-            break
-        if _SIGNATURE.match(line):
+    for index, line in enumerate(lines):
+        is_quote = any(pattern.match(line) for pattern in _QUOTE_STARTERS)
+        is_signature = _SIGNATURE.match(line)
+        if is_quote or is_signature:
+            # Blank lines before the quote do not count as something they wrote.
+            quoted_from_the_start = not any(earlier.strip() for earlier in lines[:index])
             break
         kept.append(line)
 
     result = tidy("\n".join(kept))
-    return result or tidy(body)
+    if result:
+        return result
+    return "" if quoted_from_the_start else tidy(body)
 
 
 def extract_body(message: Message) -> tuple[str, str]:

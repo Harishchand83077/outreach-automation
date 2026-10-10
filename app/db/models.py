@@ -237,8 +237,11 @@ class Message(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
     )
-    lead_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE"), nullable=False
+    #: Nullable because inbound mail that matches no lead is still stored. §10.2 is explicit
+    #: that unmatched mail is never deleted and never marked read — the alternative is silently
+    #: losing somebody's reply. An outbound message always has one; see the check constraint.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE")
     )
     mailbox_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="SET NULL")
@@ -280,6 +283,11 @@ class Message(Base):
         CheckConstraint(
             "direction = 'in' OR idempotency_key IS NOT NULL",
             name="ck_messages_out_has_idempotency_key",
+        ),
+        # Only inbound mail may be orphaned. We never send to nobody.
+        CheckConstraint(
+            "direction = 'in' OR lead_id IS NOT NULL",
+            name="ck_messages_out_has_lead",
         ),
         Index("ix_messages_lead", "lead_id", "created_at"),
         Index("ix_messages_message_id_hdr", "message_id_hdr"),
@@ -506,6 +514,85 @@ class SearchUsage(Base):
     at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (Index("ix_search_usage_org_at", "org_id", "at"),)
+
+
+class ImapCursor(Base):
+    r"""Where the poller got to in one folder.
+
+    `UIDVALIDITY` plus the last UID seen, per §10.1. The prototype searched `UNSEEN` and fetched
+    with `RFC822`, which implicitly set the `\Seen` flag — so a reply arriving while the lead
+    was not in the one state it watched was discarded *and* marked read, invisible forever. It
+    also marked unrelated mail in the operator's own inbox as read (issue B10).
+
+    A cursor means we never depend on flags at all: we ask for UIDs above the last one handled.
+    If the server resets `UIDVALIDITY`, every UID is meaningless and a bounded rescan is needed.
+    """
+
+    __tablename__ = "imap_cursors"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    folder: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: The server's generation marker. A change invalidates every stored UID.
+    uidvalidity: Mapped[int | None] = mapped_column(BigInteger)
+    last_uid: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Consecutive failures, so an alert can fire after three (§18) rather than on the first.
+    consecutive_failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("mailbox_id", "folder", name="uq_imap_cursors_mailbox_folder"),
+    )
+
+
+class Classification(Base):
+    """What we decided a reply was, and why.
+
+    Persisted **before** anything acts on it (§10.3). The prototype classified inside the
+    handler, so a crash or retry re-ran the model and could reach a different answer the second
+    time — and there was no record of the first (issue B17).
+
+    The reasons are stored because "why did we suppress this address?" has to be answerable
+    months later without re-running a model whose weights may have changed.
+    """
+
+    __tablename__ = "classifications"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.messages.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    label: Mapped[str] = mapped_column(String(30), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: Why this label, including which rule overrode the model where one did.
+    rationale: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    llm_entry: Mapped[str | None] = mapped_column(String(60))
+    prompt_version: Mapped[str | None] = mapped_column(String(50))
+    #: What the system did as a result. Never "sent" — see app/domain/reply.py.
+    action: Mapped[str | None] = mapped_column(String(20))
+    acted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("message_id", name="uq_classifications_message"),
+        Index("ix_classifications_lead", "lead_id", "created_at"),
+    )
 
 
 class Suppression(Base):

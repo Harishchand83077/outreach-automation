@@ -194,3 +194,18 @@ async def engine_factory(_migrated_database: None):
     finally:
         for engine in created:
             await engine.dispose()
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def session_factory(_migrated_database: None):
+    """An `async_sessionmaker` for code that opens its own transactions.
+
+    The ingest loop and the send-recovery pass each commit per message on purpose, so they take
+    a factory rather than a session. Sharing one engine keeps the connection count sane while
+    still giving every `async with` its own transaction.
+    """
+    engine = create_async_engine(TEST_DATABASE_URL)
+    try:
+        yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    finally:
+        await engine.dispose()
