@@ -54,11 +54,16 @@ and every test citation in `ISSUES.md` has been checked to resolve to a real fil
   already works around it, and the broad `.env.*` deny should stay as it is.
 - Dependabot PR **#4** (React 19 / Vite 8) left open deliberately — a major framework bump, your
   call.
-- Confirm whether the Cloudflare dashboard shows the dashboard project as a **Worker** or as
-  **Pages**. `frontend/wrangler.jsonc` is written for a Worker; Pages wants
-  `"pages_build_output_dir": "./dist"` instead of the `assets` block, and that is a one-line swap.
-  Also set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as build-time
-  variables there.
+- **The Cloudflare build is failing and only you can fix it — it is in the dashboard, not in the
+  repo.** PR #20's check reads `Workers Builds: outreach-automation`, so it is a **Worker**, which
+  is what `frontend/wrangler.jsonc` is written for. The check gives no log through the GitHub API,
+  so the cause is unconfirmed, but the overwhelmingly likely one is the **root directory**: it
+  defaults to the repo root, where there is no `package.json`, so `npm install` fails before the
+  build starts. In Workers & Pages → the Worker → Settings → Build, set **root directory
+  `frontend`**, build command `npm run build`, deploy command `npx wrangler deploy`. If it still
+  fails, paste the last 20 lines of the build log and I will take it from there.
+- While you are in there: set `VITE_API_URL`, `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` as
+  build-time variables. They are public by design and must not go in this repo.
 
 **Vercel is gone** (2026-10-10): the owner disconnected and deleted the project and connected this
 repo to Cloudflare, as `ARCHITECTURE_TARGET.md` §3 specifies. The repo never held any Vercel
