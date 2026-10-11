@@ -229,3 +229,77 @@ class TestWhatTheRunnerRefusesToDo:
         source = executable_source(module)
         for forbidden in ("smtplib", "SmtpSender", "sendmail"):
             assert forbidden not in source
+
+
+class TestThePipelineChainsItself:
+    """Each stage must queue the next, or the system stops with everything looking fine.
+
+    This exists because research succeeded, stored its findings, moved four leads to
+    `RESEARCHED` — and queued nothing. Drafting never ran, the review queue stayed empty, and
+    the dashboard looked idle rather than broken. Nothing was failing; the chain simply had a
+    missing link, which no single-stage test could see.
+    """
+
+    async def test_research_queues_the_draft(self, session_factory, ctx, org, monkeypatch):
+        from app.db import queue
+        from app.db.models import Campaign, Lead
+        from app.worker import handlers
+
+        async with session_factory() as session, session.begin():
+            campaign = Campaign(
+                org_id=org.id,
+                name="Chain",
+                status="running",
+                persona={
+                    "sender_name": "Asha",
+                    "sender_role": "Founder",
+                    "agency_name": "Arkvane",
+                    "offer": "a prototype",
+                    "goal": "a call",
+                    "cta_text": "Worth a call?",
+                },
+            )
+            session.add(campaign)
+            await session.flush()
+            lead = Lead(
+                org_id=org.id,
+                campaign_id=campaign.id,
+                email_norm="chain@example.com",
+                email_raw="chain@example.com",
+                full_name="Chain Person",
+                company_name="Acme",
+                state="NEW",
+            )
+            session.add(lead)
+            await session.flush()
+            lead_id = lead.id
+            job = await queue.enqueue(
+                session,
+                org_id=org.id,
+                kind=queue.JobKind.RESEARCH_LEAD,
+                lead_id=lead_id,
+                payload={"lead_id": str(lead_id)},
+            )
+            assert job is not None
+
+        class _Outcome:
+            skipped_reason = None
+            verified = None
+
+        async def fake_research(*args, **kwargs):
+            return _Outcome()
+
+        # The network is never touched: what is under test is the chaining, not the research.
+        monkeypatch.setattr(handlers, "research_lead", fake_research)
+
+        runner = JobRunner(ctx, kinds=[queue.JobKind.RESEARCH_LEAD])
+        report = await runner.run_batch()
+        assert report.succeeded == 1, "the research job itself must succeed"
+
+        async with session_factory() as session:
+            queued = await session.execute(
+                select(Job).where(Job.lead_id == lead_id, Job.kind == queue.JobKind.DRAFT_LEAD)
+            )
+            assert queued.scalars().first() is not None, (
+                "research must queue drafting, or the pipeline stops silently"
+            )
