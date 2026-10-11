@@ -130,3 +130,30 @@ describe('a 204', () => {
     await expect(getJson('/suppressions/1')).resolves.toBeNull()
   })
 })
+
+describe('a structured error detail', () => {
+  it('keeps the field errors instead of flattening them to [object Object]', async () => {
+    // The persona check answers with {message, errors[]}. `new Error(object)` would render that
+    // as "[object Object]" and lose exactly the part the form needs to show.
+    globalThis.fetch.mockResolvedValue(
+      respond({
+        status: 422,
+        json: {
+          detail: {
+            message: 'The persona is not valid.',
+            errors: [{ field: 'offer', message: 'Field required', type: 'missing' }],
+          },
+        },
+      })
+    )
+    await expect(postJson('/campaigns')).rejects.toMatchObject({
+      message: 'The persona is not valid.',
+      detail: { errors: [{ field: 'offer', message: 'Field required', type: 'missing' }] },
+    })
+  })
+
+  it('still reads a plain string detail', async () => {
+    globalThis.fetch.mockResolvedValue(respond({ status: 409, json: { detail: 'already sent' } }))
+    await expect(postJson('/x')).rejects.toThrow(/already sent/)
+  })
+})

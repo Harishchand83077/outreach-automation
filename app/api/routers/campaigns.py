@@ -15,13 +15,15 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
-from app.db.models import Campaign, Draft, Event, Lead, Message, Research
+from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Research
 from app.db.repo import OrgContext
+from app.domain.persona import Persona
 from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
@@ -282,3 +284,133 @@ async def erase_lead_endpoint(
         },
         "suppression_kept": result.suppression_kept,
     }
+
+
+@router.post("/mailboxes", status_code=status.HTTP_201_CREATED)
+async def create_mailbox(
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Register the mailbox a campaign sends from.
+
+    **No credentials are stored here.** `secret_ref` names which set of SMTP/IMAP credentials in
+    the environment to use, and the credentials themselves stay in `.env` where the operator put
+    them. A mailbox row is the *policy* — who it is from, how fast it may send, whether it is
+    paused — not the login.
+
+    `from_email` should match the authenticated SMTP account: it is what recipients see and what
+    SPF, DKIM and DMARC are published for.
+    """
+    from_name = str(payload.get("from_name") or "").strip()
+    from_email = str(payload.get("from_email") or "").strip().lower()
+    if not from_name or not from_email:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "from_name and from_email are both required."
+        )
+    if "@" not in from_email:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "from_email is not an address.")
+
+    # `payload.get("daily_cap") or 100` would turn an explicit 0 into 100 and accept it, because
+    # 0 is falsy — and the database's `daily_cap > 0` check would then never be the thing that
+    # caught it. Absent means "use the default"; present means "use exactly this".
+    raw_cap = payload.get("daily_cap")
+    try:
+        daily_cap = 100 if raw_cap is None else int(raw_cap)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "daily_cap must be a whole number."
+        ) from exc
+    if daily_cap < 1:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "daily_cap must be positive.")
+
+    mailbox = Mailbox(
+        org_id=user.org_id,
+        from_name=from_name,
+        from_email=from_email,
+        reply_to=str(payload.get("reply_to") or "").strip().lower() or from_email,
+        secret_ref=str(payload.get("secret_ref") or "default"),
+        daily_cap=daily_cap,
+        paused=False,
+    )
+    session.add(mailbox)
+    await session.commit()
+    return {
+        "id": str(mailbox.id),
+        "from_name": mailbox.from_name,
+        "from_email": mailbox.from_email,
+        "daily_cap": mailbox.daily_cap,
+    }
+
+
+@router.post("/campaigns", status_code=status.HTTP_201_CREATED)
+async def create_campaign(
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Create a campaign, with its sender persona.
+
+    **The persona is validated here, not at drafting time.** It is the list of things a draft is
+    allowed to assert about us — everything else must come from cited research about the
+    recipient (hard rule 6). A malformed persona discovered while generating would either block
+    the lead or, worse, quietly produce a weaker draft, so it is rejected at the door.
+
+    A campaign starts `draft` and paused-by-omission: it has no mailbox until one is attached,
+    and `status` only becomes `running` when somebody says so. Nothing is sent as a side effect
+    of creating anything.
+    """
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "name is required.")
+
+    persona_in = payload.get("persona") or {}
+    try:
+        persona = Persona.model_validate(persona_in)
+    except ValidationError as exc:
+        # The field errors are returned: this is the owner's own form, and "persona is invalid"
+        # with no indication of which field would make it unusable.
+        #
+        # Only `loc`, `msg` and `type` are passed on. Pydantic's raw error dicts carry a `ctx`
+        # holding the original exception *object*, which is not JSON-serialisable — returning
+        # them whole turned a 422 into a 500, hiding the very message the caller needed.
+        errors = [
+            {
+                "field": ".".join(str(part) for part in error["loc"]) or "persona",
+                "message": error["msg"],
+                "type": error["type"],
+            }
+            for error in exc.errors(include_url=False)
+        ]
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"message": "The persona is not valid.", "errors": errors},
+        ) from exc
+
+    mailbox_id: uuid.UUID | None = None
+    if raw_mailbox := payload.get("mailbox_id"):
+        try:
+            mailbox_id = uuid.UUID(str(raw_mailbox))
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "mailbox_id is not a uuid."
+            ) from exc
+        owned = await session.scalar(
+            select(Mailbox.id).where(Mailbox.id == mailbox_id, Mailbox.org_id == user.org_id)
+        )
+        if owned is None:
+            # 404, as everywhere: a mailbox in another org must look like one that is not there.
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "Mailbox not found.")
+
+    campaign = Campaign(
+        org_id=user.org_id,
+        name=name,
+        status="draft",
+        mailbox_id=mailbox_id,
+        persona=persona.model_dump(mode="json"),
+        settings=dict(payload.get("settings") or {}),
+        paused=False,
+    )
+    session.add(campaign)
+    await session.commit()
+    return campaign_summary(campaign)
