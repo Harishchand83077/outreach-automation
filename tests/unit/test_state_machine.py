@@ -181,3 +181,44 @@ class TestClassificationSetsAreCoherent:
     def test_states_are_plain_strings_for_storage(self):
         assert LeadState.SENT == "SENT"
         assert str(LeadState.SENT) == "SENT"
+
+
+class TestTheResearchPathIsReachable:
+    """Every state the worker writes must be reachable from the one before it.
+
+    This exists because `handle_research_lead` transitioned `NEW -> RESEARCHED`, which the table
+    forbids, and **nothing in the system ever set `ENRICHING`**. Every research job did all of
+    its work — fetched pages, called a model, stored findings — and then died on the final
+    transition. The table was right and the caller was wrong, and no test compared the two.
+    """
+
+    def test_new_cannot_jump_straight_to_researched(self):
+        from app.domain.state import LeadState, is_allowed
+
+        assert not is_allowed(LeadState.NEW, LeadState.RESEARCHED)
+
+    def test_the_path_the_worker_takes_is_legal_end_to_end(self):
+        from app.domain.state import LeadState, is_allowed
+
+        path = [
+            LeadState.NEW,
+            LeadState.ENRICHING,
+            LeadState.RESEARCHED,
+            LeadState.DRAFTED,
+        ]
+        for before, after in itertools.pairwise(path):
+            assert is_allowed(before, after), f"{before} -> {after} must be legal"
+
+    def test_a_lead_being_researched_can_still_be_skipped_or_failed(self):
+        """A crash or a thin company must not strand a lead in ENRICHING forever."""
+        from app.domain.state import LeadState, is_allowed
+
+        assert is_allowed(LeadState.ENRICHING, LeadState.SKIPPED)
+        assert is_allowed(LeadState.ENRICHING, LeadState.FAILED)
+
+    def test_enriching_is_not_a_self_loop(self):
+        """Which is why the handler only claims it when the lead is still NEW: a retried job
+        arrives with the lead already ENRICHING."""
+        from app.domain.state import LeadState, is_allowed
+
+        assert not is_allowed(LeadState.ENRICHING, LeadState.ENRICHING)
