@@ -205,9 +205,23 @@ class TestTheResearchPathIsReachable:
             LeadState.ENRICHING,
             LeadState.RESEARCHED,
             LeadState.DRAFTED,
+            LeadState.AWAITING_APPROVAL,
+            LeadState.APPROVED,
+            LeadState.SENT,
         ]
         for before, after in itertools.pairwise(path):
             assert is_allowed(before, after), f"{before} -> {after} must be legal"
+
+    def test_drafted_cannot_be_skipped_on_the_way_to_approval(self):
+        """The drafter jumped RESEARCHED -> AWAITING_APPROVAL, which the table refuses — after
+        the model had been paid for and the draft already written. Two steps also leave an
+        honest trail: a draft was produced, and then it passed validation.
+        """
+        from app.domain.state import LeadState, is_allowed
+
+        assert not is_allowed(LeadState.RESEARCHED, LeadState.AWAITING_APPROVAL)
+        assert is_allowed(LeadState.RESEARCHED, LeadState.DRAFTED)
+        assert is_allowed(LeadState.DRAFTED, LeadState.AWAITING_APPROVAL)
 
     def test_a_lead_being_researched_can_still_be_skipped_or_failed(self):
         """A crash or a thin company must not strand a lead in ENRICHING forever."""
