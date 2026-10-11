@@ -84,6 +84,23 @@ async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: J
     persona = _persona(campaign)
     router = ctx.router_for(session, job.org_id)
 
+    # `NEW -> RESEARCHED` is not a legal transition, and nothing else ever set `ENRICHING`, so
+    # every research job died on the final transition after doing all of its work. The state is
+    # claimed *before* the work rather than after it, which is also what makes a crash visible:
+    # a lead left in `ENRICHING` says "this was being worked on", where `NEW` would say nothing
+    # happened at all.
+    #
+    # Guarded, because a retried job arrives with the lead already `ENRICHING`, and
+    # `ENRICHING -> ENRICHING` is not legal either.
+    if lead.state == LeadState.NEW.value:
+        await transition(
+            session,
+            org_id=job.org_id,
+            lead_id=lead.id,
+            to_state=LeadState.ENRICHING,
+            data={"job": str(job.id)},
+        )
+
     async with httpx.AsyncClient(follow_redirects=True) as client:
         outcome = await research_lead(
             session,
