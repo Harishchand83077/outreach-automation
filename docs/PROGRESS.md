@@ -4,8 +4,8 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1094 tests
-pass; ruff, ruff format and mypy strict are clean. **56 of 59 issues are resolved.**
+**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1123 tests
+pass; ruff, ruff format and mypy strict are clean. **57 of 59 issues are resolved.**
 
 **IT IS RUNNING.** `https://api.arkvane.in` serves the API over a valid Let's Encrypt
 certificate, and `/ready` answers:
@@ -156,8 +156,38 @@ own directory — so `../.env` and `context: ..` both already meant the reposito
 passing `--project-directory` to force it broke both at once. The compose file now says so, and
 says not to add the flag back.
 
+**Phase 9 slice 2 — privacy and retention (D6) — done.** The last issue outside Phase 8.
+
+- **`DELETE /api/v1/leads/{id}`** erases a lead with its drafts, messages, research and events.
+  Admin-only: it is the single irreversible action in the API.
+- **It leaves a hashed suppression behind**, and that is the decision worth knowing about. A lead
+  who opted out and then asks to be erased is a conflict: honouring the erasure literally deletes
+  the record of their opt-out, and the next import of the same sheet mails them again — a privacy
+  request producing the exact harm it was meant to prevent. So the address is kept as a SHA-256
+  digest: enough to recognise it if offered again, not enough to read out of the database. The
+  send-time check learned the hashed form in the same change, or the whole thing would be
+  decorative.
+- **Honest about what that buys.** A hash is pseudonymisation, not anonymisation — an email
+  address has little entropy, so anyone with this table and a candidate address can confirm a
+  match. `PRIVACY.md` says exactly that rather than implying more.
+- **Retention** runs hourly in the `Scheduler`: terminal leads erased after
+  `LEAD_RETENTION_MONTHS` (12, Q7's default), research page text cleared after 30 days, findings
+  and sources kept. Leads still in conversation are never aged out — retention removes finished
+  work, and somebody mid-thread is not finished.
+- **`RETENTION_ENABLED` is deliberately excluded from the empty-value-means-false validator.**
+  For the other flags "unset means off" is the safe reading; for this one it would quietly stop
+  the system forgetting anything.
+- **`PRIVACY.md` rewritten** against what the code does — the PII routing rule and its limits,
+  the processor list, and the two gaps that remain: no postal address, and erasure does not reach
+  backups already taken. Anyone promising otherwise is describing a system that takes no backups.
+
+**A mistake worth recording.** Half of this work was written, then destroyed by a `git reset
+--hard` after I switched branches with it uncommitted. Untracked files survived; edits to tracked
+files did not. It was redone from the same reasoning, but the lesson is cheap to write down and
+expensive to relearn: commit before switching, even mid-task.
+
 **Next up.**
-1. **Phase 9 slice 2 — privacy and retention (D6).** `DELETE /leads/{id}` as a real erasure, the
+1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
    describes what this system actually does with a lead's data — including that public page text
    goes to providers marked `allow_pii=false` and a lead's name, address and reply never do.
@@ -225,7 +255,7 @@ new branches from `origin/main`.
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
 | 7 | Auth, multi-tenancy | **Done** - 1026 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. **The legacy `api_server.py` is deleted**, and with it nine issues that described it. |
 | 8 | UI completion | **In progress** - dashboard rewired to `/api/v1` with Supabase magic-link login; 12 frontend tests. TypeScript, TanStack Query, campaign editing, lead detail and bulk actions remain (E8, NEW-3). |
-| 9 | Ops: Docker, deploy, logs, alerts, backups | **Slice 1 done** - 1094 tests. Dockerfile, production Compose, Caddy, `deploy.sh`, `backup.sh`, `docs/DEPLOY.md`, JSON logs with request and job ids, the `alerts` table and webhook, and `/ready` wired to the worker heartbeat (ADR-009). Closes C6, D5, E7. **Slice 2 is privacy and retention (D6).** |
+| 9 | Ops: Docker, deploy, logs, alerts, backups, privacy | **Done** - 1123 tests. Dockerfile, production Compose, Caddy, `deploy.sh`, `backup.sh`, `docs/DEPLOY.md`, JSON logs with request and job ids, the `alerts` table and webhook, `/ready` wired to the worker heartbeat (ADR-009), and per-lead erasure with an hourly retention sweep. **Deployed and serving at `https://api.arkvane.in`.** Closes C6, D5, D6, E7. |
 | 10 | Rehearsal, go-live gate | Not started |
 
 ## Issue register

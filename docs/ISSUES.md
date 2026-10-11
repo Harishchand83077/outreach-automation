@@ -74,7 +74,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 | D3 | P1 | **Superseded-by-rewrite** | No send throttling, jitter, daily caps, warm-up, or per-domain limits. Gmail personal ≈500/day, Workspace ≈2000/day; exceeding it risks lockout. |
 | D4 | P1 | **Superseded-by-rewrite** | No email verification beyond `'@' in email`: no syntax check, MX check, role-address (`info@`) or free-domain filtering, no dedupe-by-domain. (`excel_loader.py:45,80`) |
 | D5 | P2 | **Done** - headers, plain text and the footer landed in Phase 5; the SPF/DKIM/DMARC runbook is `docs/DEPLOY.md` §6, with the records as GoDaddy's panel wants them, the two steps everyone forgets (press *Start authentication*; never add a second SPF record) and a verify-as-received gate before the first send. The dedicated sending domain is ADR-006. | No SPF/DKIM/DMARC guidance, no dedicated sending domain, no plain-text/HTML hygiene, no `Message-ID`/`Date`/`Reply-To` control on outbound mail. |
-| D6 | P2 | **Confirmed** | Lead data and reply text go to a third-party LLM with no consent/retention policy; `PRIVACY.md` is 22 generic lines. No deletion path per lead — there is no `DELETE` route in the API at all. |
+| D6 | P2 | **Done** - `DELETE /api/v1/leads/{id}` erases a lead with its drafts, messages, research and events, leaving a **hashed** suppression so forgetting somebody cannot make them contactable again; an hourly retention sweep erases terminal leads after `LEAD_RETENTION_MONTHS` (12, per Q7) and clears research page text after 30 days, both through the same path; `PRIVACY.md` is rewritten against what the code actually does, including the PII routing rule, the processor list, and the two gaps that remain (no postal address, erasure does not reach existing backups). Tests: `tests/integration/test_privacy.py` (15), of which the load-bearing one is `test_erasing_an_opted_out_lead_leaves_them_unreachable`. | Lead data and reply text go to a third-party LLM with no consent/retention policy; `PRIVACY.md` is 22 generic lines. No deletion path per lead — there is no `DELETE` route in the API at all. |
 
 ## E. Architecture & operations
 
@@ -127,15 +127,13 @@ Found during verification (NEW-1…8): P1: 2 · P2: 3 · P3: 3 — **8 added**.
 | Status | Count | IDs |
 |---|---|---|
 | **Superseded-by-rewrite** (each with a test proving the behaviour) | 38 | A1–A8, B5, B7–B18, C1, C3, C4, C5, C7, D1–D4, E1–E5, NEW-4, NEW-6, NEW-7 |
-| **Done** | 17 | B1, B2, B3, B4, B6, C2, C6, C8, D5, E6, E7, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
+| **Done** | 18 | B1, B2, B3, B4, B6, C2, C6, C8, D5, D6, E6, E7, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
 | Partly | 1 | NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1–F3 rewrite) |
-| Verified, not yet fixed | 3 | D6, E8, NEW-3 |
+| Verified, not yet fixed | 2 | E8, NEW-3 |
 
-**56 of 59 resolved.** The three that remain are one phase each: **D6** is the next Phase 9
-slice (per-lead erasure, the retention sweep and a `PRIVACY.md` that describes what this system
-actually does with a lead's data), and **E8** and **NEW-3** are Phase 8 polish (bulk actions,
-filters, the per-lead timeline, and the sent-count that the prototype computed from current
-status so every reply silently decremented it).
+**57 of 59 resolved.** The two that remain are both Phase 8 polish: **E8** (bulk actions,
+filters, the per-lead timeline) and **NEW-3** (the sent-count the prototype computed from current
+status, so every reply silently decremented it).
 
 Counts in this table are computed from the verdicts above, not maintained by hand.
 

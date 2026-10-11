@@ -185,6 +185,19 @@ class Settings(BaseSettings):
     #: crashed send can still be found by Message-ID (ADR-002).
     BCC_SELF: bool = False
 
+    # === Retention (§17, MASTER_PROMPT Q7) ===
+    #: How long a lead is kept after reaching a terminal state. Q7's answer is twelve months.
+    #: The sweep erases through the same path a data-subject request takes, which means the
+    #: hashed suppression survives — a lead that opted out must not become contactable again
+    #: because the system tidied up.
+    LEAD_RETENTION_MONTHS: int = 12
+    #: How long the bulk page text behind a research finding is kept. The findings themselves
+    #: stay; this is the large, least reusable part.
+    RESEARCH_TEXT_RETENTION_DAYS: int = 30
+    #: Set false to stop the sweep entirely — for a migration, or while investigating something
+    #: that would otherwise be erased out from under you.
+    RETENTION_ENABLED: bool = True
+
     # === Workflow ===
     APPROVAL_MODE: Literal["cli", "api"] = "cli"
     AUTO_APPROVE: bool = False
@@ -198,6 +211,10 @@ class Settings(BaseSettings):
     #: schema of every endpoint is a map for anyone who finds the URL.
     APP_ENV: Literal["development", "staging", "production"] = "development"
 
+    # RETENTION_ENABLED is deliberately absent from this list. For the flags below, an unset
+    # value meaning "off" is the safe reading. For retention it is not: `RETENTION_ENABLED=`
+    # would quietly stop the system forgetting anything, which is the kind of silent failure
+    # this project refuses elsewhere. An empty value there fails startup instead.
     @field_validator("AUTO_APPROVE", "SMTP_USE_TLS", "PAID_LLM_ENABLED", "BCC_SELF", mode="before")
     @classmethod
     def _tolerate_empty_bool(cls, v: object) -> object:

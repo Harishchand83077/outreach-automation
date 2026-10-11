@@ -324,7 +324,9 @@ docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
 ```
 
 ```sql
-INSERT INTO app.orgs (id, name) VALUES (gen_random_uuid(), 'Your Agency') RETURNING id;
+-- `paused` has no server-side default: it is set by the ORM, so raw SQL must supply it.
+INSERT INTO app.orgs (id, name, paused) VALUES (gen_random_uuid(), 'Your Agency', false)
+RETURNING id;
 -- the `sub` claim of your Supabase user, from the Supabase dashboard → Authentication → Users
 INSERT INTO app.members (id, org_id, user_id, email, role)
 VALUES (gen_random_uuid(), '<org id from above>', '<supabase sub>', 'you@yourdomain.com', 'owner');

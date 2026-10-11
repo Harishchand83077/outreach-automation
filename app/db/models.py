@@ -635,6 +635,9 @@ class Suppression(Base):
     org_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
     )
+    #: email | domain | email_hash. `email_hash` holds a SHA-256 digest instead of the address
+    #: and is written by erasure (§17): the person must stay unreachable after we forget who
+    #: they were. See `app/services/privacy/erasure.py`.
     kind: Mapped[str] = mapped_column(String(10), nullable=False)
     value: Mapped[str] = mapped_column(String(320), nullable=False)
     reason: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -645,7 +648,7 @@ class Suppression(Base):
 
     __table_args__ = (
         UniqueConstraint("org_id", "kind", "value", name="uq_suppressions_org_kind_value"),
-        CheckConstraint("kind IN ('email','domain')", name="ck_suppressions_kind"),
+        CheckConstraint("kind IN ('email','domain','email_hash')", name="ck_suppressions_kind"),
         CheckConstraint(
             "reason IN ('opt_out','bounce','manual','complaint')",
             name="ck_suppressions_reason",
