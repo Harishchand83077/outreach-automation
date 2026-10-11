@@ -99,6 +99,8 @@ async def is_suppressed(session: AsyncSession, *, org_id: uuid.UUID, email: str)
     Checked here as well as at import, because a suppression can arrive at any time — someone
     may opt out between a draft being approved and the send loop reaching it.
     """
+    from app.services.privacy.erasure import EMAIL_HASH, hashed_email
+
     normalised = email.strip().lower()
     domain = normalised.rpartition("@")[2]
     found = await session.scalar(
@@ -108,6 +110,10 @@ async def is_suppressed(session: AsyncSession, *, org_id: uuid.UUID, email: str)
             or_(
                 (Suppression.kind == "email") & (Suppression.value == normalised),
                 (Suppression.kind == "domain") & (Suppression.value == domain),
+                # An erased lead leaves only a digest behind. Without this arm, erasing somebody
+                # who had opted out would make them contactable again on the next import —
+                # turning a privacy request into the harm it was meant to prevent.
+                (Suppression.kind == EMAIL_HASH) & (Suppression.value == hashed_email(email)),
             ),
         )
         .limit(1)

@@ -15,12 +15,14 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
-from app.api.deps import CurrentUserDep, SessionDep
+from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db.models import Campaign, Draft, Event, Lead, Message, Research
+from app.db.repo import OrgContext
+from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
 
@@ -239,3 +241,44 @@ async def _state_counts(
         .group_by(Lead.state)
     )
     return {state: count for state, count in rows.all()}
+
+
+@router.delete("/leads/{lead_id}", status_code=status.HTTP_200_OK)
+async def erase_lead_endpoint(
+    lead_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    keep_suppressed: Annotated[bool, Query()] = True,
+) -> dict[str, Any]:
+    """Erase one lead and everything personal attached to it (§17, issue D6).
+
+    This is the data-subject request route, and it is a real delete rather than a flag: the
+    lead, its drafts, its messages, its research and its events all go.
+
+    **`keep_suppressed` defaults to true and should almost always stay true.** It leaves a
+    hashed suppression behind so the address stays unreachable without being stored. Without
+    it, erasing somebody who had opted out makes them contactable again on the next import of
+    the same sheet — a privacy request producing the exact harm it was meant to prevent.
+
+    Restricted to `admin` and above. It is the one irreversible action in the API, and a
+    reviewer who may approve drafts has no reason to need it.
+    """
+    ctx = OrgContext(org_id=user.org_id, actor_id=user.email or user.user_id)
+    try:
+        result = await erase_lead(session, ctx, lead_id, keep_suppressed=keep_suppressed)
+    except LookupError as exc:
+        # 404 rather than 403, as everywhere else: confirming an id exists elsewhere is a leak.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Lead not found.") from exc
+
+    return {
+        "erased": True,
+        "lead_id": str(result.lead_id),
+        "rows_removed": result.rows,
+        "detail": {
+            "drafts": result.drafts,
+            "messages": result.messages,
+            "research": result.research,
+            "events": result.events,
+        },
+        "suppression_kept": result.suppression_kept,
+    }
