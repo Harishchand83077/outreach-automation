@@ -31,7 +31,7 @@ from app.api.ratelimit import RateLimit
 from app.api.routers.imports import MAX_UPLOAD_BYTES
 from app.api.security import TokenVerifier
 from app.core.settings import Settings
-from app.db.models import Job, Lead, Mailbox, Member, Org, Suppression
+from app.db.models import Job, Lead, Mailbox, Member, Message, Org, Suppression
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -541,3 +541,145 @@ class TestCreatingACampaign:
         assert (
             api.post("/api/v1/campaigns", json={"name": "X", "persona": PERSONA}).status_code == 401
         )
+
+
+class TestUpdatingACampaign:
+    async def test_a_mailbox_can_be_attached_afterwards(self, api, owner):
+        """The hole this closes: creation allowed a campaign with no mailbox, and nothing could
+        add one later — so it could never send and could never be repaired, only abandoned."""
+        campaign = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Later", "persona": PERSONA}
+        ).json()
+        assert campaign["mailbox_id"] is None
+
+        mailbox = api.post(
+            "/api/v1/mailboxes",
+            headers=owner,
+            json={"from_name": "Asha", "from_email": "asha@example.com"},
+        ).json()
+
+        updated = api.patch(
+            f"/api/v1/campaigns/{campaign['id']}", headers=owner, json={"mailbox_id": mailbox["id"]}
+        )
+        assert updated.status_code == 200
+        assert updated.json()["mailbox_id"] == mailbox["id"]
+
+    async def test_a_campaign_can_be_renamed(self, api, owner):
+        campaign = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "test_campaign", "persona": PERSONA}
+        ).json()
+        renamed = api.patch(
+            f"/api/v1/campaigns/{campaign['id']}", headers=owner, json={"name": "Seed-stage SaaS"}
+        ).json()
+        assert renamed["name"] == "Seed-stage SaaS"
+
+    async def test_an_unknown_status_is_refused_with_the_allowed_list(self, api, owner):
+        """A check-constraint violation would otherwise surface as a 500 saying nothing."""
+        campaign = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "S", "persona": PERSONA}
+        ).json()
+        response = api.patch(
+            f"/api/v1/campaigns/{campaign['id']}", headers=owner, json={"status": "sending"}
+        )
+        assert response.status_code == 422
+        assert "running" in response.json()["detail"]
+
+    async def test_another_orgs_campaign_cannot_be_edited(self, api, owner, stranger):
+        campaign = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Mine", "persona": PERSONA}
+        ).json()
+        response = api.patch(
+            f"/api/v1/campaigns/{campaign['id']}", headers=stranger, json={"name": "Theirs"}
+        )
+        assert response.status_code == 404
+
+
+class TestDeletingACampaign:
+    async def test_an_untouched_campaign_is_deleted(self, api, owner):
+        campaign = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Mistake", "persona": PERSONA}
+        ).json()
+
+        response = api.delete(f"/api/v1/campaigns/{campaign['id']}", headers=owner)
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
+
+        names = [c["name"] for c in api.get("/api/v1/campaigns", headers=owner).json()["campaigns"]]
+        assert "Mistake" not in names
+
+    async def test_one_that_has_sent_is_archived_instead(self, db, api, owner, org, campaign):
+        """Its messages are the record of what left the building, and the opt-outs of the people
+        it contacted hang off that history. Tidying a list must not erase that."""
+        lead = Lead(
+            org_id=org.id,
+            campaign_id=campaign.id,
+            email_norm="sent@example.com",
+            email_raw="sent@example.com",
+            full_name="Sent Person",
+            company_name="Acme",
+            state="EMAIL_SENT",
+        )
+        db.add(lead)
+        await db.flush()
+        db.add(
+            Message(
+                org_id=org.id,
+                lead_id=lead.id,
+                direction="out",
+                status="sent",
+                subject="Hello",
+                body_text="Body",
+                idempotency_key=f"archive-{uuid.uuid4()}",
+            )
+        )
+        await db.commit()
+
+        response = api.delete(f"/api/v1/campaigns/{campaign.id}", headers=owner)
+        assert response.status_code == 200
+        body = response.json()
+        assert body["deleted"] is False
+        assert body["archived"] is True
+        assert body["messages_sent"] == 1
+
+        await db.refresh(campaign)
+        assert campaign.status == "archived"
+
+    async def test_force_deletes_but_keeps_the_opt_out(self, db, api, owner, org, campaign):
+        """`force` is only safe because every lead goes through the erasure path, which leaves a
+        hashed suppression for anyone who had opted out."""
+        lead = Lead(
+            org_id=org.id,
+            campaign_id=campaign.id,
+            email_norm="optout@example.com",
+            email_raw="optout@example.com",
+            full_name="Opted Out",
+            company_name="Acme",
+            state="OPTED_OUT",
+        )
+        db.add(lead)
+        await db.flush()
+        db.add(
+            Message(
+                org_id=org.id,
+                lead_id=lead.id,
+                direction="out",
+                status="sent",
+                subject="Hello",
+                body_text="Body",
+                idempotency_key=f"force-{uuid.uuid4()}",
+            )
+        )
+        await db.commit()
+
+        response = api.delete(f"/api/v1/campaigns/{campaign.id}?force=true", headers=owner)
+        assert response.status_code == 200
+        assert response.json()["deleted"] is True
+
+        from app.db import outbox
+
+        assert await outbox.is_suppressed(db, org_id=org.id, email="optout@example.com"), (
+            "deleting a campaign must not make the people it contacted reachable again"
+        )
+
+    async def test_another_orgs_campaign_cannot_be_deleted(self, api, stranger, campaign):
+        assert api.delete(f"/api/v1/campaigns/{campaign.id}", headers=stranger).status_code == 404
