@@ -169,16 +169,30 @@ class LLMChain(BaseModel):
         return [entry.name for entry in self.entries if entry.is_configured]
 
 
+def default_chain(*, paid_enabled: bool = False, paid_daily_usd_cap: float = 0.0) -> LLMChain:
+    return LLMChain(
+        entries=[LLMEntry.model_validate(item) for item in DEFAULT_CHAIN],
+        paid_enabled=paid_enabled,
+        paid_daily_usd_cap=paid_daily_usd_cap,
+    )
+
+
 def parse_chain(
     raw: str | None, *, paid_enabled: bool = False, paid_daily_usd_cap: float = 0.0
 ) -> LLMChain:
     """Build a chain from the `LLM_CHAIN` environment value (a JSON list of entries).
 
-    An empty or absent value yields an empty chain rather than an error: the router then reports
-    "no provider configured", which is a clearer failure than a parse error at import time.
+    **An empty or absent value yields `DEFAULT_CHAIN`, not an empty chain.** `LLM_CHAIN` exists
+    to *override* the built-in order, and leaving it unset is the ordinary case — so returning
+    nothing made the whole system inert the moment it was deployed without one: every research
+    and drafting job died with "No LLM provider is configured" while `GROQ_API_KEY` sat correctly
+    set in the environment.
+
+    Entries whose key is absent are skipped later by `is_configured`, which is what keeps this
+    additive: setting a key enables a provider and unsetting it removes one, with no code change.
     """
     if not raw or not raw.strip():
-        return LLMChain(paid_enabled=paid_enabled, paid_daily_usd_cap=paid_daily_usd_cap)
+        return default_chain(paid_enabled=paid_enabled, paid_daily_usd_cap=paid_daily_usd_cap)
 
     try:
         loaded: Any = json.loads(raw)
@@ -259,11 +273,3 @@ DEFAULT_CHAIN: list[dict[str, Any]] = [
         "allow_pii": False,
     },
 ]
-
-
-def default_chain(*, paid_enabled: bool = False, paid_daily_usd_cap: float = 0.0) -> LLMChain:
-    return LLMChain(
-        entries=[LLMEntry.model_validate(item) for item in DEFAULT_CHAIN],
-        paid_enabled=paid_enabled,
-        paid_daily_usd_cap=paid_daily_usd_cap,
-    )
