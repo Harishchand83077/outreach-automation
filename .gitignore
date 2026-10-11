@@ -1,5 +1,10 @@
 # Environment
+# `.env.*` matters as much as `.env`: a deploy makes timestamped backups like `.env.bak.17…`,
+# and those hold every secret the live file does. Without this line they show up as untracked,
+# which both risks committing them and makes `deploy.sh` refuse to run on a "dirty" tree.
+# `env.example` is undotted on purpose and is therefore unaffected.
 .env
+.env.*
 .venv/
 .venv311/
 venv/
