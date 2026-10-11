@@ -46,8 +46,15 @@ FUTURE_KEYS: dict[str, list[str]] = {
 }
 
 #: Models Groq has retired; silently upgraded so an old .env keeps working.
-_DECOMMISSIONED_MODELS = {"llama3-70b-8192", "llama3-8b-8192"}
-_CURRENT_MODEL = "llama-3.3-70b-versatile"
+#: Models Groq has retired. An old `.env` naming one is silently upgraded rather than failing,
+#: because the value is a default somebody set months ago, not a decision they are making now.
+_DECOMMISSIONED_MODELS = {
+    "llama3-70b-8192",
+    "llama3-8b-8192",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+}
+_CURRENT_MODEL = "openai/gpt-oss-120b"
 
 _PLACEHOLDER_PREFIXES = (
     "your_",
