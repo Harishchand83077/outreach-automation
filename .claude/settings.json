@@ -53,6 +53,7 @@
       "Bash(docker compose down:*)",
       "Bash(psql:*)",
       "Bash(pg_dump:*)",
+      "Bash(curl:*)",
       "Bash(pg_restore:*)"
     ],
     "deny": [
@@ -70,7 +71,6 @@
       "Bash(git filter-branch:*)",
       "Bash(gh repo delete:*)",
       "Bash(gh repo edit --visibility public:*)",
-      "Bash(curl:*)",
       "Bash(wget:*)",
       "Bash(iwr:*)",
       "Bash(Invoke-WebRequest:*)",

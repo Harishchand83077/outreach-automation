@@ -11,8 +11,11 @@
 # values and a browser that refuses the response.
 
 {
-	# A real address, so expiry and failure notices arrive somewhere. Set ACME_EMAIL in .env.
-	email {$ACME_EMAIL:admin@localhost}
+	# A real address, so expiry and failure notices arrive somewhere. Set ACME_EMAIL in .env;
+	# compose.prod.yml requires it rather than defaulting it, because a fallback here is worse
+	# than useless: Let's Encrypt refuses any address without a dot in the domain, so the site
+	# ends up serving no certificate and every HTTPS request fails with a TLS internal error.
+	email {$ACME_EMAIL}
 
 	# Logs go to stdout as JSON, to be read with `docker compose logs caddy` like everything
 	# else. A separate log file inside the container is a file nobody will ever look at.

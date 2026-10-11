@@ -130,6 +130,11 @@ services:
       # The hostname the certificate is issued for. Caddy obtains and renews it automatically
       # over HTTP-01, which needs port 80 open and DNS already pointing here.
       API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN in .env, e.g. api.example.com}
+      # Required, not defaulted: the Caddyfile falls back to `admin@localhost`, and Let's
+      # Encrypt rejects that outright — "contact email has invalid domain: Domain name needs at
+      # least one dot". The site then serves no certificate at all and every HTTPS request dies
+      # with a TLS internal error, which looks nothing like a missing environment variable.
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env to a real address you monitor}
       DASHBOARD_ORIGIN: ${DASHBOARD_ORIGIN:-https://outreach-automation.workers.dev}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
