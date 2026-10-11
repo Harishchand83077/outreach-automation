@@ -69,8 +69,7 @@
       "Bash(git filter-repo:*)",
       "Bash(git filter-branch:*)",
       "Bash(gh repo delete:*)",
-      "Bash(gh repo edit --visibility public:*)",
-      "Bash(curl:*)",
+      "Bash(gh repo edit --visibility public:*)".
       "Bash(wget:*)",
       "Bash(iwr:*)",
       "Bash(Invoke-WebRequest:*)",
