@@ -122,9 +122,18 @@ class TestEntryConfiguration:
 
 
 class TestChainParsing:
-    def test_an_absent_chain_is_empty_rather_than_an_error(self):
-        assert parse_chain(None).entries == []
-        assert parse_chain("   ").entries == []
+    def test_an_absent_chain_falls_back_to_the_default_rather_than_being_empty(self):
+        """This test previously asserted the opposite, and the assertion was the bug.
+
+        An empty `LLM_CHAIN` is the ordinary case — the variable exists to *override* the
+        built-in order — so returning an empty chain left a correctly configured deployment
+        with no providers at all. Every research and drafting job died with "No LLM provider is
+        configured" while `GROQ_API_KEY` sat set in the environment. Nothing else caught it,
+        because every other test builds its chain explicitly.
+        """
+        assert parse_chain(None).entries
+        assert parse_chain("   ").entries
+        assert parse_chain("").entries
 
     def test_malformed_json_is_rejected_with_a_clear_message(self):
         with pytest.raises(ValueError, match="not valid JSON"):
@@ -594,3 +603,47 @@ class TestStatusReporting:
         assert rows["working"]["available"] is True
         assert rows["missing"]["configured"] is False
         assert "KEY_MISSING" in rows["missing"]["reason"]
+
+
+class TestAnUnsetChainFallsBackToTheDefault:
+    """`LLM_CHAIN` exists to *override* the built-in order; leaving it unset is the ordinary
+    case. Returning an empty chain for it made the whole system inert on first deployment —
+    every research and drafting job died with "No LLM provider is configured" while
+    `GROQ_API_KEY` sat correctly set in the environment. Nothing in the test suite noticed,
+    because every test built its chain explicitly.
+    """
+
+    def test_an_empty_value_yields_the_default_chain(self) -> None:
+        from app.services.llm.entries import DEFAULT_CHAIN, parse_chain
+
+        assert len(parse_chain("").entries) == len(DEFAULT_CHAIN)
+
+    def test_so_does_none_and_whitespace(self) -> None:
+        from app.services.llm.entries import parse_chain
+
+        assert parse_chain(None).entries
+        assert parse_chain("   ").entries
+
+    def test_the_default_can_serve_a_pii_free_primary_call(self) -> None:
+        """The exact shape the research engine asks for, and the one that was failing."""
+        from app.services.llm.entries import parse_chain
+
+        entries = parse_chain("").entries
+        assert [e.name for e in entries if e.accepts(tier="primary", has_pii=False)]
+
+    def test_the_default_can_serve_a_call_carrying_pii(self) -> None:
+        from app.services.llm.entries import parse_chain
+
+        entries = parse_chain("").entries
+        assert [e.name for e in entries if e.accepts(tier="primary", has_pii=True)]
+
+    def test_an_explicit_chain_still_overrides_it(self) -> None:
+        from app.services.llm.entries import parse_chain
+
+        raw = (
+            '[{"name": "only-one", "provider": "groq", '
+            '"base_url": "https://api.groq.com/openai/v1", "model": "llama-3.3-70b-versatile", '
+            '"api_key_env": "GROQ_API_KEY", "tier": "primary"}]'
+        )
+        chain = parse_chain(raw)
+        assert [e.name for e in chain.entries] == ["only-one"]
