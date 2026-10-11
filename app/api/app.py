@@ -57,11 +57,17 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     # only place guaranteed to run before the first request is logged. Idempotent.
     configure_logging(settings)
 
+    production = settings.APP_ENV == "production"
     application = FastAPI(
         title="outreach-automation",
         version="1.0.0",
-        docs_url=None if settings.APP_ENV == "production" else "/docs",
+        # In production all three go, not just the HTML page. Closing `/docs` while leaving
+        # `/openapi.json` open hands over the same map in a more convenient format — every
+        # route, every parameter, every schema, to anyone who finds the host. This was found
+        # on the live deployment: `/docs` answered 404 and `/openapi.json` answered 200.
+        docs_url=None if production else "/docs",
         redoc_url=None,
+        openapi_url=None if production else "/openapi.json",
     )
 
     origins = allowed_origins(settings)

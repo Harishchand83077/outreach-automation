@@ -297,6 +297,23 @@ class TestHardening:
         """An unauthenticated schema of every endpoint is a map for whoever finds the URL."""
         assert api.get("/docs").status_code == 404
 
+    async def test_the_openapi_schema_is_closed_too(self, api):
+        """Closing `/docs` while leaving `/openapi.json` open hands over the same map in a more
+        convenient format. Found on the live deployment, where `/docs` answered 404 and
+        `/openapi.json` answered 200."""
+        assert api.get("/openapi.json").status_code == 404
+
+    async def test_both_are_open_outside_production(self) -> None:
+        """The point is not to make them unreachable; it is that a public host should not
+        publish its own map. A developer still gets the docs."""
+        application = create_app(
+            Settings(_env_file=None, CORS_ALLOWED_ORIGINS="https://dash.example"),
+            limiter=RateLimit(limit=1000, window_seconds=60.0),
+        )
+        with TestClient(application, raise_server_exceptions=False) as client:
+            assert client.get("/docs").status_code == 200
+            assert client.get("/openapi.json").status_code == 200
+
 
 class TestRateLimiting:
     async def test_it_is_keyed_on_the_caller_not_the_address(self, session_factory, keypair):
