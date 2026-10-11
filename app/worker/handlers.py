@@ -168,16 +168,28 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
     ctx_org = OrgContext(org_id=job.org_id)
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)
 
-    # A draft that failed validation is stored but never becomes sendable, so the lead waits for
-    # a person either way — the difference is only which queue a human finds it in.
-    to_state = LeadState.AWAITING_APPROVAL if result.accepted else LeadState.DRAFTED
+    # DRAFTED first, always. The table is RESEARCHED -> DRAFTED -> AWAITING_APPROVAL, and
+    # jumping straight to AWAITING_APPROVAL was refused — after the model had been paid for and
+    # the draft already written to the database. Two steps also leave an honest audit trail:
+    # the events row says a draft was produced, and then that it passed validation.
     await transition(
         session,
         org_id=job.org_id,
         lead_id=lead.id,
-        to_state=to_state,
+        to_state=LeadState.DRAFTED,
         data={"accepted": result.accepted, "attempts": result.attempt_count},
     )
+
+    # A draft that failed validation is stored but never becomes sendable, so the lead waits for
+    # a person either way — the difference is only which queue a human finds it in.
+    if result.accepted:
+        await transition(
+            session,
+            org_id=job.org_id,
+            lead_id=lead.id,
+            to_state=LeadState.AWAITING_APPROVAL,
+            data={"attempts": result.attempt_count},
+        )
 
 
 async def handle_draft_reply(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
