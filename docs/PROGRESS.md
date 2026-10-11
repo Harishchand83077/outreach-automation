@@ -200,6 +200,39 @@ are not JSON-serialisable; `daily_cap or 100` turning an explicit 0 into 100; bo
 flushing without committing; and `api.js` flattening a structured error into `[object Object]`,
 discarding the field list the form exists to show.
 
+**The pipeline runs end to end on the live system.** Four imported leads went
+import -> research -> draft -> review queue, and the dashboard shows real grounded drafts with
+their evidence beside them. Getting there took **six** defects, every one invisible to the test
+suite and to CI, and all found by watching real leads fail to move:
+
+1. **`parse_chain` returned an empty chain when `LLM_CHAIN` was unset** — the ordinary case, and
+   the one `settings.py` documents as using the default. `default_chain()` existed and was never
+   called. The system had no providers at all while every key was correctly set. *The existing
+   test asserted the broken behaviour.*
+2. **Every model id in the default chain had been retired.** Groq's two Llama models, both
+   OpenRouter `:free` slugs and `gemini-2.0-flash` all answered 404. Replaced with ids read from
+   each provider's own model list and verified to return content.
+3. **`NEW -> RESEARCHED` is not a legal transition** and nothing ever set `ENRICHING`, so every
+   research job did all its work and died on the final line.
+4. **Research never queued drafting.** `DRAFT_LEAD` was a registered handler with a concurrency
+   cap, enqueued by nobody. The pipeline stopped with everything looking healthy.
+5. **Strict structured output needs `additionalProperties: false` on every object *and*
+   `required` naming every property.** Pydantic emits neither for nested models, so both Groq
+   entries were disabled with a 400 on every structured call. A simplified schema worked, which
+   is exactly why this took two rounds to see — the real schema had to be posted.
+6. **`RESEARCHED -> AWAITING_APPROVAL` is not legal either**, so drafting failed *after* paying
+   for the model and storing the draft.
+
+**Three of those six were the same shape: a correct table and a correct caller, with nothing
+checking that they agreed.** Each component was individually tested and individually right. The
+lifecycle test now walks the whole path — `NEW -> ENRICHING -> RESEARCHED -> DRAFTED ->
+AWAITING_APPROVAL -> APPROVED -> SENT` — and research is asserted to queue drafting, so the next
+gap of that kind fails in CI instead of on a server.
+
+**A provider fix worth keeping in mind:** one free model answers a strict `json_schema` request
+with correct JSON wrapped in a markdown fence. That was being treated as the model failing, which
+cooled down an entry that had done the right thing.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
