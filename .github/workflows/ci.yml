@@ -132,8 +132,38 @@ jobs:
           POSTGRES_PASSWORD: ci-only-not-a-real-password
           API_DOMAIN: api.example.com
         run: |
+          # compose.prod.yml requires `.env` to exist, on purpose: an earlier version marked it
+          # `required: false` so this step could run without one, and that flag turned a missing
+          # file into a *silent* misconfiguration on the server, where every secret arrived
+          # unset while `.env` sat correctly filled one directory away. A throwaway file here
+          # keeps the loud failure where it belongs.
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "API_DOMAIN=$API_DOMAIN"
+          } > .env
           docker compose -f deploy/compose.yml config --quiet
           docker compose -f deploy/compose.prod.yml config --quiet
+          rm -f .env
+
+      - name: The production stack actually loads .env
+        env:
+          POSTGRES_PASSWORD: ci-only-not-a-real-password
+          API_DOMAIN: api.example.com
+        run: |
+          # The regression test for the bug above. That the config *parses* proves nothing about
+          # whether the variables reach the container, which is what actually failed: the api
+          # started with every secret unset and reported its required values missing.
+          {
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD"
+            echo "API_DOMAIN=$API_DOMAIN"
+            echo "GROQ_API_KEY=ci_sentinel_value_not_a_real_key"
+          } > .env
+          docker compose --env-file .env -f deploy/compose.prod.yml \
+            run --rm --no-deps -T api \
+            sh -c 'test -n "$GROQ_API_KEY" || { echo "env_file did not reach the container"; exit 1; }'
+          docker compose --env-file .env -f deploy/compose.prod.yml \
+            down --remove-orphans || true
+          rm -f .env
 
       - name: The deploy scripts parse
         run: |

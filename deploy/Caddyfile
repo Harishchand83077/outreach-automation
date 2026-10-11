@@ -44,18 +44,23 @@
 		-Server
 	}
 
-	# The health endpoints are allowed through unlogged, so an uptime monitor pinging /ready
-	# every minute does not become the majority of the log.
+	# One access log for the site. It cannot live inside a `handle` block: `log` is not an
+	# ordered HTTP handler, and Caddy refuses the whole config rather than ignoring it.
+	log {
+		output stdout
+		format json
+	}
+
+	# The health endpoints are skipped, so an uptime monitor pinging /ready every minute does
+	# not become the majority of the log. `log_skip` *is* an ordered handler, so unlike `log`
+	# it belongs here.
 	@health path /health /ready
 	handle @health {
+		log_skip
 		reverse_proxy api:8000
 	}
 
 	handle {
-		log {
-			output stdout
-			format json
-		}
 		reverse_proxy api:8000 {
 			# A research or drafting call can take a while; an upload preview longer.
 			transport http {

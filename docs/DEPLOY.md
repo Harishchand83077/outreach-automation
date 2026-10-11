@@ -269,6 +269,12 @@ works on a developer machine (where it points at `127.0.0.1:5433`) and on the se
 
 ### 3.2 Check it without printing it
 
+**Do not add `--project-directory`.** Every relative path inside `compose.prod.yml` resolves
+against it — the build context `..` as well as `env_file: ../.env` — so Compose's default, the
+compose file's own directory, is the only value under which both mean the repository root.
+Pinning it to the repository root makes the build look for a Dockerfile in `/opt` instead.
+
+
 ```bash
 docker compose --env-file .env -f deploy/compose.prod.yml run --rm --no-deps -T api \
     python -m app.scripts.check_env

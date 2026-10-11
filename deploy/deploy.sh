@@ -24,6 +24,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
+# No `--project-directory`: every relative path inside the compose file resolves against it,
+# including the build context, so Compose's default (the compose file's own directory) is the
+# only value under which `context: ..` and `env_file: ../.env` both mean the repository root.
 COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
 READY_URL="${READY_URL:-http://127.0.0.1:8000/health}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
@@ -59,8 +62,12 @@ say "building"
 # Migrations run in a throwaway container, before the new api and worker start, and before the
 # old ones stop. Forward-only and backwards-compatible within a release (§19), so the still-
 # running old code tolerates the new schema for the few seconds in between.
+# NOT `--no-deps`: the api service declares `depends_on: postgres: service_healthy`, so letting
+# Compose honour it starts the database and waits for its healthcheck before the migration runs.
+# With `--no-deps` the migration container came up alone and died on `name resolution` for the
+# host `postgres`, which reads like a DNS fault and is really a startup-order one.
 say "migrating"
-"${COMPOSE[@]}" run --rm --no-deps -T api alembic upgrade head
+"${COMPOSE[@]}" run --rm -T api alembic upgrade head
 
 say "starting"
 "${COMPOSE[@]}" up -d --remove-orphans
