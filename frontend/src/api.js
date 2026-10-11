@@ -64,7 +64,18 @@ async function request(path, init = {}) {
 
   if (!response.ok) {
     const body = await parse(response, path).catch(() => null)
-    throw new Error((body && body.detail) || response.statusText || `HTTP ${response.status}`)
+    const detail = body && body.detail
+    // A `detail` can be a string or a structured object — the persona check returns the list of
+    // fields that failed. `new Error(object)` would render it "[object Object]" and throw that
+    // information away, so the object is carried on the error and only the message is flattened.
+    const message =
+      typeof detail === 'string'
+        ? detail
+        : (detail && detail.message) || response.statusText || `HTTP ${response.status}`
+    const error = new Error(message)
+    if (detail && typeof detail === 'object') error.detail = detail
+    error.status = response.status
+    throw error
   }
   return parse(response, path)
 }

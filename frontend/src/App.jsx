@@ -144,7 +144,7 @@ function Dashboard({ session }) {
           <Import campaignId={campaignId} onError={handle} onToast={toast} />
         </>
       ) : (
-        <p style={styles.muted}>No campaigns yet.</p>
+        <NewCampaign onError={handle} onToast={toast} onCreated={refreshCampaigns} />
       )}
 
       <Suppressions onError={handle} onToast={toast} />
@@ -213,6 +213,124 @@ function CampaignPicker({ campaigns, value, onChange, onRefresh }) {
         </button>
       </div>
     </section>
+  )
+}
+
+function NewCampaign({ onError, onToast, onCreated }) {
+  // The first screen somebody sees on a fresh install. Until a campaign exists nothing else in
+  // this dashboard can do anything, so this form is the difference between a deployed system
+  // and a usable one.
+  const [form, setForm] = useState({
+    name: '',
+    sender_name: '',
+    sender_role: '',
+    agency_name: '',
+    offer: '',
+    goal: 'book a 20-minute call',
+    cta_text: '',
+    from_name: '',
+    from_email: '',
+  })
+  const [busy, setBusy] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState([])
+
+  const set = (key) => (event) => setForm({ ...form, [key]: event.target.value })
+
+  const submit = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setFieldErrors([])
+    try {
+      // The mailbox first: a campaign can exist without one, but it could never send, and
+      // creating them together means one less half-finished state to explain later.
+      let mailboxId = null
+      if (form.from_email.trim()) {
+        const mailbox = await postJson('/mailboxes', {
+          json: { from_name: form.from_name || form.sender_name, from_email: form.from_email },
+        })
+        mailboxId = mailbox.id
+      }
+
+      await postJson('/campaigns', {
+        json: {
+          name: form.name,
+          mailbox_id: mailboxId,
+          persona: {
+            sender_name: form.sender_name,
+            sender_role: form.sender_role,
+            agency_name: form.agency_name,
+            offer: form.offer,
+            goal: form.goal,
+            cta_text: form.cta_text,
+          },
+        },
+      })
+      onToast('Campaign created. It starts as a draft and sends nothing until you say so.')
+      onCreated()
+    } catch (error) {
+      // The API returns which persona field is wrong; showing "invalid" alone would be useless.
+      const detail = error?.detail
+      if (detail && Array.isArray(detail.errors)) setFieldErrors(detail.errors)
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>Create your first campaign</h2>
+      <p style={styles.muted}>
+        A campaign carries the sender persona and the offer. The persona is the only set of
+        claims a draft may make about you — everything else has to come from cited research
+        about the recipient. Nothing is sent when you save this.
+      </p>
+
+      <form onSubmit={submit}>
+        <Field label="Campaign name" value={form.name} onChange={set('name')} required
+          hint="Just for you, e.g. “Seed-stage SaaS, Oct”" />
+        <Field label="Your name" value={form.sender_name} onChange={set('sender_name')} required />
+        <Field label="Your role" value={form.sender_role} onChange={set('sender_role')} required
+          hint="e.g. Founder" />
+        <Field label="Company" value={form.agency_name} onChange={set('agency_name')} required />
+        <Field label="What you offer" value={form.offer} onChange={set('offer')} required
+          hint="One line, concrete. e.g. “a two-week working prototype”" />
+        <Field label="What you want" value={form.goal} onChange={set('goal')} required />
+        <Field label="The ask, in your words" value={form.cta_text} onChange={set('cta_text')}
+          required hint="A draft needs a concrete next step. e.g. “Worth a 20-minute call?”" />
+        <Field label="Send from (email)" value={form.from_email} onChange={set('from_email')}
+          hint="Optional now, required before sending. Must be the mailbox your SPF/DKIM cover." />
+
+        {fieldErrors.length ? (
+          <ul style={{ ...styles.muted, marginTop: 12 }}>
+            {fieldErrors.map((item) => (
+              <li key={item.field}>
+                <strong>{item.field}</strong>: {item.message}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        <div style={styles.buttons}>
+          <button type="submit" disabled={busy} style={styles.primary}>
+            {busy ? 'Creating…' : 'Create campaign'}
+          </button>
+        </div>
+      </form>
+    </section>
+  )
+}
+
+function Field({ label, value, onChange, required, hint }) {
+  return (
+    <div style={{ marginTop: 12 }}>
+      <label style={styles.label}>
+        {label}
+        {required ? ' *' : ''}
+      </label>
+      <input value={value} onChange={onChange} required={required} style={{ width: '100%' }} />
+      {hint ? <p style={{ ...styles.muted, marginTop: 4, fontSize: 13 }}>{hint}</p> : null}
+    </div>
   )
 }
 
@@ -711,7 +829,15 @@ const styles = {
   },
   label: { display: 'block', fontSize: 13, margin: '12px 0 6px', color: 'var(--textMuted)' },
   input: { width: '100%', marginBottom: 10 },
-  select: { minWidth: 220 },
+  select: {
+    minWidth: 220,
+    // Without these a native select renders white-on-dark and looks broken on this page.
+    background: 'var(--surface2)',
+    color: 'var(--text)',
+    border: '1px solid var(--border)',
+    borderRadius: 8,
+    padding: '8px 10px',
+  },
   textarea: { width: '100%', fontFamily: 'inherit', fontSize: 14, lineHeight: 1.6 },
   buttons: { display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' },
   button: { background: 'var(--surface2)', color: 'var(--text)' },

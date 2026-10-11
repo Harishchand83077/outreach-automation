@@ -425,3 +425,119 @@ class TestAdmin:
     async def test_admin_views_need_a_token(self, api):
         assert api.get("/api/v1/admin/usage").status_code == 401
         assert api.get("/api/v1/admin/needs-attention").status_code == 401
+
+
+class TestCreatingAMailbox:
+    async def test_it_creates_one(self, api, owner):
+        response = api.post(
+            "/api/v1/mailboxes",
+            headers=owner,
+            json={"from_name": "Asha Rao", "from_email": "Asha@Example.com", "daily_cap": 80},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["from_email"] == "asha@example.com", "the address is normalised"
+        assert body["daily_cap"] == 80
+
+    async def test_it_stores_no_credentials(self, api, owner):
+        """A mailbox row is policy — who it is from, how fast, whether paused — never a login.
+        The credentials stay in `.env` where the operator put them."""
+        body = api.post(
+            "/api/v1/mailboxes",
+            headers=owner,
+            json={
+                "from_name": "Asha",
+                "from_email": "asha@example.com",
+                "smtp_password": "hunter2-should-be-ignored",
+            },
+        ).json()
+        assert "smtp_password" not in body
+        assert "hunter2-should-be-ignored" not in str(body)
+
+    async def test_an_address_is_required(self, api, owner):
+        response = api.post("/api/v1/mailboxes", headers=owner, json={"from_name": "Asha"})
+        assert response.status_code == 422
+
+    async def test_a_nonsense_cap_is_refused(self, api, owner):
+        """`daily_cap > 0` is a check constraint; a violation would otherwise surface as a 500."""
+        response = api.post(
+            "/api/v1/mailboxes",
+            headers=owner,
+            json={"from_name": "A", "from_email": "a@example.com", "daily_cap": 0},
+        )
+        assert response.status_code == 422
+
+
+PERSONA = {
+    "sender_name": "Asha Rao",
+    "sender_role": "Founder",
+    "agency_name": "Arkvane",
+    "offer": "a two-week prototype",
+    "goal": "book a 20-minute call",
+    # Required by the Persona model: a draft needs a concrete next step to ask for.
+    "cta_text": "Worth a 20-minute call next week?",
+}
+
+
+class TestCreatingACampaign:
+    async def test_it_creates_one_in_draft(self, api, owner):
+        response = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Spring", "persona": PERSONA}
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["status"] == "draft", "a new campaign never starts running"
+        assert body["has_persona"] is True
+        assert body["sender_name"] == "Asha Rao"
+
+    async def test_an_invalid_persona_is_refused_with_its_field_errors(self, api, owner):
+        """Rejected at the door rather than at drafting time: the persona is the list of things
+        a draft may assert about us, and a malformed one would quietly produce a weaker draft."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Spring", "persona": {"sender_name": "Asha"}},
+        )
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["errors"], "the owner needs to know which field"
+
+    async def test_an_unknown_field_in_the_persona_is_refused(self, api, owner):
+        """`extra="forbid"`: a typo like `sender_rol` must not silently become no role at all."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Spring", "persona": {**PERSONA, "sender_rol": "Founder"}},
+        )
+        assert response.status_code == 422
+
+    async def test_a_name_is_required(self, api, owner):
+        response = api.post("/api/v1/campaigns", headers=owner, json={"persona": PERSONA})
+        assert response.status_code == 422
+
+    async def test_another_orgs_mailbox_cannot_be_attached(self, api, owner, stranger):
+        """404 rather than 403: a mailbox elsewhere must look like one that is not there."""
+        theirs = api.post(
+            "/api/v1/mailboxes",
+            headers=stranger,
+            json={"from_name": "Rival", "from_email": "rival@example.com"},
+        ).json()["id"]
+
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Spring", "persona": PERSONA, "mailbox_id": theirs},
+        )
+        assert response.status_code == 404
+
+    async def test_it_appears_in_the_list_afterwards(self, api, owner):
+        api.post("/api/v1/campaigns", headers=owner, json={"name": "Autumn", "persona": PERSONA})
+        names = [
+            row["name"] for row in api.get("/api/v1/campaigns", headers=owner).json()["campaigns"]
+        ]
+        assert "Autumn" in names
+
+    async def test_an_anonymous_caller_cannot_create_one(self, api):
+        assert (
+            api.post("/api/v1/campaigns", json={"name": "X", "persona": PERSONA}).status_code == 401
+        )
