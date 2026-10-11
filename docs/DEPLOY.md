@@ -269,8 +269,15 @@ works on a developer machine (where it points at `127.0.0.1:5433`) and on the se
 
 ### 3.2 Check it without printing it
 
+**`--project-directory .` is not decoration.** `env_file` in `compose.prod.yml` resolves against
+the project directory, and Compose versions disagree about what that is when the flag is absent â€”
+the server accepted `../.env` where CI resolved the same string one directory above the
+repository. Every command below pins it, and `deploy.sh` does the same. Drop it and the stack
+starts with every secret unset.
+
+
 ```bash
-docker compose --env-file .env -f deploy/compose.prod.yml run --rm --no-deps -T api \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml run --rm --no-deps -T api \
     python -m app.scripts.check_env
 ```
 
@@ -304,7 +311,7 @@ curl -s https://api.arkvane.in/ready    # 503 until the worker's first heartbeat
 looks healthy and sends nothing**. If it is still 503 after two minutes:
 
 ```bash
-docker compose --env-file .env -f deploy/compose.prod.yml logs --tail 50 worker
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml logs --tail 50 worker
 ```
 
 ### 4.1 The first org and the first member
@@ -313,7 +320,7 @@ Access is a database row: a valid Supabase token with no `members` row gets no o
 no data. Public sign-ups are disabled, so there is no form that creates one.
 
 ```bash
-docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml exec -T postgres \
     psql -U outreach -d outreach
 ```
 
@@ -358,9 +365,9 @@ and lines written while a job runs also carry `job_id`, `org_id` and `lead_id` â
 "it failed" can be traced to the request, the job and the lead without guessing from timestamps.
 
 ```bash
-docker compose --env-file .env -f deploy/compose.prod.yml logs -f worker
-docker compose --env-file .env -f deploy/compose.prod.yml logs api | grep '"level":"ERROR"'
-docker compose --env-file .env -f deploy/compose.prod.yml logs api \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml logs -f worker
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml logs api | grep '"level":"ERROR"'
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml logs api \
     | grep '"request_id":"abc123"'
 ```
 
@@ -536,13 +543,13 @@ the live one:
 
 ```bash
 gunzip -c backups/outreach-20261011T021700Z.sql.gz > /tmp/restore.sql
-docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml exec -T postgres \
     psql -U outreach -d postgres -c 'CREATE DATABASE restore_drill'
-docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml exec -T postgres \
     psql -U outreach -d restore_drill < /tmp/restore.sql
-docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml exec -T postgres \
     psql -U outreach -d restore_drill -c 'SELECT count(*) FROM app.leads'
-docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml exec -T postgres \
     psql -U outreach -d postgres -c 'DROP DATABASE restore_drill'
 rm /tmp/restore.sql
 ```
@@ -550,9 +557,9 @@ rm /tmp/restore.sql
 A real restore stops the api and the worker first, so nothing writes while the data is replaced:
 
 ```bash
-docker compose --env-file .env -f deploy/compose.prod.yml stop api worker
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml stop api worker
 # ... restore into `outreach` as above, using the live database name ...
-docker compose --env-file .env -f deploy/compose.prod.yml start api worker
+docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml start api worker
 ```
 
 ### 7.4 Retention
@@ -598,7 +605,7 @@ The sequence, which is Phase 10:
 Useful commands:
 
 ```bash
-C=(docker compose --env-file .env -f deploy/compose.prod.yml)
+C=(docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml)
 "${C[@]}" ps
 "${C[@]}" logs --tail 100 worker
 "${C[@]}" restart worker
