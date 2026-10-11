@@ -246,6 +246,11 @@ DEFAULT_CHAIN: list[dict[str, Any]] = [
         "api_key_env": "GROQ_API_KEY",
         "tier": "primary",
         "allow_pii": True,
+        # Lower than the 2048 default: this model's per-request output allowance on the free
+        # tier is smaller, and asking for more is refused outright with a 429 reading "Request
+        # too large ... on output tokens" — which looks like a quota problem and is really a
+        # per-request ceiling. A draft does not need more than this.
+        "max_output_tokens": 1024,
     },
     {
         "name": "groq-gpt-oss-20b",

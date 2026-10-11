@@ -12,6 +12,7 @@ from datetime import timedelta
 import httpx
 import pytest
 import respx
+from pydantic import BaseModel
 
 from app.services.llm.client import LLMClient
 from app.services.llm.entries import LLMEntry
@@ -200,3 +201,70 @@ class TestMissingKey:
         async with LLMClient() as client:
             with pytest.raises(PermanentError, match="KEY_ABSENT"):
                 await client.complete(entry, system="s", user="u")
+
+
+class TestFencedJsonIsAccepted:
+    """Several providers honour `response_format` loosely and wrap correct JSON in a markdown
+    fence. Treating that as "the model failed" cools down an entry that in fact did the right
+    thing — and on a free chain that can leave no provider standing at all.
+
+    Found live: `google/gemma-4-31b-it:free` answered ```json {...} ``` to a strict json_schema
+    request, and the whole drafting stage reported capacity exhausted.
+    """
+
+    def _completion(self, text: str):
+        from app.services.llm.client import Completion
+
+        return Completion(
+            text=text,
+            entry_name="test-entry",
+            model="test-model",
+            tokens_in=1,
+            tokens_out=1,
+            latency_ms=1,
+        )
+
+    def test_plain_json_still_works(self):
+        from app.services.llm.client import parse_structured
+
+        assert (
+            parse_structured(self._completion('{"subject": "s", "body": "b"}'), _Draft).subject
+            == "s"
+        )
+
+    def test_a_json_fence_is_accepted(self):
+        from app.services.llm.client import parse_structured
+
+        text = '```json\n{"subject": "s", "body": "b"}\n```'
+        assert parse_structured(self._completion(text), _Draft).body == "b"
+
+    def test_a_bare_fence_is_accepted(self):
+        from app.services.llm.client import parse_structured
+
+        text = '```\n{"subject": "s", "body": "b"}\n```'
+        assert parse_structured(self._completion(text), _Draft).subject == "s"
+
+    def test_genuinely_malformed_output_still_fails_loudly(self):
+        """The fence is removed; nothing is coaxed into shape. A model that returns prose has
+        failed, and must still cool down."""
+        import pytest
+
+        from app.services.llm.client import parse_structured
+        from app.services.llm.errors import InvalidOutputError
+
+        with pytest.raises(InvalidOutputError):
+            parse_structured(self._completion("Sure! Here is your email."), _Draft)
+
+    def test_a_fence_around_prose_still_fails(self):
+        import pytest
+
+        from app.services.llm.client import parse_structured
+        from app.services.llm.errors import InvalidOutputError
+
+        with pytest.raises(InvalidOutputError):
+            parse_structured(self._completion("```\nnot json\n```"), _Draft)
+
+
+class _Draft(BaseModel):
+    subject: str
+    body: str
