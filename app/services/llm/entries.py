@@ -212,30 +212,52 @@ def parse_chain(
 #: A sensible starting chain, used when `LLM_CHAIN` is not set. Entries whose key is absent are
 #: skipped, so this works with however many providers happen to be configured.
 #:
-#: Groq appears twice on purpose: its limits are published *per model*, so two models give two
-#: separate pools of headroom inside one account — which is the legitimate way to get more
-#: capacity, unlike registering a second account.
+#: Groq appears three times on purpose: its limits are published *per model*, so several models
+#: give several separate pools of headroom inside one account — the legitimate way to get more
+#: capacity, unlike registering a second account (hard rule 8).
+#:
+#: **Every model id here was verified against the provider's own model list**, after the previous
+#: set silently rotted: Groq had retired `llama-3.3-70b-versatile`, OpenRouter had moved its
+#: `:free` Llama slugs behind payment, and Google had withdrawn `gemini-2.0-flash`. All four
+#: answered 404 and the system could do nothing at all, with every key correctly configured.
+#: When refreshing these, ask the provider rather than guessing:
+#:
+#:     GET https://api.groq.com/openai/v1/models
+#:     GET https://openrouter.ai/api/v1/models
+#:     GET https://generativelanguage.googleapis.com/v1beta/models
+#:
+#: `gpt-oss` models reason before answering, so a small `max_tokens` can return empty content —
+#: they were verified at a realistic budget, not a token or two.
 DEFAULT_CHAIN: list[dict[str, Any]] = [
     {
-        "name": "groq-llama-70b",
+        "name": "groq-gpt-oss-120b",
         "provider": "groq",
         "base_url": "https://api.groq.com/openai/v1",
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "api_key_env": "GROQ_API_KEY",
         "tier": "primary",
         "allow_pii": True,
     },
     {
-        "name": "groq-llama-8b",
+        "name": "groq-qwen-27b",
         "provider": "groq",
         "base_url": "https://api.groq.com/openai/v1",
-        "model": "llama-3.1-8b-instant",
+        "model": "qwen/qwen3.8-27b",
+        "api_key_env": "GROQ_API_KEY",
+        "tier": "primary",
+        "allow_pii": True,
+    },
+    {
+        "name": "groq-gpt-oss-20b",
+        "provider": "groq",
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "openai/gpt-oss-20b",
         "api_key_env": "GROQ_API_KEY",
         "tier": "fast",
         "allow_pii": True,
     },
     {
-        "name": "cerebras-llama-70b",
+        "name": "cerebras-primary",
         "provider": "cerebras",
         "base_url": "https://api.cerebras.ai/v1",
         "model": "llama-3.3-70b",
@@ -244,32 +266,32 @@ DEFAULT_CHAIN: list[dict[str, Any]] = [
         "allow_pii": True,
     },
     {
-        "name": "openrouter-free",
+        "name": "openrouter-gemma-31b",
         "provider": "openrouter",
         "base_url": "https://openrouter.ai/api/v1",
-        "model": "meta-llama/llama-3.3-70b-instruct:free",
+        "model": "google/gemma-4-31b-it:free",
         "api_key_env": "OPENROUTER_API_KEY",
         "tier": "primary",
         "allow_pii": True,
     },
     {
-        "name": "openrouter-free-fast",
+        "name": "openrouter-gemma-26b",
         "provider": "openrouter",
         "base_url": "https://openrouter.ai/api/v1",
-        "model": "meta-llama/llama-3.1-8b-instruct:free",
+        "model": "google/gemma-4-26b-a4b-it:free",
         "api_key_env": "OPENROUTER_API_KEY",
         "tier": "fast",
         "allow_pii": True,
     },
-    # Google AI Studio's free tier may train on prompts outside the EEA/UK, so it is restricted
-    # to company page text: no lead name, address or reply content ever reaches it.
     {
         "name": "gemini-flash",
-        "provider": "google",
+        "provider": "gemini",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model": "gemini-2.0-flash",
+        "model": "gemini-3-flash-preview",
         "api_key_env": "GEMINI_API_KEY",
         "tier": "primary",
+        # Outside the EEA and UK this free tier may train on prompts, so it receives public page
+        # text only: never a lead's name, address or reply.
         "allow_pii": False,
     },
 ]

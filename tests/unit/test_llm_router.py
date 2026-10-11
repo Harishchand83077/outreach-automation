@@ -158,14 +158,20 @@ class TestChainParsing:
         assert names[0].startswith("groq")
         assert chain.by_name("gemini-flash").allow_pii is False
 
-    def test_the_default_chain_uses_two_groq_models_not_two_accounts(self):
-        """Groq publishes limits per model, so two models are two pools of headroom inside one
-        account. Registering a second account to get more would violate provider terms."""
+    def test_the_default_chain_uses_several_groq_models_not_several_accounts(self):
+        """Groq publishes limits per model, so several models are several pools of headroom
+        inside one account. Registering a second account to get more would violate provider
+        terms (hard rule 8).
+
+        The count is deliberately not asserted — it changes whenever a model is retired, and
+        pinning it would make a routine refresh look like a regression. What must hold is that
+        the models are distinct and the key is one.
+        """
         chain = default_chain()
         groq = [e for e in chain.entries if e.provider == "groq"]
-        assert len(groq) == 2
-        assert len({e.model for e in groq}) == 2
-        assert len({e.api_key_env for e in groq}) == 1, "one account, two models"
+        assert len(groq) > 1
+        assert len({e.model for e in groq}) == len(groq), "distinct models, or there is no gain"
+        assert len({e.api_key_env for e in groq}) == 1, "one account"
 
 
 class TestPiiRouting:
