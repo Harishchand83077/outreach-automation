@@ -7,10 +7,16 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 **Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1094 tests
 pass; ruff, ruff format and mypy strict are clean. **56 of 59 issues are resolved.**
 
-**The infrastructure exists** (AWS EC2, Sydney — `docs/DEPLOY.md` §1 has the full record and the
-two surprises). The image builds and runs on the real instance, outbound 587 and 993 are open
-there, and the repository is cloned to `/opt/outreach`. **Two things remain and only the owner
-can do them: a DNS record, and `.env` on the box.**
+**IT IS RUNNING.** `https://api.arkvane.in` serves the API over a valid Let's Encrypt
+certificate, and `/ready` answers:
+
+```json
+{"ready":true,"checks":{"database":"ok","worker":"ok","worker_seen_seconds_ago":1}}
+```
+
+All four containers healthy, all seven migrations applied, all five worker tasks cycling, logs
+as one JSON object per line. **`SEND_MODE=disabled`, verified inside the running container.**
+Nothing has ever been sent.
 
 **Phase 9 slice 1 (this session): the system can be deployed, and it can be watched.**
 
@@ -119,6 +125,37 @@ having in front of you:
   the private repository can be cloned without a personal token. Revoking it is one click.
 - A **$5 monthly budget alarm** (`outreach-automation-5usd`) emails at 85%, 100% and forecast-100%.
 
+**What the first real deploy cost, and what it found.** Nothing in Phase 9 had ever been run
+against a server, and six defects surfaced in a row. Every one of them was invisible locally and
+in CI, which is the point worth keeping:
+
+1. **`env_file` marked `required: false`** — so a missing secrets file was a *silent* success.
+   Added so CI could validate without a `.env`; it turned the one failure that must be loud into
+   the one that was quietest. CI now writes a throwaway `.env` and then asserts the variables
+   **reach the container**, because a config that merely parses proves nothing.
+2. **Migrations ran with `--no-deps`**, before Postgres existed, and died on `name resolution` —
+   which reads like a DNS fault and is a startup-order one. The compose file already declared
+   `depends_on: service_healthy`; the script was overriding it.
+3. **Caddy crash-looped**: `log` inside a `handle` block is not an ordered handler, so Caddy
+   refused the whole config. Access logging moved to site level, `log_skip` on the health paths.
+4. **`ACME_EMAIL` never reached Caddy** — its `environment:` block simply did not list it — so
+   Caddy used its `admin@localhost` fallback and Let's Encrypt refused it: *"contact email has
+   invalid domain"*. No certificate was issued and every HTTPS request failed with a TLS internal
+   error, which looks nothing like a missing variable. The fallback is gone and compose now
+   requires the value.
+5. **`deploy.sh` polled the api on the host**, which publishes no port — only Caddy does. It
+   reported a perfectly healthy stack as a failure and rolled it back while the api logged
+   "Application startup complete". Health is now checked inside the container.
+6. **`/openapi.json` was open in production** while `/docs` was closed — the same map of every
+   route and schema, in a more convenient format, unauthenticated.
+
+**And two of my own diagnoses were wrong before the right one.** I twice "fixed" the `env_file`
+path, in opposite directions, on partial evidence. The rule is simply that every relative path in
+a compose file resolves against the **project directory**, which defaults to the compose file's
+own directory — so `../.env` and `context: ..` both already meant the repository root, and
+passing `--project-directory` to force it broke both at once. The compose file now says so, and
+says not to add the flag back.
+
 **Next up.**
 1. **Phase 9 slice 2 — privacy and retention (D6).** `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
@@ -131,9 +168,17 @@ having in front of you:
 3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
-- **One thing on the VM, and only you can do it: `.env`** (`docs/DEPLOY.md` §3.1). It holds every
-  secret, so nothing automated writes it, and `deploy.sh` refuses to run without it. Everything
-  else is done — DNS included.
+- **Set the Cloudflare build variables** so the dashboard can reach the API that is now live:
+  `VITE_API_URL=https://api.arkvane.in`, plus `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+  Then redeploy the Cloudflare project. Without `VITE_API_URL` the dashboard asks its own origin
+  for `/api/v1`, gets `index.html` with a 200, and shows the `<!DOCTYPE` error.
+- **Create the first `members` row** (`docs/DEPLOY.md` §4.1). Access is a database row: a valid
+  Supabase token with no membership gets no org and therefore no data, by design. This needs the
+  `sub` of your Supabase user, which only you can read from that dashboard.
+- **Confirm DKIM is actually signing.** The record is published but DNS cannot show whether
+  Google is using it — send one message from the arkvane.in mailbox to a Gmail address and check
+  **Show original** for `DKIM: PASS`. If it fails, press **Start authentication** in the
+  Workspace admin console. This gates the first real send.
 - **`SMTP_EMAIL` must be an `@arkvane.in` address.** SPF, DKIM and DMARC protect the domain in
   the From header, and those records are on `arkvane.in`. If the sending mailbox is still the
   `@athenaedu.in` one used in testing, mail goes out unauthenticated against a domain with no
