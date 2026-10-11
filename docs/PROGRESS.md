@@ -4,7 +4,7 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 
 ## Handoff note (rewrite at the end of every session)
 
-**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1123 tests
+**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1134 tests
 pass; ruff, ruff format and mypy strict are clean. **57 of 59 issues are resolved.**
 
 **IT IS RUNNING.** `https://api.arkvane.in` serves the API over a valid Let's Encrypt
@@ -186,15 +186,31 @@ says not to add the flag back.
 files did not. It was redone from the same reasoning, but the lesson is cheap to write down and
 expensive to relearn: commit before switching, even mid-task.
 
+**Phase 8: a campaign can now be created.** Found by opening the deployed dashboard — it signed
+in correctly, said "No campaigns yet", and offered no way to make one. There was no `POST` route
+for a campaign or a mailbox anywhere, and no script either, so import, research, drafting and
+sending were all gated behind a record that could not exist. **The system was deployed and
+unusable, and only looking at it would have shown that.**
+
+`POST /campaigns` validates the persona at the door rather than at drafting time, because the
+persona is the list of claims a draft may make about us and a malformed one would quietly produce
+a weaker draft. `POST /mailboxes` stores policy and never credentials. Four bugs came out of
+building it, each caught by its own test: a 422 answering 500 because Pydantic's raw error dicts
+are not JSON-serialisable; `daily_cap or 100` turning an explicit 0 into 100; both endpoints
+flushing without committing; and `api.js` flattening a structured error into `[object Object]`,
+discarding the field list the form exists to show.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
    describes what this system actually does with a lead's data — including that public page text
    goes to providers marked `allow_pii=false` and a lead's name, address and reply never do.
    **D6 is the last issue outside Phase 8.**
-2. **Phase 8 polish:** TypeScript and TanStack Query (the target in `CLAUDE.md`; slice 1 stayed in
-   plain JS to keep the rewrite reviewable), campaign creation, persona editing, lead detail with
-   its timeline, bulk actions. **E8** and **NEW-3** close with those.
+2. **Phase 8 remainder:** TypeScript and TanStack Query (the target in `CLAUDE.md`; this stayed
+   in plain JS to keep each change reviewable), persona *editing* (creation now exists), lead
+   detail with its timeline, bulk actions, and filters. **E8** and **NEW-3** close with those.
+   There is still no way to delete a campaign, which is why no test campaign was created on the
+   live system.
 3. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
@@ -255,7 +271,7 @@ new branches from `origin/main`.
 | 6c | Worker process | **Done** - 980 tests. The five asyncio tasks of §4, `python -m app.worker`. |
 | 7 | Auth, multi-tenancy | **Done** - 1026 tests. Auth, tenancy, CORS, rate limits, pagination, campaigns, leads, review, imports, suppressions, mailbox, admin. **The legacy `api_server.py` is deleted**, and with it nine issues that described it. |
 | 8 | UI completion | **In progress** - dashboard rewired to `/api/v1` with Supabase magic-link login; 12 frontend tests. TypeScript, TanStack Query, campaign editing, lead detail and bulk actions remain (E8, NEW-3). |
-| 9 | Ops: Docker, deploy, logs, alerts, backups, privacy | **Done** - 1123 tests. Dockerfile, production Compose, Caddy, `deploy.sh`, `backup.sh`, `docs/DEPLOY.md`, JSON logs with request and job ids, the `alerts` table and webhook, `/ready` wired to the worker heartbeat (ADR-009), and per-lead erasure with an hourly retention sweep. **Deployed and serving at `https://api.arkvane.in`.** Closes C6, D5, D6, E7. |
+| 9 | Ops: Docker, deploy, logs, alerts, backups, privacy | **Done** - 1134 tests. Dockerfile, production Compose, Caddy, `deploy.sh`, `backup.sh`, `docs/DEPLOY.md`, JSON logs with request and job ids, the `alerts` table and webhook, `/ready` wired to the worker heartbeat (ADR-009), and per-lead erasure with an hourly retention sweep. **Deployed and serving at `https://api.arkvane.in`.** Closes C6, D5, D6, E7. |
 | 10 | Rehearsal, go-live gate | Not started |
 
 ## Issue register
