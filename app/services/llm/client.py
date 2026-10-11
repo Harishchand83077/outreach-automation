@@ -204,6 +204,18 @@ def _strictify(schema: dict[str, Any]) -> dict[str, Any]:
 
     if out.get("type") == "object":
         out["additionalProperties"] = False
+        # Strict mode also demands that `required` name *every* key in `properties`. Pydantic
+        # omits fields that have defaults, and the provider answers:
+        #
+        #     `required` is required to be supplied and to be an array
+        #     including every key in properties
+        #
+        # Listing them all is safe because the real enforcement is local: `parse_structured`
+        # validates the reply against the Pydantic model, which still applies defaults, bounds
+        # and types. The wire schema is a hint to the model, not the contract.
+        properties = out.get("properties")
+        if isinstance(properties, dict):
+            out["required"] = list(properties)
     return out
 
 

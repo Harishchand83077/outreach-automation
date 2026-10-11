@@ -319,6 +319,37 @@ class TestStrictSchemasCoverNestedObjects:
         schema = _strictify({"type": "string", "maxLength": 5})
         assert "additionalProperties" not in schema
 
+    def test_required_names_every_property(self):
+        """Strict mode demands `required` include every key in `properties`, and Pydantic omits
+        fields that have defaults. Listing them all is safe: the real enforcement is local —
+        `parse_structured` validates against the Pydantic model, which still applies defaults,
+        bounds and types. The wire schema is a hint to the model, not the contract.
+        """
+        from app.services.llm.client import _strictify
+
+        schema = _strictify(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}, "b": {"type": "string"}},
+                "required": ["a"],
+            }
+        )
+        assert schema["required"] == ["a", "b"]
+
+    def test_required_covers_nested_objects_too(self):
+        from app.services.drafting.schema import DraftOutput
+        from app.services.llm.client import _strictify
+
+        schema = _strictify(DraftOutput.model_json_schema())
+        assert set(schema["required"]) == set(schema["properties"])
+        claim = schema["$defs"]["Claim"]
+        assert set(claim["required"]) == set(claim["properties"])
+
+    def test_an_object_without_properties_gets_no_required(self):
+        from app.services.llm.client import _strictify
+
+        assert "required" not in _strictify({"type": "object"})
+
     def test_the_callers_schema_is_not_mutated(self):
         """It comes from `model_json_schema()` and is shared."""
         from app.services.llm.client import _strictify
