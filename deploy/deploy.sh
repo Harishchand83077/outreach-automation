@@ -24,10 +24,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(pwd)"
 
-# `--project-directory` is pinned and is **not optional**: `env_file: .env` in the compose file
-# resolves against it. It also fixes the project name, the volume names and every other relative
-# path, so the stack is identical whatever directory this is run from.
-COMPOSE=(docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
+# No `--project-directory`: every relative path inside the compose file resolves against it,
+# including the build context, so Compose's default (the compose file's own directory) is the
+# only value under which `context: ..` and `env_file: ../.env` both mean the repository root.
+COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
 READY_URL="${READY_URL:-http://127.0.0.1:8000/health}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 

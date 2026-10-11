@@ -142,7 +142,7 @@ jobs:
             echo "API_DOMAIN=$API_DOMAIN"
           } > .env
           docker compose -f deploy/compose.yml config --quiet
-          docker compose --project-directory . -f deploy/compose.prod.yml config --quiet
+          docker compose -f deploy/compose.prod.yml config --quiet
           rm -f .env
 
       - name: The production stack actually loads .env
@@ -158,10 +158,10 @@ jobs:
             echo "API_DOMAIN=$API_DOMAIN"
             echo "GROQ_API_KEY=ci_sentinel_value_not_a_real_key"
           } > .env
-          docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml \
+          docker compose --env-file .env -f deploy/compose.prod.yml \
             run --rm --no-deps -T api \
             sh -c 'test -n "$GROQ_API_KEY" || { echo "env_file did not reach the container"; exit 1; }'
-          docker compose --project-directory . --env-file .env -f deploy/compose.prod.yml \
+          docker compose --env-file .env -f deploy/compose.prod.yml \
             down --remove-orphans || true
           rm -f .env
 

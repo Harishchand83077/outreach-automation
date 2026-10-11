@@ -22,7 +22,7 @@ ROOT="$(pwd)"
 
 BACKUP_DIR="${BACKUP_DIR:-$ROOT/backups}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
-COMPOSE=(docker compose --project-directory "$ROOT" --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
+COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
 
 [[ -f "$ROOT/.env" ]] || { echo "ERROR: no .env in $ROOT" >&2; exit 1; }
 
