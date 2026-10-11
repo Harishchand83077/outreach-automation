@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import drafts as draft_store
 from app.db.models import Campaign, Job, Lead
-from app.db.queue import JobKind
+from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
 from app.db.state import transition
 from app.domain.campaign import CampaignSettings
@@ -128,6 +128,22 @@ async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: J
         lead_id=lead.id,
         to_state=LeadState.RESEARCHED,
         data={"hooks": len(outcome.verified.hooks) if outcome.verified else 0},
+    )
+
+    # Queue the draft in the same transaction as the state change that earned it, exactly as the
+    # importer queues research beside the insert. Without this the pipeline simply stopped: four
+    # leads reached RESEARCHED with findings stored and nothing ever asked for an email, so the
+    # review queue stayed empty and looked idle rather than broken.
+    #
+    # `dedupe_key` makes a retried research job harmless: the second attempt does not queue a
+    # second draft for the same lead.
+    await enqueue(
+        session,
+        org_id=job.org_id,
+        kind=JobKind.DRAFT_LEAD,
+        lead_id=lead.id,
+        payload={"lead_id": str(lead.id)},
+        dedupe_key=f"draft:{lead.id}",
     )
 
 
