@@ -17,7 +17,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
@@ -27,6 +27,26 @@ from app.domain.persona import Persona
 from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
+
+#: Mirrors `ck_campaigns_status`. Checked here so a bad value is a 422 with the allowed list
+#: rather than a check-constraint violation surfacing as a 500.
+CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed", "archived")
+
+
+def _persona_errors(exc: ValidationError) -> list[dict[str, str]]:
+    """Pydantic errors, flattened to what a form can display.
+
+    `ctx` is dropped deliberately: it holds the original exception object, which is not
+    JSON-serialisable and turned a 422 into a 500 the first time this was written.
+    """
+    return [
+        {
+            "field": ".".join(str(part) for part in error["loc"]) or "persona",
+            "message": error["msg"],
+            "type": error["type"],
+        }
+        for error in exc.errors(include_url=False)
+    ]
 
 
 def campaign_summary(campaign: Campaign) -> dict[str, Any]:
@@ -374,17 +394,9 @@ async def create_campaign(
         # Only `loc`, `msg` and `type` are passed on. Pydantic's raw error dicts carry a `ctx`
         # holding the original exception *object*, which is not JSON-serialisable — returning
         # them whole turned a 422 into a 500, hiding the very message the caller needed.
-        errors = [
-            {
-                "field": ".".join(str(part) for part in error["loc"]) or "persona",
-                "message": error["msg"],
-                "type": error["type"],
-            }
-            for error in exc.errors(include_url=False)
-        ]
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"message": "The persona is not valid.", "errors": errors},
+            {"message": "The persona is not valid.", "errors": _persona_errors(exc)},
         ) from exc
 
     mailbox_id: uuid.UUID | None = None
@@ -414,3 +426,134 @@ async def create_campaign(
     session.add(campaign)
     await session.commit()
     return campaign_summary(campaign)
+
+
+@router.patch("/campaigns/{campaign_id}")
+async def update_campaign(
+    campaign_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Change a campaign's name, status, pause flag, mailbox or persona.
+
+    **Attaching a mailbox after the fact is the reason this exists.** Creation allowed a campaign
+    with no mailbox, and nothing could add one afterwards — so a campaign created without one
+    could never send and could never be repaired, only abandoned.
+
+    `status` is not a free field: `running` is what lets the send loop consider this campaign's
+    leads, so it is set deliberately and never as a side effect of editing a name.
+    """
+    campaign = await session.get(Campaign, campaign_id)
+    if campaign is None or campaign.org_id != user.org_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found.")
+
+    if "name" in payload:
+        name = str(payload["name"] or "").strip()
+        if not name:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "name cannot be empty.")
+        campaign.name = name
+
+    if "status" in payload:
+        new_status = str(payload["status"] or "").strip()
+        if new_status not in CAMPAIGN_STATUSES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"status must be one of: {', '.join(CAMPAIGN_STATUSES)}.",
+            )
+        campaign.status = new_status
+
+    if "paused" in payload:
+        campaign.paused = bool(payload["paused"])
+
+    if "mailbox_id" in payload:
+        raw = payload["mailbox_id"]
+        if raw in (None, ""):
+            campaign.mailbox_id = None
+        else:
+            try:
+                mailbox_id = uuid.UUID(str(raw))
+            except ValueError as exc:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY, "mailbox_id is not a uuid."
+                ) from exc
+            owned = await session.scalar(
+                select(Mailbox.id).where(Mailbox.id == mailbox_id, Mailbox.org_id == user.org_id)
+            )
+            if owned is None:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, "Mailbox not found.")
+            campaign.mailbox_id = mailbox_id
+
+    if "persona" in payload:
+        try:
+            campaign.persona = Persona.model_validate(payload["persona"]).model_dump(mode="json")
+        except ValidationError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                {"message": "The persona is not valid.", "errors": _persona_errors(exc)},
+            ) from exc
+
+    await session.commit()
+    return campaign_summary(campaign)
+
+
+@router.delete("/campaigns/{campaign_id}")
+async def delete_campaign(
+    campaign_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    force: Annotated[bool, Query()] = False,
+) -> dict[str, Any]:
+    """Delete a campaign.
+
+    **A campaign that has sent anything is archived instead of deleted, unless `force`.** Its
+    messages are the record of what left the building, and its leads' suppressions and opt-outs
+    hang off that history. Quietly destroying it to tidy a list would erase the evidence that
+    somebody was contacted — and, worse, the reason they must not be contacted again.
+
+    An untouched campaign — created by mistake, or to try the form — is simply deleted, together
+    with any leads that never went anywhere.
+
+    `force=true` deletes regardless, and each lead goes through the erasure path, so every
+    opted-out address is preserved as a hash. That is the one way this is safe to allow.
+    """
+    campaign = await session.get(Campaign, campaign_id)
+    if campaign is None or campaign.org_id != user.org_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Campaign not found.")
+
+    sent = await session.scalar(
+        select(func.count())
+        .select_from(Message)
+        .join(Lead, Message.lead_id == Lead.id)
+        .where(Lead.campaign_id == campaign_id, Message.direction == "out")
+    )
+    sent = int(sent or 0)
+
+    if sent and not force:
+        campaign.status = "archived"
+        campaign.paused = True
+        await session.commit()
+        return {
+            "deleted": False,
+            "archived": True,
+            "messages_sent": sent,
+            "detail": (
+                f"This campaign has sent {sent} message(s), so it was archived rather than "
+                "deleted: its history is the record of who was contacted. Pass force=true to "
+                "delete it anyway — every lead is erased through the privacy path, so opt-outs "
+                "survive as hashes."
+            ),
+        }
+
+    ctx = OrgContext(org_id=user.org_id, actor_id=user.email or user.user_id)
+    lead_ids = list(
+        (await session.execute(select(Lead.id).where(Lead.campaign_id == campaign_id))).scalars()
+    )
+    for lead_id in lead_ids:
+        # Through the erasure path, not a bare delete: it is what preserves the hashed
+        # suppression for anyone who had opted out.
+        await erase_lead(session, ctx, lead_id)
+
+    await session.delete(campaign)
+    await session.commit()
+    return {"deleted": True, "archived": False, "leads_erased": len(lead_ids)}

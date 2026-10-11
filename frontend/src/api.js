@@ -93,6 +93,14 @@ export function postJson(path, { body, json } = {}) {
   return request(path, init)
 }
 
+export function patchJson(path, { json } = {}) {
+  return request(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(json ?? {}),
+  })
+}
+
 export const deleteJson = (path) => request(path, { method: 'DELETE' })
 
 // Upload goes through the same path so it gets the same token and the same error handling.

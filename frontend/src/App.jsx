@@ -15,7 +15,15 @@
 import React, { useCallback, useEffect, useState } from 'react'
 
 import { SignIn, useSession } from './Auth'
-import { ApiUnreachable, NotAuthenticated, deleteJson, getJson, postJson, uploadFile } from './api'
+import {
+  ApiUnreachable,
+  NotAuthenticated,
+  deleteJson,
+  getJson,
+  patchJson,
+  postJson,
+  uploadFile,
+} from './api'
 import { signOut } from './supabase'
 
 export default function App() {
@@ -134,6 +142,15 @@ function Dashboard({ session }) {
 
       {campaignId ? (
         <>
+          <CampaignAdmin
+            campaign={campaigns.find((row) => row.id === campaignId)}
+            onError={handle}
+            onToast={toast}
+            onChanged={(removed) => {
+              if (removed) setCampaignId(null)
+              refreshCampaigns()
+            }}
+          />
           <ReviewQueue
             campaignId={campaignId}
             onError={handle}
@@ -331,6 +348,99 @@ function Field({ label, value, onChange, required, hint }) {
       <input value={value} onChange={onChange} required={required} style={{ width: '100%' }} />
       {hint ? <p style={{ ...styles.muted, marginTop: 4, fontSize: 13 }}>{hint}</p> : null}
     </div>
+  )
+}
+
+function CampaignAdmin({ campaign, onError, onToast, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
+  const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
+
+  if (!campaign) return null
+
+  const attachMailbox = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const created = await postJson('/mailboxes', { json: mailbox })
+      await patchJson(`/campaigns/${campaign.id}`, { json: { mailbox_id: created.id } })
+      onToast('Mailbox attached. This campaign can send once you set it running.')
+      setOpen(false)
+      onChanged(false)
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (force) => {
+    setBusy(true)
+    try {
+      const result = await deleteJson(
+        `/campaigns/${campaign.id}${force ? '?force=true' : ''}`
+      )
+      // An archive is not a failure: it is the API refusing to destroy the record of who was
+      // contacted, and saying so.
+      onToast(result.deleted ? 'Campaign deleted.' : result.detail)
+      onChanged(result.deleted)
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>{campaign.name}</h2>
+      <p style={styles.muted}>
+        Status: {campaign.status}
+        {campaign.paused ? ' · paused' : ''}
+        {campaign.mailbox_id ? ' · mailbox attached' : ' · no mailbox yet'}
+      </p>
+
+      {campaign.mailbox_id ? null : (
+        <p style={styles.muted}>
+          This campaign cannot send until a mailbox is attached. It must be the address your
+          SPF and DKIM records cover.
+        </p>
+      )}
+
+      <div style={styles.buttons}>
+        {campaign.mailbox_id ? null : (
+          <button type="button" onClick={() => setOpen(!open)} style={styles.button}>
+            {open ? 'Cancel' : 'Attach a mailbox'}
+          </button>
+        )}
+        <button type="button" disabled={busy} onClick={() => remove(false)} style={styles.button}>
+          Delete campaign
+        </button>
+      </div>
+
+      {open ? (
+        <form onSubmit={attachMailbox}>
+          <Field
+            label="Send from (email)"
+            value={mailbox.from_email}
+            onChange={(event) => setMailbox({ ...mailbox, from_email: event.target.value })}
+            required
+            hint="The mailbox your SPF and DKIM cover — the same address as SMTP_EMAIL."
+          />
+          <Field
+            label="Sender name recipients see"
+            value={mailbox.from_name}
+            onChange={(event) => setMailbox({ ...mailbox, from_name: event.target.value })}
+            required
+          />
+          <div style={styles.buttons}>
+            <button type="submit" disabled={busy} style={styles.primary}>
+              {busy ? 'Attaching…' : 'Attach mailbox'}
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </section>
   )
 }
 
