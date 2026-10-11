@@ -28,7 +28,10 @@ ROOT="$(pwd)"
 # including the build context, so Compose's default (the compose file's own directory) is the
 # only value under which `context: ..` and `env_file: ../.env` both mean the repository root.
 COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
-READY_URL="${READY_URL:-http://127.0.0.1:8000/health}"
+# Health is checked **inside** the api container, not from the host: the api deliberately
+# publishes no host port (only Caddy does), so a host-side curl to 127.0.0.1:8000 can never
+# succeed — it reported a perfectly healthy deploy as a failure and rolled it back.
+HEALTH_PATH="${HEALTH_PATH:-/health}"
 READY_TIMEOUT="${READY_TIMEOUT:-120}"
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -74,7 +77,7 @@ say "starting"
 
 say "waiting for the api (up to ${READY_TIMEOUT}s)"
 deadline=$(( $(date +%s) + READY_TIMEOUT ))
-until curl -fsS --max-time 5 "$READY_URL" >/dev/null 2>&1; do
+until "${COMPOSE[@]}" exec -T api curl -fsS --max-time 5 "http://127.0.0.1:8000${HEALTH_PATH}" >/dev/null 2>&1; do
 	if (( $(date +%s) >= deadline )); then
 		printf '\n'
 		"${COMPOSE[@]}" logs --tail 60 api || true
@@ -97,7 +100,7 @@ printf '\n'
 # first heartbeat, which takes up to a minute, and a worker that is still starting is not a
 # reason to roll back an api that is serving.
 say "readiness"
-curl -fsS --max-time 5 "${READY_URL%/health}/ready" || true
+"${COMPOSE[@]}" exec -T api curl -fsS --max-time 5 http://127.0.0.1:8000/ready || true
 printf '\n'
 
 say "running"
@@ -110,7 +113,8 @@ Deployed. Two things worth a look:
   * SEND_MODE is whatever .env says and this script did not change it. Check it with:
         docker compose --env-file .env -f deploy/compose.prod.yml exec api \
             python -m app.scripts.check_env
-  * /ready stays 503 until the worker's first heartbeat (about a minute). If it is still 503
-    after two minutes, the worker did not start:
+  * /ready stays 503 until the worker's first heartbeat (about a minute). From outside, check
+    it through Caddy at https://$API_DOMAIN/ready — the api itself publishes no host port.
+    If it is still 503 after two minutes, the worker did not start:
         docker compose --env-file .env -f deploy/compose.prod.yml logs --tail 50 worker
 NOTE
