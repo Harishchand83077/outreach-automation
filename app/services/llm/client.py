@@ -173,6 +173,33 @@ class LLMClient:
         )
 
 
+def _unfence(text: str) -> str:
+    """Strip a markdown code fence, if the model wrapped its JSON in one.
+
+        Several providers honour `response_format` loosely and answer with
+        ```json
+    {...}
+    ``` — correct JSON inside a wrapper that `json.loads` cannot read. Treating
+        that as "the model failed" cools down an entry that in fact did the right thing, and on a
+        free chain that can mean no provider is left.
+
+        Only an outer fence is removed. Anything else is left exactly as it came back, so a
+        genuinely malformed answer still fails loudly rather than being coaxed into shape.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+
+    without_open = stripped.removeprefix("```")
+    # ```json, ```JSON or a bare ``` — drop the language tag on the first line, if there is one.
+    first_line, separator, remainder = without_open.partition("\n")
+    if separator and first_line.strip().isalpha():
+        without_open = remainder
+
+    closing = without_open.rfind("```")
+    return without_open[:closing] if closing != -1 else without_open
+
+
 def parse_structured[M: BaseModel](completion: Completion, schema: type[M]) -> M:
     """Validate a completion's body against a Pydantic model.
 
@@ -181,7 +208,7 @@ def parse_structured[M: BaseModel](completion: Completion, schema: type[M]) -> M
     ungrounded claims reach a recipient.
     """
     try:
-        loaded = json.loads(completion.text)
+        loaded = json.loads(_unfence(completion.text))
     except ValueError as exc:
         raise InvalidOutputError(
             f"{completion.entry_name}: expected JSON, got {completion.text[:120]!r}",
