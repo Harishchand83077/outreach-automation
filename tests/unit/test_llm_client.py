@@ -96,7 +96,12 @@ class TestSuccessfulCall:
         body = json.loads(route.calls[0].request.content)
         assert body["response_format"]["type"] == "json_schema"
         assert body["response_format"]["json_schema"]["strict"] is True
-        assert body["response_format"]["json_schema"]["schema"] == schema
+        sent = body["response_format"]["json_schema"]["schema"]
+        # The schema is sent strictified, not verbatim: strict mode requires
+        # `additionalProperties: false` on every object, which Pydantic does not emit for
+        # nested definitions. Everything the caller asked for must still be there.
+        assert sent["properties"] == schema["properties"]
+        assert sent["additionalProperties"] is False
 
     @respx.mock
     async def test_missing_usage_does_not_crash_the_call(self, entry):
@@ -268,3 +273,56 @@ class TestFencedJsonIsAccepted:
 class _Draft(BaseModel):
     subject: str
     body: str
+
+
+class TestStrictSchemasCoverNestedObjects:
+    """Strict structured output requires `additionalProperties: false` on **every** object,
+    including the nested models Pydantic emits under `$defs` — and Pydantic only sets it on the
+    top level.
+
+    Found live: Groq rejected every structured call with
+
+        invalid JSON schema for response_format: /$defs/Claim:
+        `additionalProperties:false` must be set on every object
+
+    which the router recorded as a permanent error, so two perfectly good primary entries were
+    skipped on every call and the chain fell through to whichever free provider was left.
+    """
+
+    def test_a_nested_definition_is_covered(self):
+        from app.services.drafting.schema import DraftOutput
+        from app.services.llm.client import _strictify
+
+        schema = _strictify(DraftOutput.model_json_schema())
+        assert schema["additionalProperties"] is False
+        assert schema["$defs"]["Claim"]["additionalProperties"] is False
+
+    def test_objects_inside_arrays_are_covered(self):
+        from app.services.llm.client import _strictify
+
+        schema = _strictify(
+            {
+                "type": "object",
+                "properties": {
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "object", "properties": {"a": {"type": "string"}}},
+                    }
+                },
+            }
+        )
+        assert schema["properties"]["rows"]["items"]["additionalProperties"] is False
+
+    def test_non_objects_are_left_alone(self):
+        from app.services.llm.client import _strictify
+
+        schema = _strictify({"type": "string", "maxLength": 5})
+        assert "additionalProperties" not in schema
+
+    def test_the_callers_schema_is_not_mutated(self):
+        """It comes from `model_json_schema()` and is shared."""
+        from app.services.llm.client import _strictify
+
+        original = {"type": "object", "properties": {}}
+        _strictify(original)
+        assert "additionalProperties" not in original

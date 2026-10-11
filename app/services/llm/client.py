@@ -123,7 +123,11 @@ class LLMClient:
             # generic subject the moment the model added a preamble (issue B13).
             body["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": "result", "strict": True, "schema": json_schema},
+                "json_schema": {
+                    "name": "result",
+                    "strict": True,
+                    "schema": _strictify(json_schema),
+                },
             }
 
         try:
@@ -171,6 +175,36 @@ class LLMClient:
             entry_name=entry.name,
             model=entry.model,
         )
+
+
+def _strictify(schema: dict[str, Any]) -> dict[str, Any]:
+    """Set `additionalProperties: false` on every object in a JSON schema.
+
+    Strict structured output requires it on **every** object, including the nested models
+    Pydantic emits under `$defs` — and Pydantic only sets it on the top level. Groq rejects the
+    whole request with:
+
+        invalid JSON schema for response_format: /$defs/Claim:
+        `additionalProperties:false` must be set on every object
+
+    which the router records as a permanent error, so two perfectly good entries were skipped on
+    every structured call and the chain fell through to whichever free provider was left.
+
+    A copy is returned; the caller's schema is not mutated, because it comes from
+    `model_json_schema()` and is shared.
+    """
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if isinstance(value, dict):
+            out[key] = _strictify(value)
+        elif isinstance(value, list):
+            out[key] = [_strictify(item) if isinstance(item, dict) else item for item in value]
+        else:
+            out[key] = value
+
+    if out.get("type") == "object":
+        out["additionalProperties"] = False
+    return out
 
 
 def _unfence(text: str) -> str:
