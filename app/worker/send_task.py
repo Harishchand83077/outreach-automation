@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,12 +96,32 @@ class SendLoop(WorkerTask):
             if live is None:
                 return MAX_WAIT
 
+            try:
+                persona = Persona.model_validate(persona_data)
+                settings = CampaignSettings.model_validate(campaign.settings or {})
+            except ValidationError as exc:
+                # `campaigns.persona` and `campaigns.settings` are JSONB and nothing in the API
+                # writes `settings`, so the only way a bad value gets there is a hand-written
+                # UPDATE. That happened: a widened window was applied with `send_days` as
+                # `["mon", ...]` where the model wants integers. The error escaped `tick()`,
+                # `WorkerTask.run` recorded a failure and backed off, and *no mailbox sent
+                # anything* until the row was corrected — with the reason visible only as a
+                # traceback in the worker log.
+                #
+                # One unreadable campaign is one mailbox's problem. Report it as that mailbox's
+                # reason and let the others have their turn.
+                report.reasons.append(
+                    f"{mailbox.from_email}: campaign {campaign.name!r} has settings that cannot "
+                    f"be read ({_field_summary(exc)})"
+                )
+                return MAX_WAIT
+
             decision = await send_one(
                 session,
                 org_id=mailbox.org_id,
                 mailbox=live,
-                persona=Persona.model_validate(persona_data),
-                settings=CampaignSettings.model_validate(campaign.settings or {}),
+                persona=persona,
+                settings=settings,
                 sender=self.ctx.sender,
                 now=now,
             )
@@ -127,3 +148,18 @@ class SendLoop(WorkerTask):
             .limit(1)
         )
         return campaign
+
+
+def _field_summary(exc: ValidationError) -> str:
+    """Name the offending fields, without pasting a Pydantic traceback into a log line.
+
+    The operator needs to know *which* key to correct. The values are not included: persona
+    holds no secret, but a reason string ends up in logs and in `/admin` responses, and a habit
+    of echoing stored content into either is how one eventually leaks.
+    """
+    fields = []
+    for error in exc.errors()[:5]:
+        location = ".".join(str(part) for part in error["loc"]) or "(root)"
+        if location not in fields:
+            fields.append(location)
+    return "invalid: " + ", ".join(fields) if fields else "invalid"
