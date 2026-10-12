@@ -79,7 +79,20 @@ class SendLoop(WorkerTask):
     async def _send_for(
         self, report: SendTickReport, mailbox: Mailbox, now: datetime | None
     ) -> timedelta:
-        async with self.ctx.session_factory() as session, session.begin():
+        # **No `session.begin()` here, deliberately.** `send_one` commits twice of its own
+        # accord: once before the SMTP call, because a socket must not be held open inside a
+        # transaction, and once after, because step 4 has to land whatever the outcome was.
+        # Committing inside a `session.begin()` block ends it, and the next statement raises
+        #
+        #     InvalidRequestError: Can't operate on closed transaction inside context manager
+        #
+        # which in production happened *after* the mail was delivered: the email arrived, the
+        # row stayed `sending`, and the lead never left `APPROVED`. At-most-once held, because
+        # the unique idempotency key refused the next cycle's claim — but the lead was stuck.
+        #
+        # The reads below are safe without an explicit block; SQLAlchemy begins one on demand
+        # and `send_one` is the thing that decides when work is durable.
+        async with self.ctx.session_factory() as session:
             campaign = await self._campaign_for(session, mailbox)
             if campaign is None:
                 report.reasons.append(f"{mailbox.from_email}: no campaign uses this mailbox")
