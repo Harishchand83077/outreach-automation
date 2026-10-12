@@ -233,6 +233,65 @@ gap of that kind fails in CI instead of on a server.
 with correct JSON wrapped in a markdown fence. That was being treated as the model failing, which
 cooled down an entry that had done the right thing.
 
+**Phase 9 (this session): the first attempt to send stopped on three things, none of which the
+test suite could have caught.** All three were state in the production database, not code.
+
+1. **`campaigns.settings` was edited by hand and the whole send loop died.** A widened send
+   window was applied with `send_days` as `["mon","tue",...]`, where `CampaignSettings` wants
+   integers (0 = Monday). `model_validate` raised inside `SendLoop._send_for`, the error escaped
+   `tick()`, and `WorkerTask.run` recorded a failure and backed off — then failed again every
+   cycle. **Nothing sent from any mailbox**, and the only evidence was a traceback in the worker
+   log. The dashboard showed four healthy leads and no reason at all.
+
+   Fixed in PR #52: validation happens inside a `try`, a failure becomes *that mailbox's* reason
+   naming the offending fields, and the other mailboxes still get their turn. Field names only,
+   never the stored values — a reason string reaches logs and `/admin`, and echoing stored
+   content into either is how one eventually leaks.
+
+2. **The campaign was still `draft`.** `status` defaults to `draft` on creation and
+   `find_candidates` requires `running`, so an attached mailbox and two approved drafts sent
+   nothing. The UI *printed* the status and said the campaign "can send once you set it
+   running" — and offered no way to set it. The only route was raw SQL against production. PR
+   #52 adds the Set running / Pause sending control, and an explicit line while a campaign is
+   still a draft.
+
+3. **The mailbox's `from_email` is not the authenticated SMTP account.** The row says
+   `rahul@arkvane.in`; SMTP authenticates as a personal Gmail, and `aiosmtplib.send` takes the
+   envelope sender from the `From` header. Probed against Gmail (conversation stopped at
+   `RCPT TO`, no `DATA`, nothing delivered): **Gmail accepts the mismatched envelope**, so
+   there is no rejection and no risk of `_bounce_lead` suppressing a real address. But Gmail
+   will not sign `arkvane.in` mail, so **the SPF and DKIM passes verified for `arkvane.in` do
+   not apply to anything sent this way.** Fine for a workflow test to the owner's own addresses;
+   it must be corrected before real outreach.
+
+**What this says about the test suite.** 1,100 tests, four green CI jobs, and a deploy that
+reports `{"ready":true}` — none of it could see any of the three, because all three were rows.
+The pattern is the same one that produced the six defects of the previous session: a correct
+table and a correct caller, with nothing checking that the data between them agreed. The fix
+that generalises is the one in PR #52 — make the unreadable case *reportable* rather than fatal,
+so the next malformed row costs one mailbox and says so, instead of costing everything silently.
+
+**A deploy defect fixed on the way:** `/opt/outreach/.git/config` had
+`core.sshCommand = ssh -i ~/.ssh/outreach_deploy`. `~` is `/root` under `sudo`, where no such
+key exists, so `deploy/deploy.sh` could never pull — every deploy so far had been done by hand.
+Now an absolute path with `IdentitiesOnly=yes` and an explicit `UserKnownHostsFile`. `deploy.sh`
+runs end to end; the live image is `dbc92e2`.
+
+**Still blocking the first send, and it needs the owner.** Two rows, and the permission guard
+refuses to let a tool `UPDATE` the production database:
+
+```sql
+-- 1. correct the settings this session's own bad UPDATE wrote (0 = Monday)
+UPDATE app.campaigns SET settings = settings ||
+  '{"send_days":[0,1,2,3,4,5,6],"window_start":"00:00:00","window_end":"23:59:00"}'::jsonb
+  WHERE name = 'test_campaign';
+-- 2. or just drop it back to the product default: Mon-Fri 10:00-17:30 IST
+--    UPDATE app.campaigns SET settings = '{}'::jsonb WHERE name = 'test_campaign';
+```
+
+Step 2 — setting the campaign `running` — no longer needs SQL. It is a button in the dashboard
+once the Cloudflare build of `main` lands.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
