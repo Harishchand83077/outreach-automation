@@ -23,6 +23,7 @@ from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Research
 from app.db.repo import OrgContext
+from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.services.privacy import erase_lead
 
@@ -33,7 +34,7 @@ router = APIRouter(tags=["campaigns"])
 CAMPAIGN_STATUSES = ("draft", "running", "paused", "completed", "archived")
 
 
-def _persona_errors(exc: ValidationError) -> list[dict[str, str]]:
+def _field_errors(exc: ValidationError, *, fallback: str) -> list[dict[str, str]]:
     """Pydantic errors, flattened to what a form can display.
 
     `ctx` is dropped deliberately: it holds the original exception object, which is not
@@ -41,7 +42,7 @@ def _persona_errors(exc: ValidationError) -> list[dict[str, str]]:
     """
     return [
         {
-            "field": ".".join(str(part) for part in error["loc"]) or "persona",
+            "field": ".".join(str(part) for part in error["loc"]) or fallback,
             "message": error["msg"],
             "type": error["type"],
         }
@@ -60,6 +61,12 @@ def campaign_summary(campaign: Campaign) -> dict[str, Any]:
         # Whether a persona exists is what the UI needs to know; its contents are not list data.
         "has_persona": bool(persona),
         "sender_name": persona.get("sender_name"),
+        # Rendered through `CampaignSettings` rather than returned raw, so the client is shown
+        # the values the worker will actually use -- defaults included -- instead of whatever
+        # subset happens to be stored. A row written before a field existed reads correctly.
+        "settings": CampaignSettings.model_validate(campaign.settings or {}).model_dump(
+            mode="json"
+        ),
         "created_at": campaign.created_at.isoformat(),
     }
 
@@ -396,7 +403,10 @@ async def create_campaign(
         # them whole turned a 422 into a 500, hiding the very message the caller needed.
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"message": "The persona is not valid.", "errors": _persona_errors(exc)},
+            {
+                "message": "The persona is not valid.",
+                "errors": _field_errors(exc, fallback="persona"),
+            },
         ) from exc
 
     mailbox_id: uuid.UUID | None = None
@@ -435,7 +445,7 @@ async def update_campaign(
     user: Annotated[CurrentUser, Depends(require_role("admin"))],
     payload: Annotated[dict[str, Any], Body()],
 ) -> dict[str, Any]:
-    """Change a campaign's name, status, pause flag, mailbox or persona.
+    """Change a campaign's name, status, pause flag, mailbox, persona or sending rules.
 
     **Attaching a mailbox after the fact is the reason this exists.** Creation allowed a campaign
     with no mailbox, and nothing could add one afterwards — so a campaign created without one
@@ -443,6 +453,11 @@ async def update_campaign(
 
     `status` is not a free field: `running` is what lets the send loop consider this campaign's
     leads, so it is set deliberately and never as a side effect of editing a name.
+
+    `settings` is validated through `CampaignSettings` and merged into what is already stored.
+    **`SEND_MODE` is not among them and cannot be set here or anywhere else in the API** -- it
+    comes from the environment and is checked in one function (hard rule 1). `GET
+    /admin/sending-config` reports it; nothing changes it.
     """
     campaign = await session.get(Campaign, campaign_id)
     if campaign is None or campaign.org_id != user.org_id:
@@ -490,8 +505,40 @@ async def update_campaign(
         except ValidationError as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
-                {"message": "The persona is not valid.", "errors": _persona_errors(exc)},
+                {
+                    "message": "The persona is not valid.",
+                    "errors": _field_errors(exc, fallback="persona"),
+                },
             ) from exc
+
+    if "settings" in payload:
+        # **Validated here so the worker never has to cope with an unreadable row.** `SendLoop`
+        # parses `campaigns.settings` on every cycle; until this route existed the only way to
+        # change a send window was raw SQL, and one `UPDATE` that put weekday *names* in
+        # `send_days` stopped sending for every mailbox with the reason visible only as a
+        # traceback in the worker log.
+        #
+        # **Merged, not replaced.** A form that posts one field must not reset the rest to
+        # their defaults -- silently narrowing a send window is exactly the kind of change
+        # nobody notices until mail stops going out.
+        incoming = payload["settings"]
+        if not isinstance(incoming, dict):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "settings must be an object.")
+        merged = {**(campaign.settings or {}), **incoming}
+        try:
+            validated = CampaignSettings.model_validate(merged)
+        except ValidationError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                {
+                    "message": "These settings are not valid.",
+                    "errors": _field_errors(exc, fallback="settings"),
+                },
+            ) from exc
+        # Stored fully rendered, so the row is always complete and always parseable. `SEND_MODE`
+        # is not in this model and cannot arrive this way: an unknown key is rejected by
+        # `extra="forbid"` above.
+        campaign.settings = validated.model_dump(mode="json")
 
     await session.commit()
     return campaign_summary(campaign)

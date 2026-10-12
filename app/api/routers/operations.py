@@ -19,6 +19,7 @@ from sqlalchemy import func, select
 
 from app.api.deps import CurrentUserDep, SessionDep
 from app.api.pagination import clamp_limit
+from app.core.settings import config
 from app.db import ops, repo
 from app.db.models import Job, LlmUsage, Mailbox, Message, Suppression
 
@@ -311,4 +312,50 @@ async def worker(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
         "last_seen_at": status_row.last_seen_at.isoformat(),
         "seen_seconds_ago": status_row.age_seconds,
         "info": status_row.info,
+    }
+
+
+@router.get("/admin/sending-config")
+async def sending_config(user: CurrentUserDep) -> dict[str, Any]:
+    """What the running process will do when it tries to send. Read-only, deliberately.
+
+    **There is no endpoint that sets `SEND_MODE`, and there must never be one.** It is read from
+    the environment at process start and checked in exactly one function (hard rule 1). Exposing
+    a switch for it would mean a stolen token, or one mistaken click in a browser, could begin
+    sending real mail to real people -- and the entire design is that going live is a deliberate
+    act by the owner, on the server, recorded in `.env`. Changing it is a restart, not a request.
+
+    So this answers the question an operator actually has, which is *"what will happen if I
+    approve this draft?"*, and answers it from the same configuration object the send guard
+    reads, rather than from anything a client could have influenced.
+
+    **The allowlist is reported as a count, not a list.** The addresses are personal data, the
+    count is what tells you whether the gate is configured, and a list would put real addresses
+    into a response that ends up in a browser's cache and a screenshot. Nothing here is a
+    credential: the sending account is named, because the `From` address is public the moment a
+    single email arrives, but no password, key or token is returned.
+    """
+    return {
+        "send_mode": config.SEND_MODE,
+        "editable": False,
+        "why_not_editable": (
+            "SEND_MODE is read from the environment at process start and checked in one "
+            "function. Change it in .env on the server and restart; nothing in the API or the "
+            "dashboard can set it."
+        ),
+        "allowlist_size": len(config.send_allowlist),
+        "smtp_host": config.SMTP_HOST,
+        "smtp_port": config.SMTP_PORT,
+        "sending_account": config.SMTP_EMAIL,
+        "imap_host": config.IMAP_HOST,
+        "environment": config.APP_ENV,
+        # The product rules that are locked in code rather than configurable per campaign, so
+        # the settings screen can state them instead of implying they are editable.
+        "locked": {
+            "approval_mode": "review_all",
+            "plain_text_only": True,
+            "tracking_pixels": False,
+            "link_rewriting": False,
+            "meeting_booked_set_only_by_a_human": True,
+        },
     }
