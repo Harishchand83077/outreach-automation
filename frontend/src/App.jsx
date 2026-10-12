@@ -374,6 +374,26 @@ function CampaignAdmin({ campaign, onError, onToast, onChanged }) {
     }
   }
 
+  // `running` is what lets the send loop consider this campaign at all. Until now the only way
+  // to set it was raw SQL against production, which is how a campaign sat in `draft` with two
+  // approved drafts and no explanation anywhere in the UI.
+  const setStatus = async (status) => {
+    setBusy(true)
+    try {
+      await patchJson(`/campaigns/${campaign.id}`, { json: { status } })
+      onToast(
+        status === 'running'
+          ? 'Campaign is running. Approved drafts will send inside the window, under the cap.'
+          : `Campaign is now ${status}. Nothing further will send.`
+      )
+      onChanged(false)
+    } catch (error) {
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const remove = async (force) => {
     setBusy(true)
     try {
@@ -407,12 +427,39 @@ function CampaignAdmin({ campaign, onError, onToast, onChanged }) {
         </p>
       )}
 
+      {campaign.mailbox_id && campaign.status === 'draft' ? (
+        <p style={styles.muted}>
+          This campaign is a draft, so nothing will send even once a draft is approved. Set it
+          running when you are ready.
+        </p>
+      ) : null}
+
       <div style={styles.buttons}>
         {campaign.mailbox_id ? null : (
           <button type="button" onClick={() => setOpen(!open)} style={styles.button}>
             {open ? 'Cancel' : 'Attach a mailbox'}
           </button>
         )}
+        {campaign.mailbox_id && campaign.status !== 'running' ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setStatus('running')}
+            style={styles.button}
+          >
+            Set running
+          </button>
+        ) : null}
+        {campaign.status === 'running' ? (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => setStatus('paused')}
+            style={styles.button}
+          >
+            Pause sending
+          </button>
+        ) : null}
         <button type="button" disabled={busy} onClick={() => remove(false)} style={styles.button}>
           Delete campaign
         </button>
