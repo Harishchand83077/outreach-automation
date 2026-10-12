@@ -40,6 +40,7 @@ function Dashboard({ session }) {
   const [toasts, setToasts] = useState([])
   const [campaigns, setCampaigns] = useState([])
   const [campaignId, setCampaignId] = useState(null)
+  const [creating, setCreating] = useState(false)
   const [attention, setAttention] = useState(null)
 
   const toast = useCallback((message, kind = 'info') => {
@@ -140,6 +141,29 @@ function Dashboard({ session }) {
         onRefresh={refreshCampaigns}
       />
 
+      <div style={styles.buttons}>
+        <button
+          type="button"
+          onClick={() => setCreating((open) => !open)}
+          style={styles.button}
+        >
+          {creating ? 'Cancel' : 'New campaign'}
+        </button>
+      </div>
+
+      {/* Available whatever is selected. It used to render only when `campaignId` was null, so
+          the moment a first campaign existed there was no way to create a second one. */}
+      {creating ? (
+        <NewCampaign
+          onError={handle}
+          onToast={toast}
+          onCreated={() => {
+            setCreating(false)
+            refreshCampaigns()
+          }}
+        />
+      ) : null}
+
       {campaignId ? (
         <>
           <CampaignAdmin
@@ -159,8 +183,14 @@ function Dashboard({ session }) {
           />
           <Leads campaignId={campaignId} onError={handle} />
           <Import campaignId={campaignId} onError={handle} onToast={toast} />
+          <Settings
+            campaign={campaigns.find((row) => row.id === campaignId)}
+            onError={handle}
+            onToast={toast}
+            onChanged={refreshCampaigns}
+          />
         </>
-      ) : (
+      ) : creating ? null : (
         <NewCampaign onError={handle} onToast={toast} onCreated={refreshCampaigns} />
       )}
 
@@ -961,6 +991,8 @@ const styles = {
   title: { fontSize: 28, fontWeight: 700, margin: '0 0 8px' },
   subtitle: { color: 'var(--textMuted)', margin: 0, fontSize: 15 },
   heading: { fontSize: 20, fontWeight: 700, margin: '0 0 8px' },
+  subheading: { fontSize: 15, fontWeight: 700, margin: '24px 0 6px' },
+  checkbox: { fontSize: 14, display: 'flex', alignItems: 'center', gap: 4 },
   section: { marginBottom: 40 },
   row: { display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 },
   card: {
@@ -1041,4 +1073,219 @@ const styles = {
     padding: '12px 14px',
     fontSize: 14,
   },
+}
+
+
+// Weekday 0 is Monday, matching `CampaignSettings.send_days`. Spelled out here because the one
+// production outage this screen exists to prevent was a hand-written UPDATE that put the names
+// in that column instead of the numbers.
+const WEEKDAYS = [
+  [0, 'Mon'],
+  [1, 'Tue'],
+  [2, 'Wed'],
+  [3, 'Thu'],
+  [4, 'Fri'],
+  [5, 'Sat'],
+  [6, 'Sun'],
+]
+
+function Settings({ campaign, onError, onToast, onChanged }) {
+  const [config, setConfig] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [fieldErrors, setFieldErrors] = useState([])
+
+  useEffect(() => {
+    let live = true
+    getJson('/admin/sending-config')
+      .then((data) => live && setConfig(data))
+      .catch((error) => live && onError(error))
+    return () => {
+      live = false
+    }
+  }, [onError])
+
+  useEffect(() => {
+    setDraft(campaign?.settings ? { ...campaign.settings } : null)
+    setFieldErrors([])
+  }, [campaign?.id, campaign?.settings])
+
+  if (!campaign) return null
+
+  const set = (key, value) => setDraft({ ...draft, [key]: value })
+  const number = (key) => (event) => set(key, Number(event.target.value))
+
+  const toggleDay = (day) => {
+    const days = draft?.send_days || []
+    set('send_days', days.includes(day) ? days.filter((d) => d !== day) : [...days, day].sort())
+  }
+
+  const save = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setFieldErrors([])
+    try {
+      await patchJson(`/campaigns/${campaign.id}`, { json: { settings: draft } })
+      onToast('Settings saved. The send loop picks them up on its next cycle.')
+      onChanged()
+    } catch (error) {
+      const detail = error?.detail
+      if (detail && Array.isArray(detail.errors)) setFieldErrors(detail.errors)
+      onError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section style={styles.section}>
+      <h2 style={styles.heading}>Settings</h2>
+
+      <h3 style={styles.subheading}>Sending — read-only</h3>
+      <p style={styles.muted}>
+        These come from the server environment and are checked in one place in the code. There is
+        deliberately no switch for them here: turning sending on is an act on the server, not a
+        click in a browser, so a stolen session cannot start mailing real people.
+      </p>
+      {config ? (
+        <table style={styles.table}>
+          <tbody>
+            <tr>
+              <td style={styles.td}>Send mode</td>
+              <td style={styles.td}>
+                <strong>{config.send_mode}</strong>
+                {config.send_mode === 'disabled' ? ' — nothing can be sent to anybody' : null}
+                {config.send_mode === 'allowlist'
+                  ? ` — only the ${config.allowlist_size} allowlisted address(es)`
+                  : null}
+                {config.send_mode === 'live' ? ' — any recipient' : null}
+              </td>
+            </tr>
+            <tr>
+              <td style={styles.td}>Sending account</td>
+              <td style={styles.td}>{config.sending_account}</td>
+            </tr>
+            <tr>
+              <td style={styles.td}>SMTP</td>
+              <td style={styles.td}>
+                {config.smtp_host}:{config.smtp_port}
+              </td>
+            </tr>
+            <tr>
+              <td style={styles.td}>Environment</td>
+              <td style={styles.td}>{config.environment}</td>
+            </tr>
+            <tr>
+              <td style={styles.td}>Always on</td>
+              <td style={styles.td}>
+                Every first email and every reply is reviewed by a human · plain text only · no
+                tracking pixels · no link rewriting · a meeting is only ever marked booked by a
+                person
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      ) : (
+        <p style={styles.muted}>Loading…</p>
+      )}
+
+      <h3 style={styles.subheading}>Sending rules for {campaign.name}</h3>
+      <p style={styles.muted}>
+        When and how fast this campaign may send. Saved through the same validation the worker
+        uses, so a value this form accepts is a value the worker can read.
+      </p>
+
+      {draft ? (
+        <form onSubmit={save}>
+          <label style={styles.label}>Send days</label>
+          <div style={styles.row}>
+            {WEEKDAYS.map(([day, name]) => (
+              <label key={day} style={styles.checkbox}>
+                <input
+                  type="checkbox"
+                  checked={(draft.send_days || []).includes(day)}
+                  onChange={() => toggleDay(day)}
+                />{' '}
+                {name}
+              </label>
+            ))}
+          </div>
+
+          <label style={styles.label}>Window opens ({draft.timezone})</label>
+          <input
+            type="time"
+            step="1"
+            value={draft.window_start || ''}
+            onChange={(event) => set('window_start', event.target.value)}
+            style={styles.input}
+          />
+
+          <label style={styles.label}>Window closes ({draft.timezone})</label>
+          <input
+            type="time"
+            step="1"
+            value={draft.window_end || ''}
+            onChange={(event) => set('window_end', event.target.value)}
+            style={styles.input}
+          />
+
+          <label style={styles.label}>
+            Daily cap — counts every outbound email, including follow-ups and replies
+          </label>
+          <input
+            type="number"
+            min="1"
+            max="2000"
+            value={draft.daily_cap ?? ''}
+            onChange={number('daily_cap')}
+            style={styles.input}
+          />
+
+          <label style={styles.label}>Days before a follow-up</label>
+          <input
+            type="number"
+            min="1"
+            max="60"
+            value={draft.followup_after_days ?? ''}
+            onChange={number('followup_after_days')}
+            style={styles.input}
+          />
+
+          <label style={styles.label}>Maximum follow-ups (0 means none)</label>
+          <input
+            type="number"
+            min="0"
+            max="5"
+            value={draft.max_followups ?? ''}
+            onChange={number('max_followups')}
+            style={styles.input}
+          />
+
+          {fieldErrors.length ? (
+            <ul style={styles.muted}>
+              {fieldErrors.map((item) => (
+                <li key={item.field}>
+                  <strong>{item.field}</strong>: {item.message}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          <div style={styles.buttons}>
+            <button type="submit" disabled={busy} style={styles.button}>
+              {busy ? 'Saving…' : 'Save settings'}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => setDraft({ ...campaign.settings })}
+              style={styles.button}
+            >
+              Discard changes
+            </button>
+          </div>
+        </form>
+      ) : null}
+    </section>
+  )
 }
