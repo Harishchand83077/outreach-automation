@@ -230,6 +230,25 @@ class Settings(BaseSettings):
             return False
         return v
 
+    @field_validator("SMTP_PASSWORD", "IMAP_PASSWORD", mode="before")
+    @classmethod
+    def _strip_app_password_spaces(cls, v: object) -> object:
+        """Remove the spaces Google *displays* in an App Password.
+
+        Google shows a 16-character App Password grouped as `abcd efgh ijkl mnop`, and the
+        obvious thing to do is select it and paste it. The spaces are presentation only — the
+        credential is the 16 characters — but pasted verbatim they make every login fail, and
+        the failure is unhelpful: SMTP closes the connection without a reason and IMAP answers
+        a flat "Invalid credentials", neither of which hints that the value merely needs
+        trimming.
+
+        Stripping internal whitespace is safe: no mail provider issues a password containing a
+        space, so nothing legitimate is altered.
+        """
+        if isinstance(v, str):
+            return "".join(v.split())
+        return v
+
     @field_validator("GROQ_MODEL")
     @classmethod
     def _upgrade_retired_model(cls, v: str) -> str:
