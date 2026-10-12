@@ -626,3 +626,75 @@ class TestFailureHandling:
             db, org_id=uuid.uuid4(), mailbox_id=mailbox.id, now=INSIDE
         )
         assert candidates == []
+
+
+class TestThroughTheRealTask:
+    """Drive `SendLoop`, not `send_one`.
+
+    Every other test in this file calls `send_one` with the bare `db` session, which has no
+    outer transaction. `SendLoop._send_for` wrapped the same call in
+    `async with session_factory() as session, session.begin():` — and `send_one` commits twice
+    of its own accord, because the SMTP call must not happen inside a transaction and step 4
+    has to land in its own.
+
+    Committing inside `session.begin()` ends that block, so the next statement raised:
+
+        sqlalchemy.exc.InvalidRequestError: Can't operate on closed transaction inside
+        context manager.
+
+    In production that happened **after** the SMTP call. The email was delivered; `mark_sent`
+    then blew up, so the row stayed `sending`, the lead stayed `APPROVED`, and the dashboard's
+    SENT filter was empty for a message sitting in the recipient's inbox. At-most-once held —
+    the unique idempotency key refused the next cycle's claim, so nothing was sent twice — but
+    the lead could never progress.
+
+    The caller is the one that has to change: `send_one` owns its transactions.
+    """
+
+    @pytest_asyncio.fixture(loop_scope="session")
+    async def task(self, session_factory, smtp_server, campaign, org):
+        from app.worker.context import WorkerContext
+        from app.worker.send_task import SendLoop
+
+        campaign.persona = PERSONA.model_dump(mode="json")
+        campaign.settings = {}
+        campaign.status = "running"
+
+        return SendLoop(
+            WorkerContext(
+                session_factory=session_factory,
+                settings=allowlist_settings(smtp_server.host, smtp_server.port),
+                poller=None,  # type: ignore[arg-type]
+                sender=SmtpSender(allowlist_settings(smtp_server.host, smtp_server.port)),
+            )
+        )
+
+    async def test_the_send_is_recorded_not_just_performed(
+        self, db, ctx, org, mailbox, campaign, lead_factory, smtp_server, task
+    ):
+        """The regression: delivered to the server, and `sending` forever in the database."""
+        lead, _ = await approved_lead(db, ctx, lead_factory)
+        await db.commit()
+
+        report = await task.send_pass(INSIDE)
+
+        assert report.sent == 1, report.reasons
+        assert len(smtp_server.messages) == 1
+
+        message = (await db.execute(select(Message).where(Message.lead_id == lead.id))).scalar_one()
+        assert message.status == "sent"
+        assert message.sent_at is not None
+
+        await db.refresh(lead)
+        assert lead.state == "SENT"
+
+    async def test_a_tick_does_not_raise(
+        self, db, ctx, org, mailbox, campaign, lead_factory, smtp_server, task
+    ):
+        """`tick` is what the worker calls, and a raise there costs the whole loop."""
+        await approved_lead(db, ctx, lead_factory)
+        await db.commit()
+
+        await task.tick(INSIDE)
+
+        assert task.health.task("send_loop").consecutive_failures == 0
