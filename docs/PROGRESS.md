@@ -292,6 +292,91 @@ UPDATE app.campaigns SET settings = settings ||
 Step 2 — setting the campaign `running` — no longer needs SQL. It is a button in the dashboard
 once the Cloudflare build of `main` lands.
 
+**The first real emails were sent, and three more defects came out of it.** Three leads of
+`test_campaign` went out on `SEND_MODE=allowlist` to the owner's own addresses, were delivered,
+and are recorded `SENT`. Every defect below was invisible to the suite and to CI, and every one
+was found by watching real leads.
+
+**1. A delivered email was not recorded as sent (PR #54).** The worst of the three. The first
+send arrived in the recipient's inbox and the row still said `sending`; the lead stayed
+`APPROVED` and the dashboard's SENT filter was empty for a message somebody had already read.
+
+`send_one` commits twice of its own accord -- once before the SMTP call, because a socket must
+not be held open inside a transaction, and once after, because step 4 has to land whatever the
+outcome was. `SendLoop._send_for` wrapped that call in `session.begin()`, and committing inside
+that block ends it, so the next statement raised `InvalidRequestError: Can't operate on closed
+transaction` **after** the mail had left.
+
+- **At-most-once held.** The unique idempotency key refused the next cycle's claim, so nothing
+  was sent twice. **ADR-002's recovery pass then earned its keep**: it found each message in
+  `[Gmail]/Sent Mail` by `Message-ID` and resolved it to `sent`, 15 minutes later. The system
+  self-healed a bug nobody had found yet, which is the entire argument for that design.
+- **Why 1134 tests missed it:** every test in `test_send_loop.py` called `send_one` with the
+  bare `db` fixture, which has no outer transaction -- so the one thing that differed between
+  the test and the worker was the thing that was broken. `TestThroughTheRealTask` now drives
+  `send_pass` and `tick`, the methods the worker actually calls.
+
+**2. One unreadable campaign stopped every mailbox (PR #52).** A send window widened by hand
+put `send_days` as `["mon","tue",...]` where `CampaignSettings` wants integers (0 = Monday).
+`model_validate` raised inside `_send_for`, escaped `tick()`, and the loop crash-looped --
+nothing sent from **any** mailbox, with the reason visible only as a traceback. Validation is
+now per-mailbox and a failure is reported as that mailbox's reason, naming the offending fields.
+
+**3. The dashboard could not start a campaign, or create a second one (PRs #52, #55).**
+`status` defaults to `draft` and `find_candidates` requires `running`, so an attached mailbox
+and two approved drafts sent nothing and said nothing. The UI printed the status and told the
+operator to "set it running" -- with no control to do it. `NewCampaign` also rendered only when
+no campaign was selected, so the moment a first campaign existed there was no way to make
+another.
+
+**The settings screen (PR #55), and the one thing it deliberately will not do.** Sending rules
+were editable only by raw SQL against production, which is how defect 2 happened.
+`PATCH /campaigns/{id}` now accepts `settings`, validated through `CampaignSettings` and merged
+rather than replaced. A test asserts the property that matters: whatever the route accepts, the
+send loop can read.
+
+**`SEND_MODE` is reported and never editable.** `GET /admin/sending-config` answers "what
+happens if I approve this draft?" from the same configuration object the send guard reads, and
+there is no route that sets it -- it comes from the environment at process start and is checked
+in one function (hard rule 1), so going live stays a deliberate act on the server rather than a
+click a stolen session could make. A test asserts no route can change it. The allowlist is
+reported as a **count**: the count proves the gate is configured, the addresses are personal
+data that would end up in a browser cache and a screenshot.
+
+**Three operational findings worth keeping.**
+
+- **The mailbox's `from_email` is not the authenticated SMTP account.** The row says
+  `rahul@arkvane.in`; SMTP authenticates as a personal Gmail. Probed against Gmail with the
+  conversation stopped at `RCPT TO` -- no `DATA`, nothing delivered -- and **Gmail accepts the
+  mismatched envelope**, so there is no rejection and no risk of `_bounce_lead` suppressing a
+  real address. But Gmail will not sign `arkvane.in` mail, so **the SPF and DKIM passes verified
+  for `arkvane.in` do not apply to anything sent this way.** Fine for a test to the owner's own
+  inbox; it must be corrected before real outreach.
+- **The IMAP loop ingested 1400 messages from the personal inbox, and classified none of them.**
+  Zero matched a lead, so the `In-Reply-To`/`References` matching did its job and no model was
+  called on unrelated mail -- 32 LLM calls in total. It is noise rather than cost, but 1400 rows
+  of the owner's personal email now sit in the database, which is a reason to use a dedicated
+  mailbox rather than a personal one.
+- **`deploy.sh` could never pull.** `/opt/outreach/.git/config` set
+  `core.sshCommand = ssh -i ~/.ssh/outreach_deploy`, and `~` is `/root` under `sudo`, where no
+  such key exists -- so every deploy up to this point had been done by hand. Now an absolute
+  path with `IdentitiesOnly=yes`. `deploy.sh` runs end to end.
+
+**The reboot was not unattended-upgrades.** The journal says
+`systemd-logind: Power key pressed short` -- an ACPI power-button event from the hypervisor,
+which on EC2 means a Reboot or Stop issued from the console or API, most likely while the IAM
+role was being attached (which does not require a restart). Every `Automatic-Reboot` directive
+in `/etc/apt/apt.conf.d/` is commented out, so unattended-upgrades was not responsible and
+nothing needed changing. Recovery already works and was not luck: `docker` and `containerd` are
+`enabled` at boot and all four containers are `unless-stopped`, so the stack came back by itself
+in about 60 seconds. `HandlePowerKey` is deliberately **left alone** -- ignoring it would turn a
+graceful console shutdown into a hard stop, which is worse for a box holding a database.
+
+**SSM Session Manager is live.** The instance profile `outreach-ssm-role` is attached and the
+metadata service confirms it, so a shell is available from any network without an SSH rule.
+Port 22 can now be closed; the dynamic residential IP that broke SSH three times stops
+mattering.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
