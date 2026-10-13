@@ -154,6 +154,13 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
     router = ctx.router_for(session, job.org_id)
     hooks = await _hooks_for(session, job.org_id, lead.id)
 
+    ctx_org = OrgContext(org_id=job.org_id)
+    # If this is a regeneration, the reviewer said why. Carry it, or they will reject the same
+    # draft twice and conclude the feedback box does nothing.
+    reviewer_feedback = await draft_store.latest_rejection_feedback(
+        session, ctx_org, lead_id=lead.id, kind="initial"
+    )
+
     result = await generate_draft(
         router=router,
         persona=persona,
@@ -163,9 +170,9 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
         lead_company=lead.company_name,
         job_title=lead.job_title,
         kind="initial",
+        reviewer_feedback=reviewer_feedback,
     )
 
-    ctx_org = OrgContext(org_id=job.org_id)
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)
 
     # DRAFTED first, always. The table is RESEARCHED -> DRAFTED -> AWAITING_APPROVAL, and
