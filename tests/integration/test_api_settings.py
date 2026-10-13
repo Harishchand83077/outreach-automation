@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime
 
 import jwt
 import pytest
@@ -207,7 +208,9 @@ class TestTheSendingConfigIsReadOnly:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["send_mode"] in ("disabled", "allowlist", "live")
-        assert body["editable"] is False
+        # `editable` says whether *this caller* may change it. Since ADR-010 an owner may, and
+        # the role tests below prove nobody below owner can.
+        assert body["editable"] is True
 
     async def test_it_never_returns_the_allowlist_itself(self, api, owner):
         """A count is what an operator needs. The addresses themselves are personal data."""
@@ -307,3 +310,119 @@ class TestOnlyAnAdminTouchesSettings:
             ).status_code
             == 200
         )
+
+
+class TestChangingTheSendMode:
+    """ADR-010. The most consequential request the API accepts, so every gate is tested.
+
+    The gates live where the value is *written*, not in the guard that reads it: owner only,
+    `live` refused outside production, a typed confirmation for `live`, and an audit row.
+    """
+
+    async def test_an_owner_can_restrict_sending(self, api, owner, db, org):
+        """Restricting is the case that must always work. A kill switch that needs an SSH
+        session is not a kill switch."""
+        response = api.patch(
+            "/api/v1/admin/sending-config", json={"send_mode": "disabled"}, headers=owner
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["send_mode"] == "disabled"
+        await db.refresh(org)
+        assert org.send_mode == "disabled"
+
+    async def test_it_records_who_changed_it(self, api, owner, db, org):
+        before = datetime.now(tz=UTC)
+        api.patch("/api/v1/admin/sending-config", json={"send_mode": "allowlist"}, headers=owner)
+        await db.refresh(org)
+
+        # The authenticated identity from the verified token, not a name the caller supplied.
+        # The fixture's subject is `owner-<uuid>`, so this is that user and nobody else.
+        assert org.send_mode_set_by is not None
+        assert org.send_mode_set_by.startswith("owner-")
+        assert org.send_mode_set_at >= before
+
+    async def test_null_hands_authority_back_to_the_environment(self, api, owner, db, org):
+        api.patch("/api/v1/admin/sending-config", json={"send_mode": "disabled"}, headers=owner)
+        response = api.patch(
+            "/api/v1/admin/sending-config", json={"send_mode": None}, headers=owner
+        )
+
+        assert response.status_code == 200
+        assert response.json()["source"] == "environment"
+        await db.refresh(org)
+        assert org.send_mode is None
+
+    async def test_live_is_refused_outside_production(self, api, owner, db, org):
+        """`CLAUDE.md` says the owner sets `live` only in production. This is that as code.
+
+        A staging box restored from a copy of this database cannot be talked into sending.
+        """
+        response = api.patch(
+            "/api/v1/admin/sending-config",
+            json={"send_mode": "live", "confirm": "LIVE"},
+            headers=owner,
+        )
+
+        assert response.status_code == 403
+        await db.refresh(org)
+        assert org.send_mode != "live"
+
+    async def test_live_needs_the_typed_confirmation(self, api, owner, db, org, monkeypatch):
+        """So that enabling real sending cannot be a mis-click or a replayed request."""
+        from app.core import settings as settings_module
+
+        monkeypatch.setattr(settings_module.config, "APP_ENV", "production")
+        response = api.patch(
+            "/api/v1/admin/sending-config", json={"send_mode": "live"}, headers=owner
+        )
+
+        assert response.status_code == 400
+        await db.refresh(org)
+        assert org.send_mode != "live"
+
+    async def test_an_unknown_mode_is_refused(self, api, owner, db, org):
+        # Not "LIVE " -- the route trims and lowercases, so that is a genuine request for
+        # `live` and is refused by the production gate with a 403, which the test above covers.
+        for rubbish in ("enabled", "sending", "true", "on"):
+            response = api.patch(
+                "/api/v1/admin/sending-config", json={"send_mode": rubbish}, headers=owner
+            )
+            assert response.status_code == 422, rubbish
+        await db.refresh(org)
+        assert org.send_mode in (None, "disabled", "allowlist")
+
+    async def test_an_admin_cannot_change_it(self, api, db, org, keypair):
+        """Owner only, not admin: helping review drafts must not hand somebody the switch."""
+        private, _ = keypair
+        subject = f"admin-{uuid.uuid4()}"
+        db.add(Member(org_id=org.id, user_id=subject, email="admin@example.com", role="admin"))
+        await db.commit()
+        headers = {"Authorization": f"Bearer {token_for(private, subject=subject)}"}
+
+        response = api.patch(
+            "/api/v1/admin/sending-config", json={"send_mode": "disabled"}, headers=headers
+        )
+
+        assert response.status_code == 403
+
+    async def test_a_member_cannot_change_it(self, api, member):
+        response = api.patch(
+            "/api/v1/admin/sending-config", json={"send_mode": "disabled"}, headers=member
+        )
+
+        assert response.status_code == 403
+
+    async def test_it_needs_authentication(self, api):
+        assert (
+            api.patch("/api/v1/admin/sending-config", json={"send_mode": "live"}).status_code == 401
+        )
+
+    async def test_the_report_shows_where_the_mode_came_from(self, api, owner):
+        """An operator needs to know whether the dashboard or the server is in charge."""
+        api.patch("/api/v1/admin/sending-config", json={"send_mode": "allowlist"}, headers=owner)
+        body = api.get("/api/v1/admin/sending-config", headers=owner).json()
+
+        assert body["send_mode"] == "allowlist"
+        assert body["source"] == "dashboard"
+        assert "environment_default" in body

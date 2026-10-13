@@ -55,7 +55,43 @@ class SendReport:
         return self.outcome is SmtpOutcome.AUTH_FAILED
 
 
-def allowlist_permits(to_email: str, settings: Settings | None = None) -> bool:
+#: The three modes. Named so it cannot be confused with a decision on `SEND_MODE` itself.
+ALLOWED_SEND_MODES: tuple[str, ...] = ("disabled", "allowlist", "live")
+
+
+def effective_send_mode(settings: Settings | None = None, override: str | None = None) -> str:
+    """The mode that actually applies: the operator's choice, or the environment's if unset.
+
+    ADR-010. The mode came only from the environment until now, which made it safe and also made
+    it unusable: pausing an in-flight campaign meant an SSH session and a container restart, and
+    the person who most needs to stop a campaign is not always the person who can do that.
+    `orgs.send_mode` is the authority when set; the environment supplies the value when it is not.
+
+    Two properties are kept rather than traded away:
+
+    - **It still resolves in one place.** This function and `allowlist_permits` below are the
+      only code that decides anything from a send mode, and a structural test over the whole
+      tree asserts it. Reading the value from a column instead of the environment did not spread
+      the decision out.
+    - **Raising it is gated where it is written, not here.** Only an `owner` may set it, `live`
+      is refused outside production, and the change writes an audit row naming who did it. That
+      belongs at the API boundary: a guard that answers differently depending on who is asking
+      is a guard nobody can reason about.
+
+    An unknown override is treated as `disabled`. The column has a check constraint, so this is
+    unreachable by design — which is exactly why it must fail closed if it ever happens.
+    """
+    settings = settings or config
+    if override is None:
+        return settings.SEND_MODE
+    if override not in ALLOWED_SEND_MODES:
+        return "disabled"
+    return override
+
+
+def allowlist_permits(
+    to_email: str, settings: Settings | None = None, *, override: str | None = None
+) -> bool:
     """The one send decision, as in the Phase 0 patch but now at the SMTP boundary.
 
     - `disabled` (the default): nothing may be sent, to anybody.
@@ -66,9 +102,10 @@ def allowlist_permits(to_email: str, settings: Settings | None = None) -> bool:
     recipient = (to_email or "").strip().lower()
     if not recipient:
         return False
-    if settings.SEND_MODE == "live":
+    mode = effective_send_mode(settings, override)
+    if mode == "live":
         return True
-    if settings.SEND_MODE == "allowlist":
+    if mode == "allowlist":
         return recipient in settings.send_allowlist
     return False
 
@@ -79,7 +116,9 @@ class SmtpSender:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or default_config
 
-    async def send(self, built: BuiltMessage, *, to_email: str) -> SendReport:
+    async def send(
+        self, built: BuiltMessage, *, to_email: str, send_mode: str | None = None
+    ) -> SendReport:
         """Deliver one message, or explain why it was not delivered.
 
         Never raises for an expected failure. The send loop needs an outcome it can record
@@ -88,10 +127,13 @@ class SmtpSender:
         """
         settings = self._settings
 
-        if not allowlist_permits(to_email, settings):
+        if not allowlist_permits(to_email, settings, override=send_mode):
             return SendReport(
                 outcome=SmtpOutcome.BLOCKED,
-                detail=(f"SEND_MODE={settings.SEND_MODE} does not permit this recipient"),
+                detail=(
+                    f"send mode {effective_send_mode(settings, send_mode)!r} "
+                    f"does not permit this recipient"
+                ),
             )
 
         try:

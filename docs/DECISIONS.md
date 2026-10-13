@@ -349,3 +349,65 @@ at all is 503, the freshest of several wins, a system alert is listed for every 
 holds and an ack re-arms it) and `tests/integration/test_worker_heartbeat.py` (the beat survives
 an unreachable database, one failure raises nothing, three raise a critical alert, and the alert
 never carries the exception text — which is where a connection string would arrive).
+
+## ADR-010 — The send mode is a database value with the environment as its default
+
+**Status:** accepted, 2026-10-13. **Supersedes the second half of hard rule 1 in `CLAUDE.md`,**
+which said the mode is set only in `.env` on the server. The first half — one function decides,
+`disabled` is the default, nothing else may reach SMTP — is unchanged and is what the structural
+test still enforces.
+
+**Context.** `SEND_MODE` came only from the environment and was read once at process start.
+That is safe and it is also unusable in the one situation that matters most: stopping. Pausing
+an in-flight campaign meant an SSH session, an editor, and a container restart. During this
+project SSH broke four times — three IP rotations on a residential connection and once because
+the machine switched to IPv6 while the security group held an IPv4 `/32`. A kill switch that
+depends on SSH being reachable is not a kill switch, and the owner asked for the control twice.
+
+The obvious objection is the real one: a switch in a browser can be clicked by mistake, or by
+somebody who has stolen a session, and what it turns on is mail to real strangers.
+
+**Decision.** `orgs.send_mode`, nullable, with a check constraint. `NULL` means "use the
+environment", so the migration changed no org's behaviour — a column with a default would have
+silently become the authority the moment it was added.
+
+Resolution happens in `effective_send_mode()`, in `app/services/mail/smtp.py` — **the same
+module as the gate**. This is the part that was non-negotiable: the decision still resolves in
+one place, and `tests/unit/test_send_guard.py`'s structural test over the whole tree still
+passes. Reading the value from a column instead of the environment did not spread the decision
+out. An unknown value resolves to `disabled`; the check constraint makes that unreachable, which
+is precisely why it must fail closed.
+
+**Every gate is on the write, not the read.** `PATCH /admin/sending-config` requires:
+
+1. **`owner`, not `admin`.** Inviting somebody to help review drafts must not also hand them
+   the switch that starts mailing strangers.
+2. **`APP_ENV == "production"` for `live`.** This is `CLAUDE.md`'s "only in production" as code
+   rather than as a habit, and it means a staging box restored from a copy of this database
+   cannot be talked into sending.
+3. **`confirm: "LIVE"`, typed.** So enabling real sending cannot be a mis-click, a replayed
+   request, or a forged one that guessed a plausible body.
+4. **An audit row** — `send_mode_set_by`, `send_mode_set_at`, and a WARNING log line.
+
+Nothing about the gates lives in the guard. A guard that answers differently depending on who is
+asking is a guard nobody can reason about.
+
+**Consequences.**
+
+- **Restricting is now instant and needs no shell.** `disabled` beats the allowlist and takes
+  effect on the send loop's next cycle, within seconds. That is the whole point.
+- **Enabling is harder than it was**, not easier: before, anyone with shell access and an editor
+  could set `live` in `.env`. Now it additionally requires the owner role, a production
+  environment and a typed confirmation, and it leaves a record of who did it.
+- The environment variable remains the default and the value shown when no override is set, so
+  a fresh deployment still starts `disabled`.
+- **What this does not change:** approval is still required for every first email and every
+  reply, the allowlist still applies in `allowlist` mode, and the send loop still re-checks
+  suppression, the window, the cap and the lead's state immediately before sending.
+
+**Proved by** `tests/unit/test_send_guard.py::TestTheOrgOverride` (no override uses the
+environment, an override wins, an unknown value fails closed, disabling beats the allowlist, and
+the sender honours it before a socket opens) and
+`tests/integration/test_api_settings.py::TestChangingTheSendMode` (an owner may restrict, it
+records who, `null` hands authority back, `live` is refused outside production, `live` needs the
+typed confirmation, an unknown mode is a 422, and neither an admin nor a member may change it).

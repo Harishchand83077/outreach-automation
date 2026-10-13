@@ -61,7 +61,23 @@ class Org(Base):
     #: Org-level kill switch. A flag, never a state, so pausing loses no position.
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     pause_reason: Mapped[str | None] = mapped_column(Text)
+    #: The operator's chosen send mode, or NULL for "use the environment" (ADR-010). Nullable
+    #: rather than defaulted, so adding the column changed no org's behaviour.
+    send_mode: Mapped[str | None] = mapped_column(String(20))
+    #: Who last changed it, and when. A switch that turns real mail on needs an answer to "who
+    #: did this"; the `events` table cannot hold it because every row there is keyed to a lead.
+    send_mode_set_by: Mapped[str | None] = mapped_column(String(320))
+    send_mode_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # The database refuses a value the code has never heard of, so a hand-written UPDATE
+        # cannot invent a fourth mode. NULL passes, which is what "no override" is.
+        CheckConstraint(
+            "send_mode IS NULL OR send_mode IN ('disabled','allowlist','live')",
+            name="ck_orgs_send_mode",
+        ),
+    )
 
 
 class Member(Base):

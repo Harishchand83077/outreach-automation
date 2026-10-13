@@ -11,7 +11,9 @@ classifier — and removal is a separate, deliberate act rather than a side effe
 
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
@@ -21,7 +23,10 @@ from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import clamp_limit
 from app.core.settings import config
 from app.db import ops, repo
-from app.db.models import Job, LlmUsage, Mailbox, Message, Suppression
+from app.db.models import Job, LlmUsage, Mailbox, Message, Org, Suppression
+from app.services.mail.smtp import ALLOWED_SEND_MODES, effective_send_mode
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["operations"])
 
@@ -324,6 +329,7 @@ async def worker(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
 
 @router.get("/admin/sending-config")
 async def sending_config(
+    session: SessionDep,
     user: Annotated[CurrentUser, Depends(require_role("admin"))],
 ) -> dict[str, Any]:
     """What the running process will do when it tries to send. Read-only, deliberately.
@@ -344,14 +350,18 @@ async def sending_config(
     credential: the sending account is named, because the `From` address is public the moment a
     single email arrives, but no password, key or token is returned.
     """
+    org = await session.get(Org, user.org_id)
+    override = org.send_mode if org else None
     return {
-        "send_mode": config.SEND_MODE,
-        "editable": False,
-        "why_not_editable": (
-            "SEND_MODE is read from the environment at process start and checked in one "
-            "function. Change it in .env on the server and restart; nothing in the API or the "
-            "dashboard can set it."
-        ),
+        "send_mode": effective_send_mode(config, override),
+        "source": "dashboard" if override else "environment",
+        "environment_default": config.SEND_MODE,
+        "editable": user.may("owner"),
+        "set_by": org.send_mode_set_by if org else None,
+        "set_at": org.send_mode_set_at.isoformat() if org and org.send_mode_set_at else None,
+        # `live` is refused outside production, so the screen can say why the option is absent
+        # rather than appearing broken.
+        "live_allowed": config.APP_ENV == "production",
         "allowlist_size": len(config.send_allowlist),
         "smtp_host": config.SMTP_HOST,
         "smtp_port": config.SMTP_PORT,
@@ -367,4 +377,82 @@ async def sending_config(
             "link_rewriting": False,
             "meeting_booked_set_only_by_a_human": True,
         },
+    }
+
+
+@router.patch("/admin/sending-config")
+async def set_sending_mode(
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("owner"))],
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Change the send mode for this org (ADR-010).
+
+    This is the most consequential request the API accepts, so it is gated four ways — and every
+    gate is here, where the value is *written*, rather than in the guard that reads it. A guard
+    that answers differently depending on who is asking is a guard nobody can reason about.
+
+    1. **Owner only, not admin.** Inviting somebody to help review drafts must not also hand
+       them the switch that starts mailing strangers.
+    2. **`live` is refused outside production.** `CLAUDE.md` says the owner sets `live` only in
+       production; this is that sentence as code rather than as a habit. A staging box restored
+       from a copy of this database therefore cannot be talked into sending.
+    3. **A typed confirmation for `live`.** `confirm` must be the literal `LIVE`, so enabling
+       real sending cannot be a mis-click, a replayed request, or a forged one that guessed a
+       plausible body.
+    4. **An audit row.** Who changed it and when, on the org and in the log.
+
+    Passing `null` hands authority back to the environment.
+
+    **Nothing here sends.** The mode is read at send time by the one guard in
+    `app/services/mail/smtp.py`, which still re-checks the allowlist, the window, the daily cap
+    and the lead's state exactly as before. Restricting takes effect on the next cycle, within
+    seconds — which is the point: a kill switch that needs an SSH session is not a kill switch.
+    """
+    requested = payload.get("send_mode")
+    if requested is not None:
+        requested = str(requested).strip().lower()
+        if requested not in ALLOWED_SEND_MODES:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"send_mode must be null or one of: {', '.join(ALLOWED_SEND_MODES)}.",
+            )
+
+    if requested == "live":
+        if config.APP_ENV != "production":
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"Live sending can only be enabled in production, and this is {config.APP_ENV}.",
+            )
+        if str(payload.get("confirm") or "") != "LIVE":
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                'Enabling live sending needs confirm="LIVE". Live means every address in a '
+                "campaign can be emailed, not only the allowlist.",
+            )
+
+    org = await session.get(Org, user.org_id)
+    if org is None:  # pragma: no cover - a verified member always has an org
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Organisation not found.")
+
+    previous = org.send_mode
+    org.send_mode = requested
+    org.send_mode_set_by = user.email
+    org.send_mode_set_at = datetime.now(tz=UTC)
+    await session.commit()
+
+    # WARNING rather than INFO: this is the line somebody will go looking for after the fact.
+    logger.warning(
+        "send mode changed",
+        extra={
+            "previous_mode": previous or f"environment:{config.SEND_MODE}",
+            "new_mode": requested or f"environment:{config.SEND_MODE}",
+            "changed_by": user.email,
+        },
+    )
+    return {
+        "send_mode": effective_send_mode(config, org.send_mode),
+        "source": "dashboard" if org.send_mode else "environment",
+        "set_by": org.send_mode_set_by,
+        "set_at": org.send_mode_set_at.isoformat(),
     }
