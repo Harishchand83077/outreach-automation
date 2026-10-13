@@ -11,10 +11,11 @@ company from real sources, draft a grounded email, get human approval, send on a
 handle replies, bounces, opt-outs and follow-ups until each lead reaches a terminal state. Each
 *campaign* carries its own sender persona and goal, so the tool is general purpose.
 
-Status: the rewrite is done through Phase 8 slice 1, and Phase 9 slice 1 (ops) has landed: the
-system is deployable and observable. The prototype is deleted. `docs/ISSUES.md` tracks 59 issues
-(56 resolved), `docs/DEPLOY.md` is the runbook for the VM, and `docs/REPO_ANALYSIS.md` analyses
-the original.
+Status: **deployed and sending.** Phases 0-9 are done and the issue register is closed -
+`docs/ISSUES.md` tracks 59 issues, **59 resolved**. The prototype is deleted. The API runs at
+`https://api.arkvane.in` and the dashboard on Cloudflare; `docs/DEPLOY.md` is the runbook for the
+VM and `docs/REPO_ANALYSIS.md` analyses the original. **Phase 10 - rehearsal and the go-live
+gate - is what remains.**
 
 ## Hard rules — never break these
 

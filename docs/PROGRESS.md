@@ -490,6 +490,46 @@ under it: `/opt/outreach` is now consistently root-owned (an earlier `sudo git f
 root-owned objects in `.git`, which broke git for `ubuntu`), and `core.sshCommand` already used
 an absolute key path from the previous session.
 
+**Phase 8 is complete and the issue register is closed: 59 of 59 (PR #61).** E8 and NEW-3 were
+the last two.
+
+**NEW-3 — the headline number fell as the campaign succeeded.** The prototype counted
+`emails_sent` as the number of leads whose *current* status was `EMAIL_SENT`, so every lead that
+then replied or booked a meeting silently decremented it. `GET /campaigns/{id}/stats` counts
+from the record instead: `emails_sent` counts **messages** (two sends to one person are two
+emails; a `failed` or `sending` row is neither), and `replied`, `bounced`, `opted_out` and
+`meetings_booked` count leads that **ever reached** that state from the append-only `events`
+table. `by_state` is the only snapshot and the dashboard labels it "In flight right now",
+because where everything is and what has happened are different questions.
+
+**E8 — bulk approval, pausing one lead, and the timeline.** `POST /review/bulk-approve` **skips**
+any draft whose validation failed, whose research was thin, or whose confidence is below the
+threshold, and returns the reason keyed by draft id so the UI marks those rows. That asymmetry
+is the design: the failure mode of a bulk button is somebody clearing a queue of a hundred
+without reading any, and the weak ones are exactly the ones worth reading. Capped at 200.
+Pausing a lead is **a flag, never a state** — a `PAUSED` state would need a way back out that
+guessed what the lead was doing before. Lead detail was already in the API and the UI had never
+called it; a row is now clickable and shows every message and the full audit trail, one lead at
+a time (C7).
+
+**Capacity, decided from measurement rather than estimate.** Per-row costs on the live database:
+a message is 3.4 KB, a draft 24 KB, an event 0.35 KB, a research row 28 KB (page text cleared
+after 30 days). At 100 emails a day — 2,200 a month, ~1,100 new leads at two sends each — a lead
+costs about **34 KB permanently**, so **37 MB a month and roughly 250–300 MB over six months**.
+
+- **Postgres stays on the VM.** Supabase free is a 500 MB database, which that fills to 50–60%
+  with no headroom, and a free project **pauses after a week of inactivity**, which would stop
+  the worker mid-campaign. It would also re-add the session-pooler and IPv6 workarounds ADR-001
+  removed. The instance has 23 GB free after a `docker system prune` reclaimed **6.6 GB** of
+  stale images (disk went from 46% to 19%).
+- **`t3.small` stays.** 877 MB of 1,905 MB in use, so a `t3.micro` would not fit.
+- **The credits are the real constraint.** $118.08 of $120 left with $1.92 spent in three days —
+  $0.64 a day, about $19 a month, **184 days of runway**. That lands almost exactly on the six
+  months, so the margin is roughly $3 and nothing paid should be added.
+- **The one free-tier service worth adding is S3 for the backups**, which still sit on the same
+  disk as the database. 70 MB against a 5 GB free allowance. It needs an IAM policy, which is
+  the owner's click.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
