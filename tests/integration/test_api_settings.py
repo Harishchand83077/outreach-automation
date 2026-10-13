@@ -353,11 +353,19 @@ class TestChangingTheSendMode:
         await db.refresh(org)
         assert org.send_mode is None
 
-    async def test_live_is_refused_outside_production(self, api, owner, db, org):
+    async def test_live_is_refused_outside_production(self, api, owner, db, org, monkeypatch):
         """`CLAUDE.md` says the owner sets `live` only in production. This is that as code.
 
         A staging box restored from a copy of this database cannot be talked into sending.
+
+        `APP_ENV` is pinned here rather than assumed. Without the pin this test asserts whatever
+        the machine happens to be configured as -- it passed in CI, where the throwaway `.env`
+        is not production, and failed on a developer box whose `.env` is. A test that depends on
+        ambient configuration is a test that proves nothing on the machine it passes on.
         """
+        from app.core import settings as settings_module
+
+        monkeypatch.setattr(settings_module.config, "APP_ENV", "development")
         response = api.patch(
             "/api/v1/admin/sending-config",
             json={"send_mode": "live", "confirm": "LIVE"},
