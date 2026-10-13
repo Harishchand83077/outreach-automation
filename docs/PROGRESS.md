@@ -377,6 +377,67 @@ metadata service confirms it, so a shell is available from any network without a
 Port 22 can now be closed; the dynamic residential IP that broke SSH three times stops
 mattering.
 
+**Phase 8: the dashboard is navigable, and the three things that made it unusable are fixed
+(PR #57).** 1233 tests. The previous version was one long scroll of every section at once,
+styled with inline objects. Each change below is a layout decision rather than a cosmetic one.
+
+- **A reviewer cannot be handed a hundred drafts.** Each carries a subject, a body and its
+  research hooks, so a hundred is a response measured in hundreds of kilobytes.
+  `GET /review/drafts` now takes a cursor and returns **`total` as well as `next_cursor`** --
+  the cursor answers "is there more", which is not the question a reviewer has; "47 waiting" is
+  what decides whether somebody starts now. Ordered oldest first **with `id` breaking the tie**,
+  or two drafts created in the same millisecond page unstably and one is served twice while the
+  other is never seen. Judging a draft refills the page from the same cursor rather than
+  advancing, because advancing would skip whatever moved up into the gap.
+- **An operator with a thousand leads cannot scroll to find one.** Email is unique so it gets a
+  search box; `name`, `company` and `state` are separate filters combining as AND. They were one
+  combined `q`, which cannot tell you whether it matched a person or a company. **`%` and `_`
+  are now escaped** -- unescaped, searching for `%` returns the whole table, and that is the
+  first character somebody types when probing a search box.
+- **Settings are gated by role, not by a hidden button.** `member` reads the dashboard and
+  judges drafts but cannot change the rules underneath them. `GET /admin/sending-config` and
+  `DELETE /suppressions/{id}` now require `admin`. Removing a suppression undoes somebody's
+  opt-out, which is the one action there that can lead to mailing a person who asked not to be;
+  *adding* is protective and stays open to anyone. A test asserts a member can still review --
+  the gate is on the rules, not on the work.
+
+`frontend/src/app.css` replaces the inline `style` objects. Inline styles cannot express a
+hover, a focus ring, a media query or a disabled state, and the absence of those four was most
+of what made the old screen feel unfinished. The sidebar collapses to a horizontal strip under
+900px rather than becoming a drawer, because a drawer needs a focus trap and a strip needs
+nothing.
+
+**Outstanding and blocked: making `SEND_MODE` editable from the dashboard.** The owner asked for
+it twice. It is designed and the migration is written, and it is **not applied**, because the
+permission guard refuses to let a tool weaken the send gate on its own authority -- correctly,
+given hard rule 1. The design, for whoever picks it up:
+
+- `orgs.send_mode`, nullable, with a check constraint. NULL means "use the environment", so
+  adding the column changes no org's behaviour.
+- `effective_send_mode(settings, override)` in `app/services/mail/smtp.py` -- the *same module*
+  as the gate, so the decision still resolves in one place and the structural test over the
+  whole tree still holds.
+- Raising it is gated where it is **written**, not where it is read: `owner` only, `live`
+  refused unless `APP_ENV == "production"`, a typed confirmation, and an audit row naming who
+  did it. A guard that answers differently depending on who is asking is a guard nobody can
+  reason about.
+- This needs an **ADR** and an edit to hard rule 1 in `CLAUDE.md`, because it is a deliberate
+  deviation from what that rule currently says.
+
+**The SSH problem is not IP rotation, or not only that.** This session's failure was the
+*machine* switching to IPv6 (`2401:4900:...`) while the security group holds an IPv4 `/32`;
+forcing `ssh -4` showed the IPv4 address had also rotated inside the ISP's `/20`
+(`182.69.182.117` to `182.69.183.128`). **SSM Session Manager is attached and confirmed**
+(`outreach-ssm-role`, verified through the instance metadata service), so the fix is to stop
+using SSH: EC2 -> Connect -> Session Manager works from any address and any address family, and
+port 22 can be closed entirely. `deploy/deploy.sh` runs the same way inside that session.
+
+**So PR #57's API half is merged but not deployed.** The frontend went out through Cloudflare on
+the merge to `main` and is live -- the published CSS hash matches the local build and the bundle
+contains the new shell -- but the server is still running the previous image, which means the
+new UI is calling `/review/drafts` without cursor support and the lead filters are being
+ignored. **Deploying is one `sudo ./deploy/deploy.sh` through Session Manager.**
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
