@@ -14,10 +14,10 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
-from app.api.deps import CurrentUserDep, SessionDep
+from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import clamp_limit
 from app.core.settings import config
 from app.db import ops, repo
@@ -83,9 +83,16 @@ async def add_suppression(
 
 @router.delete("/suppressions/{suppression_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_suppression(
-    suppression_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+    suppression_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
 ) -> None:
-    """Deliberate and explicit: this is the only way somebody comes off the list."""
+    """Deliberate and explicit: this is the only way somebody comes off the list.
+
+    **Admin only.** Adding to the list is protective and anyone may do it; taking somebody off
+    it undoes an opt-out, which is the one action here that can lead to mailing a person who
+    asked not to be mailed.
+    """
     row = await session.get(Suppression, suppression_id)
     if row is None or row.org_id != user.org_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
@@ -316,7 +323,9 @@ async def worker(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
 
 
 @router.get("/admin/sending-config")
-async def sending_config(user: CurrentUserDep) -> dict[str, Any]:
+async def sending_config(
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+) -> dict[str, Any]:
     """What the running process will do when it tries to send. Read-only, deliberately.
 
     **There is no endpoint that sets `SEND_MODE`, and there must never be one.** It is read from

@@ -50,6 +50,17 @@ def _field_errors(exc: ValidationError, *, fallback: str) -> list[dict[str, str]
     ]
 
 
+def _contains(term: str) -> str:
+    """A `LIKE` pattern matching `term` anywhere, with its metacharacters neutralised.
+
+    `%` and `_` are wildcards. Unescaped, a search for `%` matches every row — so the one
+    character somebody is most likely to type when probing a search box would quietly return
+    the whole table. The callers pair this with `escape="\\"`.
+    """
+    escaped = term.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def campaign_summary(campaign: Campaign) -> dict[str, Any]:
     persona = campaign.persona or {}
     return {
@@ -128,9 +139,24 @@ async def list_leads(
     session: SessionDep,
     state: Annotated[str | None, Query()] = None,
     q: Annotated[str | None, Query(max_length=200)] = None,
+    email: Annotated[str | None, Query(max_length=320)] = None,
+    name: Annotated[str | None, Query(max_length=200)] = None,
+    company: Annotated[str | None, Query(max_length=200)] = None,
     cursor: Annotated[str | None, Query()] = None,
     limit: Annotated[int | None, Query(ge=1, le=200)] = None,
 ) -> dict[str, Any]:
+    """A page of leads, narrowed by any combination of filters.
+
+    `q` searches email, name and company together — one box, for when you do not know which
+    field the thing you remember is in. `email`, `name` and `company` are separate because a
+    reviewer usually does: "Globex" is a company and "Rao" is a person, and a single box cannot
+    tell you which it matched.
+
+    **Filters combine as AND**, which is what somebody reading two filled-in boxes expects.
+
+    Every one of them matches identity only. Searching bodies would turn a search box into an
+    export of everything anybody has ever written to or about a lead (C7).
+    """
     await _owned_campaign(session, user, campaign_id)
     size = clamp_limit(limit)
 
@@ -143,14 +169,18 @@ async def list_leads(
     if state:
         stmt = stmt.where(Lead.state == state)
     if q:
-        # Matched against identity only. Searching bodies would turn a search box into an export
-        # of everything anybody ever wrote.
-        pattern = f"%{q.strip()}%"
+        pattern = _contains(q)
         stmt = stmt.where(
-            Lead.email_norm.ilike(pattern)
-            | Lead.full_name.ilike(pattern)
-            | Lead.company_name.ilike(pattern)
+            Lead.email_norm.ilike(pattern, escape="\\")
+            | Lead.full_name.ilike(pattern, escape="\\")
+            | Lead.company_name.ilike(pattern, escape="\\")
         )
+    if email:
+        stmt = stmt.where(Lead.email_norm.ilike(_contains(email), escape="\\"))
+    if name:
+        stmt = stmt.where(Lead.full_name.ilike(_contains(name), escape="\\"))
+    if company:
+        stmt = stmt.where(Lead.company_name.ilike(_contains(company), escape="\\"))
     position = Cursor.decode(cursor)
     if position is not None:
         stmt = stmt.where(Lead.created_at < position.created_at)

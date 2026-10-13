@@ -243,3 +243,67 @@ class TestTheSendingConfigIsReadOnly:
         assert config.SEND_MODE == before
         reported = api.get("/api/v1/admin/sending-config", headers=owner).json()["send_mode"]
         assert reported == before
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def member(db, org, keypair):
+    """Somebody in the org with the lowest role."""
+    private, _ = keypair
+    subject = f"member-{uuid.uuid4()}"
+    db.add(Member(org_id=org.id, user_id=subject, email="member@example.com", role="member"))
+    await db.commit()
+    return {"Authorization": f"Bearer {token_for(private, subject=subject)}"}
+
+
+class TestOnlyAnAdminTouchesSettings:
+    """Settings are gated by role, not merely hidden in the UI.
+
+    A hidden button is a hidden button; the endpoint is what decides. Everything reachable from
+    the settings screen changes what gets sent or who may be contacted again, so `member` can
+    read the dashboard and judge drafts but cannot change the rules underneath them.
+    """
+
+    async def test_a_member_cannot_read_the_sending_config(self, api, member):
+        assert api.get("/api/v1/admin/sending-config", headers=member).status_code == 403
+
+    async def test_a_member_cannot_change_campaign_settings(self, api, member, campaign):
+        response = api.patch(
+            f"/api/v1/campaigns/{campaign.id}",
+            json={"settings": {"daily_cap": 5}},
+            headers=member,
+        )
+
+        assert response.status_code == 403
+
+    async def test_a_member_cannot_start_a_campaign(self, api, member, campaign):
+        """Setting a campaign running is a sending decision, so it sits behind the same gate."""
+        response = api.patch(
+            f"/api/v1/campaigns/{campaign.id}", json={"status": "running"}, headers=member
+        )
+
+        assert response.status_code == 403
+
+    async def test_a_member_cannot_remove_a_suppression(self, api, member, db, org):
+        """Adding to the list is protective; removing it undoes somebody's opt-out."""
+        from app.db.models import Suppression
+
+        row = Suppression(org_id=org.id, kind="email", value="gone@example.com", reason="opt_out")
+        db.add(row)
+        await db.commit()
+
+        assert api.delete(f"/api/v1/suppressions/{row.id}", headers=member).status_code == 403
+
+    async def test_a_member_can_still_review(self, api, member):
+        """The gate is on the rules, not on the work. A reviewer must still be able to review."""
+        assert api.get("/api/v1/review/drafts", headers=member).status_code == 200
+
+    async def test_an_admin_can_do_all_of_it(self, api, owner, campaign):
+        assert api.get("/api/v1/admin/sending-config", headers=owner).status_code == 200
+        assert (
+            api.patch(
+                f"/api/v1/campaigns/{campaign.id}",
+                json={"settings": {"daily_cap": 60}},
+                headers=owner,
+            ).status_code
+            == 200
+        )
