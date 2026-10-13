@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import jwt
 import pytest
@@ -189,29 +190,34 @@ class TestLeadSearch:
             assert forbidden not in row, f"{forbidden} must not appear in a list row"
 
 
-class TestTheReviewQueuePages:
-    @pytest_asyncio.fixture(loop_scope="session")
-    async def many(self, db, org, campaign, lead_factory):
-        """Seven drafts awaiting review, which is more than one page of three."""
-        from datetime import UTC, datetime, timedelta
+@pytest_asyncio.fixture(loop_scope="session")
+async def many(db, org, campaign, lead_factory):
+    """Seven drafts awaiting review, which is more than one page of three.
 
-        base = datetime(2026, 10, 1, tzinfo=UTC)
-        for n in range(7):
-            lead = await lead_factory(state="AWAITING_APPROVAL", email=f"queue{n}@example.com")
-            db.add(
-                Draft(
-                    org_id=org.id,
-                    lead_id=lead.id,
-                    kind="initial",
-                    version=1,
-                    subject=f"Draft {n}",
-                    body="Hello.",
-                    status="pending_review",
-                    created_at=base + timedelta(minutes=n),
-                )
+    Module level rather than inside the paging class, because the cross-org test needs the same
+    rows: "another org sees nothing" only means something when there is something to see.
+    `created_at` is set explicitly so the oldest-first assertion is about the ordering and not
+    about how fast the inserts happened to run.
+    """
+    base = datetime(2026, 10, 1, tzinfo=UTC)
+    for n in range(7):
+        lead = await lead_factory(state="AWAITING_APPROVAL", email=f"queue{n}@example.com")
+        db.add(
+            Draft(
+                org_id=org.id,
+                lead_id=lead.id,
+                kind="initial",
+                version=1,
+                subject=f"Draft {n}",
+                body="Hello.",
+                status="pending_review",
+                created_at=base + timedelta(minutes=n),
             )
-        await db.commit()
+        )
+    await db.commit()
 
+
+class TestTheReviewQueuePages:
     async def test_it_returns_only_the_page_asked_for(self, api, owner, campaign, many):
         response = api.get(
             f"/api/v1/review/drafts?campaign_id={campaign.id}&limit=3", headers=owner
