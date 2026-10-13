@@ -236,3 +236,29 @@ class TestTheResearchPathIsReachable:
         from app.domain.state import LeadState, is_allowed
 
         assert not is_allowed(LeadState.ENRICHING, LeadState.ENRICHING)
+
+
+class TestSelfTransitionsStayBanned:
+    """Re-drafting must not be bought by weakening the self-transition rule.
+
+    The live worker raised `DRAFTED -> DRAFTED is not a legal transition` when regenerating a
+    rejected draft, and the obvious fix is to allow it. That would be wrong. The ban exists
+    because re-entering a state writes a misleading audit event and usually means a caller lost
+    track of where the lead was -- and `SENT -> SENT` in particular would be a second email.
+
+    The audit trail does not need it either: `save_draft` already writes a `draft.created` event
+    per attempt, which is what makes a second draft visible in the timeline. The
+    `lead.state_changed` row would add nothing. So the handler skips the redundant
+    transition instead, and this test locks the rule it was tempting to relax.
+    """
+
+    def test_no_state_may_transition_to_itself(self):
+        for state in LeadState:
+            assert not is_allowed(state, state), f"{state.value} became self-transitioning"
+
+    def test_the_rejection_step_is_still_allowed(self):
+        """What regeneration needs *is* legal: the rejection that puts the lead back."""
+        assert is_allowed(LeadState.AWAITING_APPROVAL, LeadState.DRAFTED)
+
+    def test_a_redrafted_lead_can_still_reach_review(self):
+        assert is_allowed(LeadState.DRAFTED, LeadState.AWAITING_APPROVAL)
