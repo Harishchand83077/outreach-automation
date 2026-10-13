@@ -317,7 +317,7 @@ function Dashboard({ session }) {
               }}
             />
           ) : view === 'leads' ? (
-            <Leads campaignId={campaign.id} onError={handle} />
+            <Leads campaignId={campaign.id} onError={handle} onToast={toast} />
           ) : view === 'import' ? (
             <Import campaignId={campaign.id} onError={handle} onToast={toast} />
           ) : view === 'campaign' ? (
@@ -364,6 +364,8 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
   const [trail, setTrail] = useState([])
   const [edits, setEdits] = useState({})
   const [busy, setBusy] = useState(null)
+  const [selected, setSelected] = useState([])
+  const [skipped, setSkipped] = useState({})
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ campaign_id: campaignId, limit: String(REVIEW_PAGE) })
@@ -415,6 +417,39 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
   const setEdit = (id, patch) =>
     setEdits((current) => ({ ...current, [id]: { ...(current[id] || {}), ...patch } }))
 
+  const toggle = (id) =>
+    setSelected((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id]
+    )
+
+  // Only drafts that passed validation can be selected. The ones that failed are exactly the
+  // ones worth reading, and the API refuses them anyway — disabling the box says so before the
+  // click rather than after it.
+  const selectable = page.drafts
+    .filter((item) => item.status !== 'validation_failed')
+    .map((item) => item.draft_id)
+
+  const bulkApprove = async () => {
+    setBusy('bulk')
+    try {
+      const result = await postJson('/review/bulk-approve', { json: { draft_ids: selected } })
+      setSkipped(result.skipped || {})
+      const held = Object.keys(result.skipped || {}).length
+      onToast(
+        held
+          ? `Approved ${result.approved.length}. ${held} still need you — see the notes below.`
+          : `Approved ${result.approved.length}.`,
+        held ? 'info' : 'success'
+      )
+      setSelected([])
+      afterDecision()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const shown = page.drafts.length
   const seen = trail.length * REVIEW_PAGE
 
@@ -439,6 +474,34 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
         </div>
       </dl>
 
+      {shown === 0 ? null : (
+        <div className="filters" style={{ gridTemplateColumns: '1fr auto auto' }}>
+          <span className="muted">
+            {selected.length
+              ? `${selected.length} selected`
+              : 'Select drafts to approve several at once. Weak ones are held back, not waved through.'}
+          </span>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setSelected(selected.length === selectable.length ? [] : selectable)}
+          >
+            {selected.length === selectable.length && selectable.length
+              ? 'Clear selection'
+              : 'Select all on this page'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            data-variant="primary"
+            disabled={!selected.length || busy === 'bulk'}
+            onClick={bulkApprove}
+          >
+            {busy === 'bulk' ? 'Approving…' : `Approve ${selected.length || ''}`.trim()}
+          </button>
+        </div>
+      )}
+
       {shown === 0 ? (
         <p className="empty">
           Nothing waiting. Drafts appear here once research and drafting finish.
@@ -447,6 +510,14 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
         page.drafts.map((item) => (
           <article key={item.draft_id} className="card">
             <div className="card-head">
+              <input
+                type="checkbox"
+                aria-label={`Select the draft for ${item.lead.email}`}
+                checked={selected.includes(item.draft_id)}
+                disabled={item.status === 'validation_failed'}
+                onChange={() => toggle(item.draft_id)}
+                style={{ width: 'auto', margin: 0 }}
+              />
               <strong>{item.lead.full_name || item.lead.email}</strong>
               <span className="badge">{item.lead.company_name || 'no company'}</span>
               <span className="badge">{item.kind}</span>
@@ -517,6 +588,11 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
                 This draft failed the grounding checks, so it cannot be approved. Reject it with a
                 note and it will be rewritten.
               </p>
+            ) : null}
+            {skipped[item.draft_id] ? (
+              <div className="banner" data-tone="warn" style={{ marginTop: 10 }}>
+                <span>Held back from the bulk approval: {skipped[item.draft_id]}</span>
+              </div>
             ) : null}
           </article>
         ))
@@ -589,12 +665,14 @@ function Evidence({ item }) {
 
 /* ------------------------------------------------------------------- leads */
 
-function Leads({ campaignId, onError }) {
+function Leads({ campaignId, onError, onToast }) {
   const [page, setPage] = useState({ leads: [], next_cursor: null })
   const [filters, setFilters] = useState({ email: '', name: '', company: '', state: '' })
   const [applied, setApplied] = useState({ email: '', name: '', company: '', state: '' })
   const [cursor, setCursor] = useState(null)
   const [trail, setTrail] = useState([])
+  const [openLead, setOpenLead] = useState(null)
+  const [reload, setReload] = useState(0)
 
   // Typing does not fetch. A request per keystroke is a request per keystroke against a table
   // that will have thousands of rows; the state dropdown applies at once because picking from a
@@ -606,7 +684,7 @@ function Leads({ campaignId, onError }) {
     }
     if (cursor) params.set('cursor', cursor)
     getJson(`/campaigns/${campaignId}/leads?${params}`).then(setPage).catch(onError)
-  }, [campaignId, applied, cursor, onError])
+  }, [campaignId, applied, cursor, onError, reload])
 
   const apply = (next) => {
     setCursor(null)
@@ -705,7 +783,11 @@ function Leads({ campaignId, onError }) {
             </thead>
             <tbody>
               {page.leads.map((lead) => (
-                <tr key={lead.id}>
+                <tr
+                  key={lead.id}
+                  onClick={() => setOpenLead(lead.id)}
+                  style={{ cursor: 'pointer' }}
+                >
                   <td className="mono">{lead.email}</td>
                   <td>{lead.full_name || '—'}</td>
                   <td>{lead.company_name || '—'}</td>
@@ -713,6 +795,14 @@ function Leads({ campaignId, onError }) {
                     <span className="badge" data-tone={stateTone(lead.state)}>
                       {lead.state}
                     </span>
+                    {lead.paused ? (
+                      <>
+                        {' '}
+                        <span className="badge" data-tone="warn">
+                          paused
+                        </span>
+                      </>
+                    ) : null}
                   </td>
                   <td className="muted">
                     {lead.next_action_at ? new Date(lead.next_action_at).toLocaleString() : '—'}
@@ -749,9 +839,157 @@ function Leads({ campaignId, onError }) {
           Next
         </button>
         <span className="spacer" />
-        <span>Newest first.</span>
+        <span>Newest first. Select a row to see the full history.</span>
       </div>
+
+      {openLead ? (
+        <LeadDetail
+          leadId={openLead}
+          onClose={() => setOpenLead(null)}
+          onError={onError}
+          onToast={onToast}
+          onChanged={() => setReload((n) => n + 1)}
+        />
+      ) : null}
     </>
+  )
+}
+
+function LeadDetail({ leadId, onClose, onError, onToast, onChanged }) {
+  const [lead, setLead] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    getJson(`/leads/${leadId}`).then(setLead).catch(onError)
+  }, [leadId, onError])
+
+  useEffect(load, [load])
+
+  const setPaused = async (paused) => {
+    setBusy(true)
+    try {
+      await postJson(`/leads/${leadId}/${paused ? 'pause' : 'resume'}`)
+      onToast(
+        paused
+          ? 'Paused. Nothing further is sent to this lead, and it keeps its place.'
+          : 'Resumed from exactly where it was.',
+        'success'
+      )
+      load()
+      onChanged()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!lead) return <p className="muted">Loading…</p>
+
+  return (
+    <section className="card" style={{ marginTop: 20 }}>
+      <div className="card-head">
+        <strong>{lead.full_name || lead.email}</strong>
+        <span className="badge" data-tone={stateTone(lead.state)}>
+          {lead.state}
+        </span>
+        {lead.paused ? (
+          <span className="badge" data-tone="warn">
+            paused
+          </span>
+        ) : null}
+        <span className="spacer" />
+        <button type="button" className="btn" data-variant="quiet" onClick={onClose}>
+          Close
+        </button>
+      </div>
+
+      <table className="kv">
+        <tbody>
+          <tr>
+            <td>Email</td>
+            <td className="mono">{lead.email}</td>
+          </tr>
+          <tr>
+            <td>Company</td>
+            <td>{lead.company_name || '—'}</td>
+          </tr>
+          <tr>
+            <td>Next action</td>
+            <td className="muted">
+              {lead.next_action_at ? new Date(lead.next_action_at).toLocaleString() : '—'}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div className="btn-row">
+        <button
+          type="button"
+          className="btn"
+          disabled={busy}
+          onClick={() => setPaused(!lead.paused)}
+        >
+          {lead.paused ? 'Resume this lead' : 'Pause this lead'}
+        </button>
+      </div>
+
+      <h3 className="section-title">Messages</h3>
+      {(lead.messages || []).length === 0 ? (
+        <p className="muted">Nothing sent or received yet.</p>
+      ) : (
+        (lead.messages || []).map((message) => (
+          <details key={message.id} className="evidence">
+            <summary>
+              {message.direction === 'out' ? 'Sent' : 'Received'} · {message.status} ·{' '}
+              {message.subject || '(no subject)'} ·{' '}
+              {new Date(message.created_at).toLocaleString()}
+            </summary>
+            <div className="evidence-body">
+              {/* Plain text, never dangerouslySetInnerHTML: this is a lead's own words. */}
+              <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 13 }}>
+                {message.body_text}
+              </pre>
+            </div>
+          </details>
+        ))
+      )}
+
+      <h3 className="section-title">Timeline</h3>
+      <p className="muted">
+        The append-only audit trail — what happened to this lead, in order, and who caused it.
+      </p>
+      {(lead.timeline || []).length === 0 ? (
+        <p className="muted">No events recorded.</p>
+      ) : (
+        <div className="table-wrap" style={{ marginTop: 12 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Event</th>
+                <th>By</th>
+                <th>Detail</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lead.timeline.map((event, index) => (
+                <tr key={index}>
+                  <td className="muted">{new Date(event.at).toLocaleString()}</td>
+                  <td>{event.type}</td>
+                  <td className="muted">{event.actor || '—'}</td>
+                  <td className="muted mono">
+                    {event.data && Object.keys(event.data).length
+                      ? JSON.stringify(event.data)
+                      : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -885,9 +1123,13 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const [attaching, setAttaching] = useState(false)
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
+  const [stats, setStats] = useState(null)
+
   useEffect(() => {
     setDetail(null)
+    setStats(null)
     getJson(`/campaigns/${campaign.id}`).then(setDetail).catch(onError)
+    getJson(`/campaigns/${campaign.id}/stats`).then(setStats).catch(onError)
   }, [campaign.id, onError])
 
   const setStatus = async (status) => {
@@ -967,21 +1209,56 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
         </div>
       ) : null}
 
+      {/* Counted from the record of what happened, not from each lead's current state. A lead
+          that replied is still a lead that was emailed — the prototype's count fell as a
+          campaign succeeded (issue NEW-3). */}
       <dl className="stat-grid">
+        <div className="stat">
+          <dt>Leads</dt>
+          <dd className="num">{stats ? stats.leads_total : '—'}</dd>
+        </div>
+        <div className="stat">
+          <dt>Emails sent</dt>
+          <dd className="num">{stats ? stats.emails_sent : '—'}</dd>
+        </div>
+        <div className="stat">
+          <dt>People emailed</dt>
+          <dd className="num">{stats ? stats.leads_emailed : '—'}</dd>
+        </div>
+        <div className="stat" data-tone={stats && stats.replied ? 'good' : undefined}>
+          <dt>Replied</dt>
+          <dd className="num">{stats ? stats.replied : '—'}</dd>
+        </div>
+        <div className="stat" data-tone={stats && stats.meetings_booked ? 'good' : undefined}>
+          <dt>Meetings booked</dt>
+          <dd className="num">{stats ? stats.meetings_booked : '—'}</dd>
+        </div>
+        <div className="stat" data-tone={stats && stats.bounced ? 'bad' : undefined}>
+          <dt>Bounced</dt>
+          <dd className="num">{stats ? stats.bounced : '—'}</dd>
+        </div>
+        <div className="stat" data-tone={stats && stats.opted_out ? 'warn' : undefined}>
+          <dt>Opted out</dt>
+          <dd className="num">{stats ? stats.opted_out : '—'}</dd>
+        </div>
+      </dl>
+
+      <h2 className="section-title">In flight right now</h2>
+      <p className="muted">
+        A snapshot of where each lead currently is, which is a different question from what has
+        happened — a lead counted under “Replied” above is no longer in the SENT bucket here.
+      </p>
+      <div className="day-row" style={{ marginTop: 12 }}>
         {Object.entries(counts).length === 0 ? (
-          <div className="stat">
-            <dt>Leads</dt>
-            <dd className="num">0</dd>
-          </div>
+          <span className="muted">No leads yet.</span>
         ) : (
           Object.entries(counts).map(([state, count]) => (
-            <div key={state} className="stat">
-              <dt>{state}</dt>
-              <dd className="num">{count}</dd>
-            </div>
+            <span key={state} className="badge" data-tone={stateTone(state)}>
+              {state} · {count}
+            </span>
           ))
         )}
-      </dl>
+      </div>
 
       {mayAdminister ? (
         <div className="btn-row">
