@@ -530,6 +530,75 @@ costs about **34 KB permanently**, so **37 MB a month and roughly 250–300 MB o
   disk as the database. 70 MB against a 5 GB free allowance. It needs an IAM policy, which is
   the owner's click.
 
+**Four defects found by an operator using the dashboard, three of them in the same path
+(PRs #65-68).** The pattern is now unmistakable and worth stating once more: every one was a
+correct caller and a correct callee with nothing checking that they agreed.
+
+**Rejecting a draft did nothing visible, and it took three fixes to actually work.** A reviewer
+rejected a draft with "add one more line about athena". The audit trail recorded the feedback,
+the lead went back to `DRAFTED`, the review queue went from 1 to 0 — and no new draft appeared.
+
+1. **Nobody enqueued the regeneration.** `drafts.reject` marked the draft rejected, stored the
+   feedback and returned the lead to `DRAFTED`; its docstring said "for regeneration". The route
+   recorded the rejection. Neither wrote the next draft. The job is now enqueued **inside
+   `reject`, in the same transaction** — a caller can forget, and a caller added later can
+   forget again; here the rejection and the work it implies either both land or neither does.
+2. **The feedback never reached the model.** `build_draft_prompt` has always had a `feedback`
+   slot, filled only by the generator's own validation retries. A reviewer's objection was
+   stored, shown in the timeline, and ignored — so they would reject the same draft twice and
+   reasonably conclude the feedback box did nothing. `handle_draft_lead` now reads the newest
+   rejection for the lead and seeds the prompt with it.
+3. **The regeneration then died on the state machine.** A rejection puts the lead back into
+   `DRAFTED`, and `handle_draft_lead` always transitioned *to* `DRAFTED`, so the replacement
+   arrived with the lead already there: `DRAFTED -> DRAFTED is not a legal transition`, raised
+   after the model had been paid for and the draft written.
+
+   **The obvious fix would have been wrong.** Allowing that means allowing self-transitions, and
+   the ban on those is deliberate — `SENT -> SENT` would be a second email. The handler skips
+   the redundant transition instead, and a test now locks the rule it was tempting to relax.
+   `save_draft` already writes a `draft.created` event per attempt, so the timeline loses
+   nothing.
+
+Verified on the live system afterwards: version 1 `rejected`, version 2 `pending_review`, lead
+back in `AWAITING_APPROVAL` — and the new draft mentions Athena, so the feedback did reach the
+model.
+
+**Creating a second campaign returned a 500, and the error message blamed the wrong thing.**
+`uq_mailboxes_org_from_email` already said two rows cannot share an address within an org;
+`POST /mailboxes` did not, so the second attempt came back as an unhandled
+`UniqueViolationError`. It is now idempotent on the address — the address *is* the mailbox's
+identity, and a 409 would only make the caller ask for the id it just described.
+
+**The misleading message is the part worth keeping.** FastAPI handles a bare `Exception` in
+Starlette's `ServerErrorMiddleware`, which sits *outside* `CORSMiddleware`, so a 500 never
+passes back through it and arrives with no `Access-Control-Allow-Origin`. The browser refuses to
+expose it and `fetch` rejects — so the dashboard said *"the API did not answer with JSON; check
+that the backend is running"* while the backend was running perfectly and had answered with
+JSON. That pointed the investigation at CORS, DNS and connectivity when the fault was a
+duplicate key three layers in. The handler now adds the header itself, reflected only for an
+origin already on the allowlist.
+
+**Two campaigns on one mailbox: whose email goes first, and whose name is on it (PR #67).**
+Asked as a scheduling question; the answer uncovered a correctness bug. `find_candidates` has
+always pulled leads from **every** running campaign on a mailbox, while `SendLoop` handed
+`send_one` a single persona taken from the *oldest* campaign — so a lead belonging to campaign B
+went out **signed by campaign A**, with the wrong sender name, agency and footer, under campaign
+A's window and follow-up rules. Not an ordering problem: a sender-identity one, and the kind
+nobody notices until a recipient replies to the wrong person.
+
+A `Candidate` now carries its own campaign — its persona signs the message, its settings
+schedule the follow-up, and its window decides eligibility, so a campaign whose window is shut
+cannot block one whose window is open.
+
+**The ordering decision.** The daily cap belongs to the **mailbox**, because the cap protects a
+sending *reputation* and reputation attaches to the address, not to how many campaigns the work
+was split into. So campaigns share one allowance: replies first across every campaign (somebody
+who wrote to us is waiting, and which campaign they came from is our bookkeeping), then due
+follow-ups, then first emails — and within a kind, **round-robin across campaigns**, oldest
+approval first inside each. Round-robin rather than strict first-approved-first-sent, because
+with one cap a campaign holding five hundred approved drafts would starve one holding five for
+a working week.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
