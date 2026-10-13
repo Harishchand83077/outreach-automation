@@ -143,6 +143,7 @@ async def generate_draft(
     their_subject: str | None = None,
     their_reply: str | None = None,
     reply_label: str | None = None,
+    reviewer_feedback: str | None = None,
 ) -> DraftResult:
     """Produce a validated draft, or return the reasons it could not be produced.
 
@@ -152,7 +153,10 @@ async def generate_draft(
     """
     is_reply = kind == "reply"
     result = DraftResult(prompt_version=REPLY_PROMPT_VERSION if is_reply else DRAFT_PROMPT_VERSION)
-    feedback: str | None = None
+    # Seeded from the human who rejected the last attempt, if there was one. The slot already
+    # existed and was only ever filled by this function's own validation retries — so a
+    # reviewer's objection was stored, shown in the audit trail, and never told to the model.
+    feedback: str | None = reviewer_feedback
 
     for _ in range(max(1, max_attempts)):
         user_prompt = build_draft_prompt(

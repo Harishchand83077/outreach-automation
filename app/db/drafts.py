@@ -247,8 +247,63 @@ async def reject(
             now=now,
         )
 
+    # **The regeneration is enqueued here, in the same transaction as the rejection.** It used
+    # to be nobody's job: this function sent the lead back to `DRAFTED` and said "for
+    # regeneration" in its docstring, the route recorded the feedback, and nothing wrote the
+    # next draft. In production a reviewer rejected a draft, the queue went from 1 to 0, and the
+    # lead sat in `DRAFTED` with no pending draft and no job -- visible only to somebody willing
+    # to query the database.
+    #
+    # Putting it in the transaction rather than in the caller is the point. A caller can forget;
+    # a caller that is added later can forget again. Here the rejection and the work it implies
+    # either both land or neither does.
+    from app.db.queue import JobKind, enqueue
+
+    await enqueue(
+        session,
+        org_id=ctx.org_id,
+        kind=JobKind.DRAFT_LEAD if draft.kind == "initial" else JobKind.DRAFT_REPLY,
+        lead_id=lead.id,
+        payload={"lead_id": str(lead.id)},
+        # The partial unique index covers only live statuses, so this is refused while an
+        # earlier regeneration is still queued and allowed once it has finished — which is the
+        # behaviour a reviewer rejecting twice in quick succession needs.
+        dedupe_key=f"draft:{lead.id}",
+    )
+
     await session.flush()
     return draft
+
+
+async def latest_rejection_feedback(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    lead_id: uuid.UUID,
+    kind: str = "initial",
+) -> str | None:
+    """The most recent reviewer objection for this lead, or `None`.
+
+    Stored feedback that never reaches the model is a UI that lies: the reviewer types "add a
+    line about Athena", watches it land in the audit trail, and gets back a draft written as if
+    they had said nothing. `build_draft_prompt` has always had a `feedback` slot — it was only
+    ever filled by the generator's own validation retries, never by a person.
+
+    The newest wins. After two rounds of review the model should be told the current objection,
+    not the one that was already addressed.
+    """
+    return await session.scalar(
+        select(Draft.feedback)
+        .where(
+            Draft.org_id == ctx.org_id,
+            Draft.lead_id == lead_id,
+            Draft.kind == kind,
+            Draft.status == "rejected",
+            Draft.feedback.is_not(None),
+        )
+        .order_by(Draft.created_at.desc(), Draft.version.desc())
+        .limit(1)
+    )
 
 
 async def review_queue(

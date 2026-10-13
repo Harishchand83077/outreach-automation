@@ -462,3 +462,117 @@ class TestBulkApprove:
 
         assert sorted(approved) == sorted(ids)
         assert skipped == {}
+
+
+class TestRejectingQueuesARegeneration:
+    """Rejecting a draft must produce another one, or the lead quietly disappears.
+
+    Found in production. A reviewer rejected a draft with "add one more line about athena", the
+    audit trail recorded the feedback correctly, the lead went back to `DRAFTED` -- and
+    **nothing regenerated it**. The review queue went from 1 to 0 and the lead sat in `DRAFTED`
+    with no pending draft and no job, which took a database query to even notice.
+
+    `reject` did its half: the draft is `rejected`, the feedback is stored, the lead returns to
+    `DRAFTED`. Its docstring said "for regeneration". Nothing enqueued it. The same shape as the
+    earlier defect where research never queued drafting -- a correct callee, a correct caller,
+    and nothing checking that they agreed.
+
+    The job is now enqueued **inside `reject`**, in the same transaction, so the two cannot
+    disagree again: either the rejection and its regeneration both land, or neither does.
+    """
+
+    async def test_a_rejection_enqueues_the_regeneration(self, db, ctx, org, lead_factory):
+        from app.db.models import Job
+
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        await _research(db, org, lead)
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+
+        await drafts_repo.reject(
+            db, ctx, draft_id=draft.id, rejected_by="reviewer@example.com", feedback="too long"
+        )
+        await db.commit()
+
+        job = await db.scalar(
+            select(Job).where(Job.lead_id == lead.id, Job.kind == "draft_lead")
+        )
+        assert job is not None, "nothing will ever write the next draft"
+        assert job.status == "queued"
+
+    async def test_the_reviewers_words_are_carried_to_the_next_draft(
+        self, db, ctx, org, lead_factory
+    ):
+        """Storing the feedback is not the same as telling the model about it."""
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        await _research(db, org, lead)
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+
+        await drafts_repo.reject(
+            db,
+            ctx,
+            draft_id=draft.id,
+            rejected_by="reviewer@example.com",
+            feedback="add one more line about athena",
+        )
+        await db.commit()
+
+        carried = await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=lead.id)
+        assert carried == "add one more line about athena"
+
+    async def test_nothing_is_carried_when_nothing_was_rejected(
+        self, db, ctx, org, lead_factory
+    ):
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        await _research(db, org, lead)
+        await drafts_repo.save_draft(db, ctx, lead=lead, kind="initial", result=passing_result())
+        await db.commit()
+
+        assert await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=lead.id) is None
+
+    async def test_one_leads_feedback_never_steers_another(self, db, ctx, org, lead_factory):
+        mine = await lead_factory(state="AWAITING_APPROVAL")
+        theirs = await lead_factory(state="AWAITING_APPROVAL")
+        for lead in (mine, theirs):
+            await _research(db, org, lead)
+        other = await drafts_repo.save_draft(
+            db, ctx, lead=theirs, kind="initial", result=passing_result()
+        )
+        await drafts_repo.save_draft(db, ctx, lead=mine, kind="initial", result=passing_result())
+        await db.commit()
+
+        await drafts_repo.reject(
+            db, ctx, draft_id=other.id, rejected_by="r@example.com", feedback="theirs only"
+        )
+        await db.commit()
+
+        assert await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=mine.id) is None
+
+    async def test_the_newest_rejection_wins(self, db, ctx, org, lead_factory):
+        """Two rounds of review: the model is told the most recent objection, not the first."""
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        await _research(db, org, lead)
+        first = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+        await drafts_repo.reject(
+            db, ctx, draft_id=first.id, rejected_by="r@example.com", feedback="too long"
+        )
+        await db.commit()
+
+        second = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+        await drafts_repo.reject(
+            db, ctx, draft_id=second.id, rejected_by="r@example.com", feedback="too formal"
+        )
+        await db.commit()
+
+        assert await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=lead.id) == "too formal"
