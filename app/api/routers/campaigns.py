@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
 
@@ -479,6 +479,7 @@ async def create_mailbox(
     session: SessionDep,
     user: Annotated[CurrentUser, Depends(require_role("admin"))],
     payload: Annotated[dict[str, Any], Body()],
+    response: Response,
 ) -> dict[str, Any]:
     """Register the mailbox a campaign sends from.
 
@@ -512,6 +513,23 @@ async def create_mailbox(
     if daily_cap < 1:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "daily_cap must be positive.")
 
+    # **Idempotent on the address, which is the mailbox's identity.** `uq_mailboxes_org_from_email`
+    # already said two rows cannot share an address within an org; this route did not, so the
+    # second attempt reached the database and came back as a 500. The New campaign form posts a
+    # mailbox before the campaign, so anybody creating a second campaign from the same address
+    # hit it -- and because an unhandled 500 is produced above the CORS middleware, the browser
+    # could not read the reply and reported the backend as unreachable instead.
+    #
+    # Returning the existing row rather than refusing: there is nothing else to create. The
+    # address *is* the thing, and a 409 would only make the caller ask for the id it already
+    # described. `created` says which happened, so a caller that cares can tell.
+    existing = await session.scalar(
+        select(Mailbox).where(Mailbox.org_id == user.org_id, Mailbox.from_email == from_email)
+    )
+    if existing is not None:
+        response.status_code = status.HTTP_200_OK
+        return _mailbox_summary(existing, created=False)
+
     mailbox = Mailbox(
         org_id=user.org_id,
         from_name=from_name,
@@ -523,11 +541,16 @@ async def create_mailbox(
     )
     session.add(mailbox)
     await session.commit()
+    return _mailbox_summary(mailbox, created=True)
+
+
+def _mailbox_summary(mailbox: Mailbox, *, created: bool) -> dict[str, Any]:
     return {
         "id": str(mailbox.id),
         "from_name": mailbox.from_name,
         "from_email": mailbox.from_email,
         "daily_cap": mailbox.daily_cap,
+        "created": created,
     }
 
 
