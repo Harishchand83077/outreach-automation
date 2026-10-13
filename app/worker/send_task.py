@@ -147,12 +147,17 @@ class SendLoop(WorkerTask):
         return decision.wait
 
     async def _campaign_for(self, session: AsyncSession, mailbox: Mailbox) -> Campaign | None:
-        """The campaign this mailbox sends for.
+        """A campaign on this mailbox, used only for the mailbox-level defaults.
 
-        One campaign per mailbox is the shape the product has today. When that stops being true
-        the send loop will need to interleave campaigns under one cap, which is a scheduling
-        decision rather than a lookup, so it is better to fail this assumption loudly later than
-        to guess at it here.
+        **This is no longer "the" campaign.** A mailbox may serve several running campaigns, and
+        `send_loop.find_candidates` considers all of them: each candidate carries its own
+        campaign, whose persona signs the message and whose settings schedule the follow-up and
+        decide its window. What is taken from here is only the fallback used for the checks that
+        belong to the mailbox rather than to a campaign — the daily cap's day boundary, and the
+        wait to report when nothing is ready yet.
+
+        It used to be the campaign for everything, which meant a lead belonging to the second
+        campaign went out signed by the first.
         """
         campaign: Campaign | None = await session.scalar(
             select(Campaign)
