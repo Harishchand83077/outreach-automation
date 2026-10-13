@@ -292,7 +292,9 @@ async def send_one(
     await session.commit()
 
     # Step 3: the one SMTP call. Nothing else in the system sends mail.
-    report = await sender.send(built, to_email=chosen.lead.email_norm)
+    # The org's chosen mode travels with the send. `org` was already loaded to check `paused`,
+    # so this costs no query, and the decision stays inside the guard rather than here (ADR-010).
+    report = await sender.send(built, to_email=chosen.lead.email_norm, send_mode=org.send_mode)
 
     # Step 4: record the outcome in its own transaction.
     if report.outcome is SmtpOutcome.SENT:

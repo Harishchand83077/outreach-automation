@@ -18,9 +18,14 @@ the original.
 
 ## Hard rules — never break these
 
-1. **Never send a real email.** `SEND_MODE` = `disabled` (default, log only) | `allowlist` (only
-   addresses in `SEND_ALLOWLIST`) | `live`. Only the owner sets `live`, only in production. The
-   check lives in **exactly one function**; anything else reaching SMTP is a bug.
+1. **Never send a real email.** Send mode = `disabled` (default, log only) | `allowlist` (only
+   addresses in `SEND_ALLOWLIST`) | `live`. Only the owner sets `live`, only in production — now
+   enforced in code, not by convention (ADR-010). The mode comes from `orgs.send_mode` when set
+   and from the `SEND_MODE` environment variable when it is not; it resolves in
+   `effective_send_mode()` and is checked in **exactly one function**, both in
+   `app/services/mail/smtp.py`. Anything else reaching SMTP, or deciding on a send mode
+   anywhere else, is a bug — `tests/unit/test_send_guard.py` asserts that structurally over the
+   whole tree.
 2. **Never print, log, commit or paste secrets.** Config comes from env via `pydantic-settings`.
    **Never read `.env` or `.env.*`**. Verify config by running `python -m app.scripts.check_env`,
    which prints only OK/MISSING per variable *name*. The committed template is `env.example`

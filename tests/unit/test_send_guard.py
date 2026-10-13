@@ -20,7 +20,12 @@ from __future__ import annotations
 import pytest
 
 from app.core.settings import Settings
-from app.services.mail.smtp import SmtpOutcome, SmtpSender, allowlist_permits
+from app.services.mail.smtp import (
+    SmtpOutcome,
+    SmtpSender,
+    allowlist_permits,
+    effective_send_mode,
+)
 from tests.helpers import executable_source
 
 
@@ -96,7 +101,12 @@ class TestTheSenderRefusesBeforeConnecting:
 
         assert report.outcome is SmtpOutcome.BLOCKED
         assert not report.sent
-        assert "SEND_MODE" in (report.detail or "")
+        # The refusal has to say *why*, and name the effective mode. It no longer says
+        # "SEND_MODE" literally, because since ADR-010 the mode may come from the environment
+        # or from the org's own setting, and a message naming the wrong source is worse than
+        # one naming neither.
+        assert "send mode" in (report.detail or "")
+        assert "disabled" in (report.detail or "")
 
     @pytest.mark.asyncio
     async def test_a_blocked_send_is_not_an_error(self):
@@ -149,3 +159,60 @@ class TestTheGuardIsInOnePlace:
 
         source = executable_source(module)
         assert "SEND_ALLOWLIST" not in source
+
+
+class TestTheOrgOverride:
+    """ADR-010: the org's own send mode, when it has one, is what applies.
+
+    The decision still resolves in one place — `effective_send_mode` and `allowlist_permits`
+    live in the same module as the gate, and the structural test above still passes. What
+    changed is where the *value* comes from, not where it is decided.
+
+    Raising the mode is gated at the API, not here, which is why these tests are only about
+    resolution. A guard that answers differently depending on who is asking is a guard nobody
+    can reason about.
+    """
+
+    def test_no_override_uses_the_environment(self):
+        """The migration added a nullable column, so every existing org lands here unchanged."""
+        assert effective_send_mode(settings_with(SEND_MODE="allowlist"), None) == "allowlist"
+
+    def test_an_override_wins_over_the_environment(self):
+        assert effective_send_mode(settings_with(SEND_MODE="live"), "disabled") == "disabled"
+        assert effective_send_mode(settings_with(SEND_MODE="disabled"), "live") == "live"
+
+    def test_an_unknown_override_fails_closed(self):
+        """Unreachable — the column has a check constraint — which is why it must fail closed."""
+        for rubbish in ("LIVE ", "yes", "", "enabled", "true"):
+            assert effective_send_mode(settings_with(SEND_MODE="live"), rubbish) == "disabled"
+
+    def test_disabling_blocks_an_allowlisted_recipient(self):
+        """The kill switch has to beat the allowlist, or it is not a kill switch."""
+        config = settings_with(SEND_MODE="live", SEND_ALLOWLIST="me@example.com")
+
+        assert not allowlist_permits("me@example.com", config, override="disabled")
+
+    def test_restricting_to_the_allowlist_still_checks_it(self):
+        config = settings_with(SEND_MODE="live", SEND_ALLOWLIST="me@example.com")
+
+        assert allowlist_permits("me@example.com", config, override="allowlist")
+        assert not allowlist_permits("stranger@example.com", config, override="allowlist")
+
+    def test_an_empty_recipient_is_refused_whatever_the_mode(self):
+        assert not allowlist_permits("", settings_with(SEND_MODE="live"), override="live")
+
+    @pytest.mark.asyncio
+    async def test_the_sender_honours_the_override_before_connecting(self):
+        """End of the path: an override of `disabled` must stop a send that the environment
+        would have permitted, without a socket being opened."""
+
+        class Built:
+            message_id = "<x@outreach.example>"
+            subject = "hello"
+            raw = b"raw"
+
+        sender = SmtpSender(settings_with(SEND_MODE="live", SMTP_HOST="127.0.0.1", SMTP_PORT=1))
+        report = await sender.send(Built(), to_email="anyone@example.com", send_mode="disabled")
+
+        assert report.outcome is SmtpOutcome.BLOCKED
+        assert "disabled" in (report.detail or "")

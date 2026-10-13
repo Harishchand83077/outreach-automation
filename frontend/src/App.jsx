@@ -1245,11 +1245,11 @@ function Settings({ campaign, onError, onToast, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [fieldErrors, setFieldErrors] = useState([])
 
-  useEffect(() => {
-    getJson('/admin/sending-config')
-      .then(setConfig)
-      .catch(onError)
+  const loadConfig = useCallback(() => {
+    getJson('/admin/sending-config').then(setConfig).catch(onError)
   }, [onError])
+
+  useEffect(loadConfig, [loadConfig])
 
   useEffect(() => {
     setDraft(campaign?.settings ? { ...campaign.settings } : null)
@@ -1290,11 +1290,12 @@ function Settings({ campaign, onError, onToast, onChanged }) {
         as well — a hidden button is not a permission.
       </p>
 
-      <h2 className="section-title">Sending — set on the server</h2>
+      <h2 className="section-title">Sending</h2>
       <p className="muted">
-        These come from the server environment and are checked in one place in the code. There is
-        no switch for them here on purpose: turning sending on is an act on the server, so a
-        stolen session cannot start mailing real people.
+        The send mode is the one setting that decides whether mail actually leaves. Restricting
+        it takes effect within seconds, on the send loop&apos;s next cycle. Enabling{' '}
+        <strong>live</strong> is owner-only, refused outside production, and has to be typed out
+        — it means every address in a campaign can be emailed, not only the allowlist.
       </p>
 
       {config ? (
@@ -1308,6 +1309,16 @@ function Settings({ campaign, onError, onToast, onChanged }) {
                     {config.send_mode}
                   </span>{' '}
                   <span className="muted">{modeExplanation(config)}</span>
+                </td>
+              </tr>
+              <tr>
+                <td>Set by</td>
+                <td className="muted">
+                  {config.source === 'dashboard'
+                    ? `this dashboard${config.set_by ? ` — ${config.set_by}` : ''}${
+                        config.set_at ? ` on ${new Date(config.set_at).toLocaleString()}` : ''
+                      }`
+                    : `the server environment (${config.environment_default})`}
                 </td>
               </tr>
               <tr>
@@ -1334,6 +1345,14 @@ function Settings({ campaign, onError, onToast, onChanged }) {
               </tr>
             </tbody>
           </table>
+
+          {config.editable ? (
+            <SendModeControl config={config} onError={onError} onToast={onToast} onDone={loadConfig} />
+          ) : (
+            <p className="muted" style={{ marginTop: 14 }}>
+              Only an owner can change the send mode.
+            </p>
+          )}
         </div>
       ) : (
         <p className="muted">Loading…</p>
@@ -1457,6 +1476,96 @@ function Settings({ campaign, onError, onToast, onChanged }) {
       <h2 className="section-title">Suppression list</h2>
       <Suppressions onError={onError} onToast={onToast} />
     </>
+  )
+}
+
+function SendModeControl({ config, onError, onToast, onDone }) {
+  const [choice, setChoice] = useState(config.send_mode)
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  // Typing LIVE is required by the API, and asking for it here rather than only showing the
+  // server's 400 means the person reads what live actually does before they commit to it.
+  const needsConfirm = choice === 'live'
+  const blocked = needsConfirm && (!config.live_allowed || confirm !== 'LIVE')
+
+  const save = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const body = { send_mode: choice === 'environment' ? null : choice }
+      if (needsConfirm) body.confirm = confirm
+      const result = await patchJson('/admin/sending-config', { json: body })
+      onToast(
+        result.send_mode === 'live'
+          ? 'Live sending is on. Every address in a running campaign can now be emailed.'
+          : `Send mode is now ${result.send_mode}.`,
+        result.send_mode === 'live' ? 'error' : 'success'
+      )
+      setConfirm('')
+      onDone()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={save} style={{ marginTop: 16 }}>
+      <div className="field">
+        <label htmlFor="mode">Change send mode</label>
+        <select id="mode" value={choice} onChange={(event) => setChoice(event.target.value)}>
+          <option value="disabled">disabled — nothing is sent, to anybody</option>
+          <option value="allowlist">
+            allowlist — only the {config.allowlist_size} allowlisted address(es)
+          </option>
+          <option value="live" disabled={!config.live_allowed}>
+            live — any recipient{config.live_allowed ? '' : ' (production only)'}
+          </option>
+          <option value="environment">
+            follow the server ({config.environment_default})
+          </option>
+        </select>
+        {config.live_allowed ? null : (
+          <p className="hint">
+            Live is unavailable because this server is running as{' '}
+            <strong>{config.environment}</strong>, not production.
+          </p>
+        )}
+      </div>
+
+      {needsConfirm ? (
+        <div className="banner" data-tone="bad">
+          <div>
+            <strong>This sends real email to real people.</strong> Every lead in a running
+            campaign becomes eligible, not just the allowlist. Approval is still required for
+            each draft, and the window and daily cap still apply.
+            <div className="field" style={{ marginTop: 10, marginBottom: 0 }}>
+              <label htmlFor="confirm">Type LIVE to confirm</label>
+              <input
+                id="confirm"
+                type="text"
+                value={confirm}
+                onChange={(event) => setConfirm(event.target.value)}
+                placeholder="LIVE"
+              />
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="btn-row">
+        <button
+          type="submit"
+          className="btn"
+          data-variant={needsConfirm ? 'danger' : 'primary'}
+          disabled={busy || blocked || choice === config.send_mode}
+        >
+          {busy ? 'Saving…' : 'Apply send mode'}
+        </button>
+      </div>
+    </form>
   )
 }
 
