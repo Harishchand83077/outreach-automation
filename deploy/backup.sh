@@ -7,7 +7,13 @@
 # ADR-001 put Postgres on this VM rather than on a managed service, which removed five problems
 # and introduced exactly one: **the database dies with the box.** There is no point-in-time
 # recovery here and no vendor holding a copy. These dumps are not belt-and-braces, they are the
-# only copy, so the weekly off-box step at the bottom is the part that actually matters.
+# only copy -- and a copy on the same disk as the database is not a copy of anything, so the
+# upload to S3 below is the step that actually makes this a backup.
+#
+# The upload uses the instance's IAM role (`outreach-ssm-role`), scoped to one bucket with
+# `s3:PutObject`, `s3:GetObject` and `s3:ListBucket`. **No access key exists on this box** to
+# be read out of a file or leaked in a log, and the role cannot touch any other bucket or
+# delete what it has already written.
 #
 # The dump runs inside the Compose network, so it works even though Postgres publishes no port
 # to the host — which is the configuration that keeps the database off the internet.
@@ -22,6 +28,9 @@ ROOT="$(pwd)"
 
 BACKUP_DIR="${BACKUP_DIR:-$ROOT/backups}"
 KEEP_DAYS="${KEEP_DAYS:-14}"
+# Empty disables the upload, which is what a machine without the IAM role should do.
+S3_BUCKET="${S3_BUCKET:-outreach-backups-918464541565}"
+AWS_REGION="${AWS_REGION:-ap-southeast-2}"
 COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/deploy/compose.prod.yml")
 
 [[ -f "$ROOT/.env" ]] || { echo "ERROR: no .env in $ROOT" >&2; exit 1; }
@@ -60,11 +69,37 @@ find "$BACKUP_DIR" -name 'outreach-*.sql.gz' -type f -mtime "+${KEEP_DAYS}" -pri
 # a full disk produces, which is the most likely way these files go bad.
 gzip -t "$target" && echo "==> ${target##*/} verified readable"
 
-cat <<'NOTE'
+# The off-box copy. **This is the step that makes the previous forty lines a backup** -- until
+# now every dump sat on the same EBS volume as the database it was protecting, so losing the
+# instance lost both at once.
+#
+# A failed upload does not fail the script. The local dump has already been written and
+# verified, and exiting non-zero here would turn "we could not reach S3 tonight" into a cron
+# job that looks broken, which is how people start ignoring it. It is loud, and it is not fatal.
+uploaded="no"
+if [[ -n "$S3_BUCKET" ]]; then
+	if command -v aws >/dev/null 2>&1; then
+		echo "==> uploading to s3://$S3_BUCKET/"
+		if aws s3 cp "$target" "s3://$S3_BUCKET/${target##*/}" 			--region "$AWS_REGION" --only-show-errors; then
+			uploaded="yes"
+			echo "==> uploaded ${target##*/}"
+		else
+			echo "WARNING: upload failed. The local dump is fine; this box still holds the" >&2
+			echo "         only copy, so fix this before relying on it." >&2
+		fi
+	else
+		echo "WARNING: the aws CLI is not installed, so nothing left this machine." >&2
+	fi
+else
+	echo "==> S3_BUCKET is empty, so the dump stays on this machine only"
+fi
 
-Done. The weekly off-box copy is manual and is the part that matters:
+cat <<NOTE
 
-    scp -r <vm>:/opt/outreach/backups/ ~/outreach-backups/
+Done. Off-box copy: ${uploaded}.
+
+Objects expire from the bucket after 30 days by a lifecycle rule, so it cannot grow without
+bound; local dumps are kept ${KEEP_DAYS} days.
 
 A restore drill is in docs/DEPLOY.md under "Restoring". Do it once, now, while nothing is
 wrong — a backup nobody has ever restored is a hypothesis.
