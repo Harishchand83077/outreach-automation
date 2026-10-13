@@ -24,7 +24,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, HTTPException, Query, status
 
 from app.api.deps import CurrentUserDep, SessionDep
-from app.api.pagination import clamp_limit
+from app.api.pagination import Cursor, clamp_limit
 from app.db import drafts as draft_store
 
 router = APIRouter(tags=["review"])
@@ -35,12 +35,39 @@ async def review_queue(
     user: CurrentUserDep,
     session: SessionDep,
     campaign_id: Annotated[uuid.UUID | None, Query()] = None,
+    cursor: Annotated[str | None, Query()] = None,
     limit: Annotated[int | None, Query(ge=1, le=200)] = None,
 ) -> dict[str, Any]:
+    """One page of the queue, oldest first, with the total still waiting.
+
+    **Paged because each item is large.** A draft carries its subject, its body and its research
+    hooks, so a hundred of them is a response measured in hundreds of kilobytes and a screen
+    nobody can work through. The reviewer sees a few at a time and the count tells them how much
+    is left.
+
+    **`total` as well as `next_cursor`.** The cursor answers "is there more", which is not the
+    question a reviewer has; "47 waiting" is what decides whether they start now.
+    """
+    size = clamp_limit(limit)
+    position = Cursor.decode(cursor)
     items = await draft_store.review_queue(
-        session, user.ctx, campaign_id=campaign_id, limit=clamp_limit(limit)
+        session,
+        user.ctx,
+        campaign_id=campaign_id,
+        limit=size + 1,
+        after=(position.created_at, position.row_id) if position else None,
     )
+    has_more = len(items) > size
+    items = items[:size]
+    next_cursor = (
+        Cursor(created_at=items[-1].draft.created_at, row_id=items[-1].draft.id).encode()
+        if has_more and items
+        else None
+    )
+    total = await draft_store.review_queue_size(session, user.ctx, campaign_id=campaign_id)
     return {
+        "total": total,
+        "next_cursor": next_cursor,
         "drafts": [
             {
                 "draft_id": str(item.draft.id),
@@ -62,7 +89,7 @@ async def review_queue(
                 "validation": item.draft.validation,
             }
             for item in items
-        ]
+        ],
     }
 
 

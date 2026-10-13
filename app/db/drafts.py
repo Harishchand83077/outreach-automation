@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, literal, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Draft, Lead, Research
@@ -258,12 +258,18 @@ async def review_queue(
     campaign_id: uuid.UUID | None = None,
     draft_ids: list[uuid.UUID] | None = None,
     limit: int | None = None,
+    after: tuple[datetime, uuid.UUID] | None = None,
     include_failed: bool = True,
 ) -> list[ReviewItem]:
     """Drafts awaiting a decision, each with the evidence needed to judge it.
 
     One query joined to research rather than N+1 lookups: a reviewer opening the queue should
     not wait, and the evidence is the whole reason the queue is usable.
+
+    **Oldest first, and paged.** FIFO so nothing waits indefinitely while newer drafts are
+    judged ahead of it. Paged because each item carries a subject, a body and its hooks — a
+    hundred of them is a response measured in hundreds of kilobytes and a screen nobody can
+    work through. `after` is the `(created_at, id)` of the last row the caller saw.
     """
     statuses = list(LIVE_STATUSES) + (["validation_failed"] if include_failed else [])
 
@@ -272,11 +278,18 @@ async def review_queue(
         .join(Lead, Lead.id == Draft.lead_id)
         .outerjoin(Research, Research.lead_id == Draft.lead_id)
         .where(Draft.org_id == ctx.org_id, Draft.status.in_(statuses))
-        .order_by(Draft.created_at)
+        # `id` breaks the tie, or two drafts created in the same millisecond page unstably and
+        # one of them is served twice while the other is never seen.
+        .order_by(Draft.created_at, Draft.id)
         .limit(_page_size(limit))
     )
     if campaign_id is not None:
         stmt = stmt.where(Lead.campaign_id == campaign_id)
+    if after is not None:
+        moment, row_id = after
+        stmt = stmt.where(
+            tuple_(Draft.created_at, Draft.id) > tuple_(literal(moment), literal(row_id))
+        )
     if draft_ids is not None:
         # Asking for specific drafts must return exactly those, not the first page of the
         # queue — otherwise a bulk approve silently skips anything that sorts later.
@@ -293,6 +306,34 @@ async def review_queue(
         )
         for draft, lead, research in rows
     ]
+
+
+async def review_queue_size(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    campaign_id: uuid.UUID | None = None,
+    include_failed: bool = True,
+) -> int:
+    """How many drafts are waiting, in total.
+
+    A cursor answers "is there another page", which is not the question a reviewer has. "47
+    drafts waiting" is what decides whether somebody starts now or after lunch, and a queue
+    that only ever says "more" gives no sense of whether it is being cleared.
+
+    One `COUNT` over an indexed status column, computed only for the page the operator is
+    looking at -- not per row.
+    """
+    statuses = list(LIVE_STATUSES) + (["validation_failed"] if include_failed else [])
+    stmt = (
+        select(func.count())
+        .select_from(Draft)
+        .join(Lead, Lead.id == Draft.lead_id)
+        .where(Draft.org_id == ctx.org_id, Draft.status.in_(statuses))
+    )
+    if campaign_id is not None:
+        stmt = stmt.where(Lead.campaign_id == campaign_id)
+    return int(await session.scalar(stmt) or 0)
 
 
 async def bulk_approve(
