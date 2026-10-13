@@ -496,9 +496,7 @@ class TestRejectingQueuesARegeneration:
         )
         await db.commit()
 
-        job = await db.scalar(
-            select(Job).where(Job.lead_id == lead.id, Job.kind == "draft_lead")
-        )
+        job = await db.scalar(select(Job).where(Job.lead_id == lead.id, Job.kind == "draft_lead"))
         assert job is not None, "nothing will ever write the next draft"
         assert job.status == "queued"
 
@@ -525,9 +523,7 @@ class TestRejectingQueuesARegeneration:
         carried = await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=lead.id)
         assert carried == "add one more line about athena"
 
-    async def test_nothing_is_carried_when_nothing_was_rejected(
-        self, db, ctx, org, lead_factory
-    ):
+    async def test_nothing_is_carried_when_nothing_was_rejected(self, db, ctx, org, lead_factory):
         lead = await lead_factory(state="AWAITING_APPROVAL")
         await _research(db, org, lead)
         await drafts_repo.save_draft(db, ctx, lead=lead, kind="initial", result=passing_result())

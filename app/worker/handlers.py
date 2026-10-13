@@ -175,17 +175,27 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
 
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)
 
-    # DRAFTED first, always. The table is RESEARCHED -> DRAFTED -> AWAITING_APPROVAL, and
-    # jumping straight to AWAITING_APPROVAL was refused — after the model had been paid for and
-    # the draft already written to the database. Two steps also leave an honest audit trail:
-    # the events row says a draft was produced, and then that it passed validation.
-    await transition(
-        session,
-        org_id=job.org_id,
-        lead_id=lead.id,
-        to_state=LeadState.DRAFTED,
-        data={"accepted": result.accepted, "attempts": result.attempt_count},
-    )
+    # DRAFTED first, always — unless the lead is already there, which is what a regeneration
+    # looks like. The table is RESEARCHED -> DRAFTED -> AWAITING_APPROVAL, and jumping straight
+    # to AWAITING_APPROVAL was refused after the model had been paid for and the draft written.
+    # Two steps also leave an honest audit trail: the events row says a draft was produced, and
+    # then that it passed validation.
+    #
+    # **The skip is deliberate, and so is not relaxing the state machine instead.** A rejected
+    # lead is put back into DRAFTED by the rejection, so the replacement draft arrives with the
+    # lead already in that state and the worker raised `DRAFTED -> DRAFTED is not a legal
+    # transition` — after paying for the model. Allowing self-transitions would have fixed this
+    # one case and quietly made `SENT -> SENT` legal, which is a second email. The audit trail
+    # loses nothing: `save_draft` writes a `draft.created` event for every attempt, which is
+    # what actually shows a second draft in the timeline.
+    if LeadState(lead.state) is not LeadState.DRAFTED:
+        await transition(
+            session,
+            org_id=job.org_id,
+            lead_id=lead.id,
+            to_state=LeadState.DRAFTED,
+            data={"accepted": result.accepted, "attempts": result.attempt_count},
+        )
 
     # A draft that failed validation is stored but never becomes sendable, so the lead waits for
     # a person either way — the difference is only which queue a human finds it in.
