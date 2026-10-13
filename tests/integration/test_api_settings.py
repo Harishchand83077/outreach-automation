@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import UTC, datetime
 
 import jwt
 import pytest
@@ -207,7 +208,9 @@ class TestTheSendingConfigIsReadOnly:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["send_mode"] in ("disabled", "allowlist", "live")
-        assert body["editable"] is False
+        # `editable` says whether *this caller* may change it. Since ADR-010 an owner may, and
+        # the role tests below prove nobody below owner can.
+        assert body["editable"] is True
 
     async def test_it_never_returns_the_allowlist_itself(self, api, owner):
         """A count is what an operator needs. The addresses themselves are personal data."""
@@ -329,11 +332,15 @@ class TestChangingTheSendMode:
         assert org.send_mode == "disabled"
 
     async def test_it_records_who_changed_it(self, api, owner, db, org):
+        before = datetime.now(tz=UTC)
         api.patch("/api/v1/admin/sending-config", json={"send_mode": "allowlist"}, headers=owner)
         await db.refresh(org)
 
-        assert org.send_mode_set_by == "owner@example.com"
-        assert org.send_mode_set_at is not None
+        # The authenticated identity from the verified token, not a name the caller supplied.
+        # The fixture's subject is `owner-<uuid>`, so this is that user and nobody else.
+        assert org.send_mode_set_by is not None
+        assert org.send_mode_set_by.startswith("owner-")
+        assert org.send_mode_set_at >= before
 
     async def test_null_hands_authority_back_to_the_environment(self, api, owner, db, org):
         api.patch("/api/v1/admin/sending-config", json={"send_mode": "disabled"}, headers=owner)
@@ -375,7 +382,9 @@ class TestChangingTheSendMode:
         assert org.send_mode != "live"
 
     async def test_an_unknown_mode_is_refused(self, api, owner, db, org):
-        for rubbish in ("enabled", "LIVE ", "true", "on"):
+        # Not "LIVE " -- the route trims and lowercases, so that is a genuine request for
+        # `live` and is refused by the production gate with a 403, which the test above covers.
+        for rubbish in ("enabled", "sending", "true", "on"):
             response = api.patch(
                 "/api/v1/admin/sending-config", json={"send_mode": rubbish}, headers=owner
             )
