@@ -438,6 +438,58 @@ contains the new shell -- but the server is still running the previous image, wh
 new UI is calling `/review/drafts` without cursor support and the lead filters are being
 ignored. **Deploying is one `sudo ./deploy/deploy.sh` through Session Manager.**
 
+**The send mode is now settable from the dashboard, owner-only (PR #59, ADR-010).** Deployed as
+`outreach:51d4ace`; migration `b4f1a7c93d52` applied and verified against the live database.
+
+The mode came only from the environment and was read once at process start. Safe, and unusable
+in the situation that matters most: stopping. Pausing an in-flight campaign meant an SSH
+session, an editor and a container restart -- and **SSH broke four times during this project**,
+three IP rotations on a residential line and once because the machine switched to IPv6 while the
+security group held an IPv4 `/32`. A kill switch that depends on SSH being reachable is not a
+kill switch.
+
+- `orgs.send_mode`, nullable, with a check constraint. **NULL means "use the environment"**, so
+  the migration changed no behaviour. A column with a default would have silently become the
+  authority the moment it was added. Verified on the live database afterwards: `send_mode` is
+  NULL, `SEND_MODE=allowlist`, `APP_ENV=production`.
+- **The one-gate invariant is kept.** `effective_send_mode()` sits in the same module as
+  `allowlist_permits`, so the decision still resolves in one place and the structural test over
+  the whole tree still passes. An unknown value resolves to `disabled`; the check constraint
+  makes that unreachable, which is why it must fail closed.
+- **Every gate is on the write, not the read**, because a guard that answers differently
+  depending on who is asking is a guard nobody can reason about: `owner` not `admin`,
+  `APP_ENV == "production"` for `live`, a typed `confirm: "LIVE"`, and an audit row with a
+  WARNING log line.
+- **Enabling is harder than it was**; restricting is instant and needs no shell. Before, anybody
+  with shell access and an editor could set `live` in `.env`.
+
+`CLAUDE.md` hard rule 1 was edited, since this deliberately supersedes its second half. The
+first half is unchanged.
+
+**The nightly backup had never run, and that was the most serious finding of the session.** No
+`backups/` directory, no cron entry -- `deploy/backup.sh` was written in Phase 9 and never
+scheduled. ADR-001 put Postgres on the VM, which removed five problems and introduced exactly
+one: the database dies with the instance. The dump was the mitigation, and it did not exist. Had
+the box been terminated, everything would have gone with it.
+
+Installed at 02:17 daily with 14 days retained, and run once to prove it: 5,092,979 bytes,
+verified readable. **The off-box copy is still manual and still the part that matters** -- the
+dumps sit on the same disk as the database, which protects against a bad migration and not
+against losing the instance.
+
+**Where the data is, recorded once so it stops being a question.** One Postgres, in Compose on
+the EC2 instance, volume `outreach_pgdata` on the 29 GB root disk, **no published port** --
+reachable only on the Compose network. 22 MB today. Supabase holds **no tables**: it issues a
+JWT, we verify it locally against its JWKS and resolve it to our own `members` row. The local
+Postgres on port 5433 is development and tests only.
+
+**Deploys now go through SSM Session Manager**, not SSH. The instance profile `outreach-ssm-role`
+is attached and verified through the metadata service, so a shell is available from any network
+and any address family. **Port 22 can be closed.** Two things were fixed to make `deploy.sh` work
+under it: `/opt/outreach` is now consistently root-owned (an earlier `sudo git fetch` had left
+root-owned objects in `.git`, which broke git for `ubuntu`), and `core.sshCommand` already used
+an absolute key path from the previous session.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
