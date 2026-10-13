@@ -25,6 +25,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -71,10 +72,23 @@ class Candidate:
     lead: Lead
     draft: Draft
     kind: str
+    #: **The campaign this lead belongs to, not the mailbox's first one.** A mailbox may serve
+    #: several running campaigns, and each carries its own persona — the name, agency and footer
+    #: the recipient sees. Sending a campaign B lead signed by campaign A is the kind of mistake
+    #: nobody notices until somebody replies to the wrong person.
+    campaign: Campaign
 
     @property
     def priority(self) -> int:
         return KIND_PRIORITY.get(self.kind, 9)
+
+    @property
+    def persona(self) -> Persona:
+        return Persona.model_validate(self.campaign.persona)
+
+    @property
+    def settings(self) -> CampaignSettings:
+        return CampaignSettings.model_validate(self.campaign.settings or {})
 
 
 async def sent_today(
@@ -147,7 +161,7 @@ async def find_candidates(
     """
     rows = (
         await session.execute(
-            select(Lead, Draft)
+            select(Lead, Draft, Campaign)
             .join(Draft, Draft.lead_id == Lead.id)
             .join(Campaign, Campaign.id == Lead.campaign_id)
             .where(
@@ -165,7 +179,7 @@ async def find_candidates(
     ).all()
 
     candidates: list[Candidate] = []
-    for lead, draft in rows:
+    for lead, draft, campaign in rows:
         kind = str(draft.kind)
         # The draft's kind and the lead's state have to agree, or this is a stale draft for a
         # lead that has already moved on.
@@ -178,11 +192,53 @@ async def find_candidates(
                 continue  # not due yet
         if kind == outbox.KIND_REPLY and lead.state != "REPLIED":
             continue
-        candidates.append(Candidate(lead=lead, draft=draft, kind=kind))
+        # A campaign whose window is shut right now contributes nothing, and it must not block
+        # a campaign whose window is open. The window is per campaign; the cap is per mailbox.
+        try:
+            if not in_window(now, CampaignSettings.model_validate(campaign.settings or {})):
+                continue
+        except ValidationError:
+            # Unreadable settings are one campaign's problem. `SendLoop` reports them; here we
+            # simply do not send for it, rather than letting it stop the mailbox.
+            continue
+        candidates.append(Candidate(lead=lead, draft=draft, kind=kind, campaign=campaign))
 
-    # Replies first, then due follow-ups, then new leads (§9.2).
-    candidates.sort(key=lambda c: (c.priority, c.draft.approved_at or now))
-    return candidates
+    # Replies first, then due follow-ups, then new leads (§9.2) — and within a kind, one from
+    # each campaign in turn.
+    return _interleave(candidates, now)
+
+
+def _interleave(candidates: list[Candidate], now: datetime) -> list[Candidate]:
+    """Order the queue so every running campaign makes progress under one shared cap.
+
+    The cap belongs to the mailbox, because it exists to protect a sending *reputation* and
+    reputation attaches to the address — not to how many campaigns somebody split the work
+    into. So two live campaigns share one allowance, and the question is who goes first.
+
+    **Replies first, across every campaign.** Someone who wrote to us is waiting, and which
+    campaign they came from is our bookkeeping, not their problem. Then due follow-ups, then
+    first emails.
+
+    **Within a kind, round-robin across campaigns**, oldest approval first inside each. Strict
+    first-approved-first-sent would be simpler and wrong: a campaign holding five hundred
+    approved drafts would starve a campaign holding five for a working week, and an operator
+    running two campaigns expects both to move today.
+    """
+    by_kind: dict[int, dict[uuid.UUID, list[Candidate]]] = {}
+    for candidate in sorted(candidates, key=lambda c: c.draft.approved_at or now):
+        by_kind.setdefault(candidate.priority, {}).setdefault(
+            candidate.lead.campaign_id, []
+        ).append(candidate)
+
+    ordered: list[Candidate] = []
+    for priority in sorted(by_kind):
+        queues = list(by_kind[priority].values())
+        # Deal one from each campaign in turn until every queue is empty.
+        while any(queues):
+            for queue in queues:
+                if queue:
+                    ordered.append(queue.pop(0))
+    return ordered
 
 
 async def send_one(
@@ -215,13 +271,6 @@ async def send_one(
             wait=timedelta(minutes=5),
         )
 
-    if not in_window(now, settings):
-        opens = next_window_open(now, settings)
-        return SendDecision(
-            reason="outside the send window",
-            wait=max(opens - now, timedelta(seconds=30)),
-        )
-
     cap = await effective_cap(session, mailbox=mailbox, settings=settings, now=now)
     used = await sent_today(session, mailbox_id=mailbox.id, settings=settings, now=now)
     remaining = remaining_capacity(effective_cap=cap, sent_today=used)
@@ -237,11 +286,25 @@ async def send_one(
             reason="pacing", wait=max(mailbox.next_send_at - now, timedelta(seconds=5))
         )
 
+    # `find_candidates` drops anything whose own campaign window is shut, so an empty list here
+    # means either nothing is ready or nothing is ready *yet*. Distinguishing the two matters
+    # only for how long to wait, and the window is the longer of the two.
     candidates = await find_candidates(session, org_id=org_id, mailbox_id=mailbox.id, now=now)
     if not candidates:
+        if not in_window(now, settings):
+            opens = next_window_open(now, settings)
+            return SendDecision(
+                reason="outside the send window",
+                wait=max(opens - now, timedelta(seconds=30)),
+            )
         return SendDecision(reason="nothing is ready to send", wait=timedelta(minutes=2))
 
     chosen = candidates[0]
+    # From here on, the lead's own campaign decides — its persona signs the message and its
+    # settings schedule the follow-up. `persona` and `settings` remain the mailbox-level
+    # defaults, used for the checks above and as a fallback for a campaign with no persona.
+    persona = chosen.persona if chosen.campaign.persona else persona
+    settings = chosen.settings
 
     # Step 1 and 2: re-check everything against the database, then claim the outbox row. The
     # approval may be hours old, and a reply or opt-out may have arrived since.
