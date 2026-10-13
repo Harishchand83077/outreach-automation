@@ -93,6 +93,74 @@ async def review_queue(
     }
 
 
+#: The most drafts one request may approve. A request is not a way to start an unbounded amount
+#: of work, and a reviewer who meant to select ten should not be able to approve ten thousand by
+#: mistyping a filter.
+MAX_BULK = 200
+
+
+@router.post("/review/bulk-approve")
+async def bulk_approve_drafts(
+    user: CurrentUserDep,
+    session: SessionDep,
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Approve several drafts at once, refusing the ones that still need a person (E8).
+
+    **This exists to make the easy case fast, not to wave the doubtful one through.** A draft
+    whose validation failed, whose research was thin, or whose confidence is below the campaign
+    threshold is **skipped**, and the reason comes back with it. That asymmetry is the whole
+    design: the failure mode of a bulk button is that somebody clears a queue of a hundred
+    without reading any of them, and the ones most worth reading are exactly the weak ones.
+
+    Approving still sends nothing. The send loop re-checks suppression, the window, the daily
+    cap and the lead's state before anything leaves.
+    """
+    raw = payload.get("draft_ids")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "draft_ids must be a non-empty list."
+        )
+    if len(raw) > MAX_BULK:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"At most {MAX_BULK} drafts can be approved in one request.",
+        )
+    try:
+        draft_ids = [uuid.UUID(str(value)) for value in raw]
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "draft_ids must all be uuids."
+        ) from exc
+
+    threshold = payload.get("min_confidence")
+    try:
+        min_confidence = float(threshold) if threshold is not None else 0.6
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "min_confidence must be a number."
+        ) from exc
+    if not 0.0 <= min_confidence <= 1.0:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "min_confidence must be between 0 and 1."
+        )
+
+    approved, skipped = await draft_store.bulk_approve(
+        session,
+        user.ctx,
+        draft_ids=draft_ids,
+        approved_by=user.user_id,
+        min_confidence=min_confidence,
+    )
+    await session.commit()
+    return {
+        "approved": [str(draft_id) for draft_id in approved],
+        # Keyed by draft id so the UI can mark the individual rows that still need reading,
+        # rather than showing one number that says nothing about which.
+        "skipped": skipped,
+    }
+
+
 @router.post("/drafts/{draft_id}/approve")
 async def approve_draft(
     draft_id: uuid.UUID,

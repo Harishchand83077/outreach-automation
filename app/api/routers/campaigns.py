@@ -23,6 +23,7 @@ from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Research
 from app.db.repo import OrgContext
+from app.db.state import record_event
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.services.privacy import erase_lead
@@ -277,6 +278,136 @@ async def get_lead(lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
             }
             for event in timeline
         ],
+    }
+
+
+@router.post("/leads/{lead_id}/pause")
+async def pause_lead(
+    lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Stop this one lead progressing, without losing where it had got to (E8).
+
+    **A flag, never a state.** Moving a paused lead into a `PAUSED` state would mean inventing a
+    way back out of it, and the way back would have to guess what it was doing before. The flag
+    leaves the state machine alone, so resuming puts the lead back exactly where it was.
+
+    This is the missing third option between approving a draft and erasing a person: somebody
+    mentions they are on leave, or a company is mid-acquisition, and you want this one to stop
+    without affecting the campaign or losing the research.
+    """
+    return await _set_lead_paused(lead_id, user, session, paused=True)
+
+
+@router.post("/leads/{lead_id}/resume")
+async def resume_lead(
+    lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Let a paused lead progress again, from wherever it was."""
+    return await _set_lead_paused(lead_id, user, session, paused=False)
+
+
+async def _set_lead_paused(
+    lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep, *, paused: bool
+) -> dict[str, Any]:
+    lead = await session.get(Lead, lead_id)
+    if lead is None or lead.org_id != user.org_id:
+        # 404 rather than 403, as everywhere else: confirming an id exists in another org leaks.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+    lead.paused = paused
+    await record_event(
+        session,
+        org_id=user.org_id,
+        campaign_id=lead.campaign_id,
+        lead_id=lead.id,
+        # `actor` is the *kind* of actor, not the identity: a person did this, and `actor_id`
+        # says which one. Pausing a lead is a human judgement and the audit trail should show
+        # that rather than attributing it to the system.
+        actor="user",
+        actor_id=user.email or user.user_id,
+        type="lead.paused" if paused else "lead.resumed",
+    )
+    await session.commit()
+    return {"lead_id": str(lead.id), "paused": lead.paused, "state": lead.state}
+
+
+@router.get("/campaigns/{campaign_id}/stats")
+async def campaign_stats(
+    campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """What this campaign has actually done — counted from the record, not the current state.
+
+    **This is issue NEW-3.** The prototype counted `emails_sent` as the number of leads whose
+    *current* status was `EMAIL_SENT`, so every lead that then replied or booked a meeting
+    silently decremented it. The better a campaign did, the worse its headline number looked,
+    and nobody could tell whether sending had stalled or simply succeeded.
+
+    A count of things that happened has to come from the record of what happened. So:
+
+    - `emails_sent` counts **messages**, not leads. Two sends to one person are two emails, and
+      a `failed` or `sending` row is neither.
+    - `replied`, `bounced` and `opted_out` count leads that **ever reached** that state, read
+      from the append-only `events` table. A lead that replied and later booked a meeting is
+      still a reply that happened.
+    - `by_state` is the only figure that is a snapshot, and it is labelled as one: it answers
+      "what is in flight right now", which is a different question.
+    """
+    await _owned_campaign(session, user, campaign_id)
+
+    sent = await session.scalar(
+        select(func.count())
+        .select_from(Message)
+        .join(Lead, Lead.id == Message.lead_id)
+        .where(
+            Message.org_id == user.org_id,
+            Lead.campaign_id == campaign_id,
+            Message.direction == "out",
+            Message.status == "sent",
+        )
+    )
+    leads_emailed = await session.scalar(
+        select(func.count(func.distinct(Message.lead_id)))
+        .select_from(Message)
+        .join(Lead, Lead.id == Message.lead_id)
+        .where(
+            Message.org_id == user.org_id,
+            Lead.campaign_id == campaign_id,
+            Message.direction == "out",
+            Message.status == "sent",
+        )
+    )
+
+    async def ever_reached(state: str) -> int:
+        """Leads that passed through a state at any point, from the audit trail."""
+        return int(
+            await session.scalar(
+                select(func.count(func.distinct(Event.lead_id))).where(
+                    Event.org_id == user.org_id,
+                    Event.campaign_id == campaign_id,
+                    Event.type == "lead.state_changed",
+                    Event.to_state == state,
+                )
+            )
+            or 0
+        )
+
+    return {
+        "leads_total": int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Lead)
+                .where(Lead.org_id == user.org_id, Lead.campaign_id == campaign_id)
+            )
+            or 0
+        ),
+        "emails_sent": int(sent or 0),
+        "leads_emailed": int(leads_emailed or 0),
+        "replied": await ever_reached("REPLIED"),
+        "bounced": await ever_reached("BOUNCED"),
+        "opted_out": await ever_reached("OPTED_OUT"),
+        # Set only by a human click or a booking webhook, never inferred from a positive reply,
+        # so the current state is the right source for this one.
+        "meetings_booked": await ever_reached("MEETING_BOOKED"),
+        "by_state": await _state_counts(session, user, campaign_id),
     }
 
 
