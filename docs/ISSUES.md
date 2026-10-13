@@ -87,7 +87,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 | E5 | P1 | **Superseded-by-rewrite** | LLM: retry on *every* exception including auth/400 (`llm_client.py:85`), fixed 2-10 s backoff ignoring `Retry-After`, no token/cost accounting, no model fallback, `max_tokens=2048` fixed. |
 | E6 | P2 | **Done** (the Dockerfile landed in Phase 9) | ~~No tests, no CI, no type checking, unpinned deps, no lockfile, no `pyproject.toml`.~~ Fixed: `pyproject.toml` with exact pins plus `uv.lock`, ruff (lint and format), mypy strict over `app/`, pytest, GitHub Actions CI, `pre-commit` with `gitleaks`, Dependabot. `requirements.txt` deleted. The Dockerfile, the production Compose file and the CI job that builds and smoke-tests the image landed in Phase 9. |
 | E7 | P2 | **Done** - `app/core/logging.py`: one JSON object per line, `request_id` bound once per request and `job_id`/`org_id`/`lead_id` once per job through `contextvars`, so a line carries them without the emitting code knowing they exist. Configured secrets are scrubbed from every rendered line as a second defence (hard rule 2). Alerts are a table plus an optional webhook, with an hour's cool-down per kind; `/ready` fails on a stale worker heartbeat (ADR-009) so an external monitor learns the worker died. Metrics remain the SQL views behind `/admin/usage`. Tests: `tests/unit/test_logging.py`, `tests/integration/test_ops.py`, `tests/integration/test_worker_heartbeat.py`. **The per-lead timeline is UI and stays with E8.** | Observability: Rich console logs only; no structured logs, run IDs, metrics, alerting, or per-lead timeline. |
-| E8 | P2 | **Confirmed** | Dashboard: approvals one-by-one only (no bulk endpoint exists), no filters/search/pagination, no run/campaign concept, no per-step status view, no way to pause/cancel a run or a single lead. |
+| E8 | P2 | **Done** - `POST /review/bulk-approve` approves a selection and **skips** any draft whose validation failed, whose research was thin, or whose confidence is below the threshold, returning the reason keyed by draft id so the UI marks the rows that still need a person; capped at 200 a request. `POST /leads/{id}/pause` and `/resume` set a flag, never a state, so a lead resumes exactly where it was. Lead detail with its full audit timeline and message bodies, one lead at a time (C7). Search by email, filters on name, company and state combining as AND, cursor pagination on the lead list and on the review queue, which also reports the total still waiting. Campaign status is settable from the dashboard. Tests: `tests/integration/test_api_phase8.py`, `test_api_browse.py`. | Dashboard: approvals one-by-one only (no bulk endpoint exists), no filters/search/pagination, no run/campaign concept, no per-step status view, no way to pause/cancel a run or a single lead. |
 
 ## F. Docs/hygiene
 
@@ -105,7 +105,7 @@ test proving the behaviour) or `Won't fix` (with a reason). Live status is in `P
 |----|-----|---------|-------|-------|
 | NEW-1 | P1 | **Done** (nothing stores an exception as a draft. Test: `tests/unit/test_drafting_generator.py::TestFailureHandling::test_a_transport_error_stops_rather_than_burning_attempts` — a failed generation raises and no draft row is written, so there is no column for an exception to land in. The prototype's `runner.py` is deleted.) | On workflow crash the raw exception string is written into the `email_draft` column — a second path, independent of B2, for error text to reach a field the UI renders and offers to send. | runner.py:88 |
 | NEW-2 | P1 | **Done** (a lead is never marked sent when nothing was sent. Tests: `test_send_guard.py::TestLeadIsNotMarkedSentWhenNothingWasSent`) | `handle_positive` ignores `send_email`'s return value, so the lead is marked `MEETING_BOOKED` even when the send failed outright. | decision_engine.py:119 |
-| NEW-3 | P2 | **Verified, not yet fixed** (the rewritten stats read the `events` audit trail, not the current status; lands with the UI) | `get_stats` counts `emails_sent` as *current* `status == 'EMAIL_SENT'`, so every lead that progresses to `REPLIED`/`MEETING_BOOKED` silently decrements the "sent" total. With B4 inflating meetings, both headline numbers on the dashboard are wrong. | database.py:145 |
+| NEW-3 | P2 | **Done** - `GET /campaigns/{id}/stats` counts from the record of what happened, never from a lead's current state. `emails_sent` counts **messages** with status `sent`, so two sends to one person are two emails and a `failed` or `sending` row is neither; `replied`, `bounced`, `opted_out` and `meetings_booked` count leads that **ever reached** that state, read from the append-only `events` table. `by_state` is the only snapshot and the UI labels it "In flight right now", because where everything is and what has happened are different questions. Tests: `tests/integration/test_api_phase8.py::TestTheStatsCannotGoDown`, including the exact case that broke - a lead that was emailed and has since replied. | `get_stats` counts `emails_sent` as *current* `status == 'EMAIL_SENT'`, so every lead that progresses to `REPLIED`/`MEETING_BOOKED` silently decrements the "sent" total. With B4 inflating meetings, both headline numbers on the dashboard are wrong. | database.py:145 |
 | NEW-4 | P2 | **Superseded-by-rewrite** - the CSV export endpoint is deleted with `api_server.py` and is not reinstated. If it returns, the formula-injection guard is a precondition (noted in `PROGRESS.md`) | `/api/leads/export/csv` writes lead and LLM text into CSV with no formula-injection guard: a lead whose name begins `=`, `+`, `-` or `@` executes on open in Excel. The endpoint is unauthenticated (C1) and the rate limiter is POST-only, so it is not even throttled. | api_server.py:306-330 |
 | NEW-5 | P2 | **Done** (`startup()` keeps the task handle, so the duplicate guard in `start_workers()` works - `api_server.py:146-149`. No test: the legacy server is being replaced, and the rewritten worker owns its own tasks) | ~~`startup()` spawned `_workers_loop()` without assigning `_workers_task`, so the duplicate guard inside `start_workers()` could not work and a second reply monitor could be spawned.~~ Fixed: the task handle is stored. Found independently by ruff (RUF006) while setting up CI. | api_server.py |
 | NEW-6 | P3 | **Superseded-by-rewrite** - `os.chdir` is gone with the module. Nothing in `app/` mutates the process working directory | `os.chdir(_root)` runs at import time, mutating process-global working directory for anything else hosted in the same interpreter. | api_server.py:25 |
@@ -127,13 +127,20 @@ Found during verification (NEW-1…8): P1: 2 · P2: 3 · P3: 3 — **8 added**.
 | Status | Count | IDs |
 |---|---|---|
 | **Superseded-by-rewrite** (each with a test proving the behaviour) | 38 | A1–A8, B5, B7–B18, C1, C3, C4, C5, C7, D1–D4, E1–E5, NEW-4, NEW-6, NEW-7 |
-| **Done** | 18 | B1, B2, B3, B4, B6, C2, C6, C8, D5, D6, E6, E7, F1, F2, F3, NEW-1, NEW-2, NEW-5 |
+| **Done** | 20 | B1, B2, B3, B4, B6, C2, C6, C8, D5, D6, E6, E7, E8, F1, F2, F3, NEW-1, NEW-2, NEW-3, NEW-5 |
 | Partly | 1 | NEW-8 (`.xls` rejected and `.csv` accepted; the docstring went with the F1–F3 rewrite) |
-| Verified, not yet fixed | 2 | E8, NEW-3 |
+| Verified, not yet fixed | 0 | — |
 
-**57 of 59 resolved.** The two that remain are both Phase 8 polish: **E8** (bulk actions,
-filters, the per-lead timeline) and **NEW-3** (the sent-count the prototype computed from current
-status, so every reply silently decremented it).
+**59 of 59 resolved.** Every tracked issue now ends `Done`, `Superseded-by-rewrite` with a
+test proving the behaviour, or `Partly` with the remainder stated — **NEW-8** is the only
+`Partly`, and what is left of it is a docstring that went with the F1–F3 rewrite rather than any
+behaviour.
+
+The register is closed, which is worth being precise about: it means every defect found in the
+original audit has an answer in the code and a test that would catch its return. It does **not**
+mean the system is finished — Phase 10's rehearsal and go-live gate are still ahead, and the
+defects that have cost the most time recently were none of these. They were found by running the
+thing against real leads, which no issue register predicts.
 
 Counts in this table are computed from the verdicts above, not maintained by hand.
 
