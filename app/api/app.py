@@ -136,11 +136,31 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
         # The detail is logged, never returned: an unhandled exception's text is as likely to
         # contain a connection string as anything useful to the caller.
         logger.exception("unhandled error", extra={"request_id": request_id})
-        return _error(
+        response = _error(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             "Something went wrong. Quote the request id if you report this.",
             request_id,
         )
+        # **CORS headers, added by hand, because nothing else will add them here.** A handler
+        # for bare `Exception` is installed in Starlette's `ServerErrorMiddleware`, which sits
+        # *outside* every user middleware including `CORSMiddleware` — so a 500 never passes
+        # back through it and arrives at the browser with no `Access-Control-Allow-Origin`. The
+        # browser then refuses to expose the response and `fetch` rejects, so the dashboard
+        # reported "the API did not answer with JSON; check that the backend is running" while
+        # the backend was running perfectly and had answered with JSON.
+        #
+        # That cost real time on the live system: it pointed the investigation at CORS, DNS and
+        # connectivity when the fault was a duplicate key three layers in. A 500 the operator
+        # can read is worth this much duplication.
+        #
+        # Reflected only for an origin already on the allowlist — never echoed back to whoever
+        # asked, which would be a wildcard with extra steps.
+        origin = request.headers.get("origin")
+        if origin and origin in origins:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
+        return response
 
     application.dependency_overrides[get_session] = session_dependency
     application.include_router(health.router)

@@ -35,7 +35,7 @@ from app.api.app import create_app
 from app.api.ratelimit import RateLimit
 from app.api.security import TokenVerifier
 from app.core.settings import Settings
-from app.db.models import Member
+from app.db.models import Member, Org
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -434,3 +434,146 @@ class TestChangingTheSendMode:
         assert body["send_mode"] == "allowlist"
         assert body["source"] == "dashboard"
         assert "environment_default" in body
+
+
+class TestCreatingAMailboxTwice:
+    """A mailbox is identified by its address, so creating the same one twice is not an error.
+
+    This was found in production: the New campaign form posts the mailbox before the campaign,
+    so somebody creating a second campaign from the same address hit
+    `uq_mailboxes_org_from_email`, the route did not handle it, and the request became a 500.
+    """
+
+    async def test_the_same_address_returns_the_same_mailbox(self, api, owner):
+        first = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Asha Rao", "from_email": "asha@outreach.example"},
+            headers=owner,
+        )
+        second = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Asha Rao", "from_email": "asha@outreach.example"},
+            headers=owner,
+        )
+
+        assert first.status_code == 201, first.text
+        assert second.status_code == 200, second.text
+        assert second.json()["id"] == first.json()["id"]
+        assert second.json()["created"] is False
+
+    async def test_the_address_is_matched_regardless_of_case(self, api, owner):
+        first = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Asha", "from_email": "case@outreach.example"},
+            headers=owner,
+        )
+        second = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Asha", "from_email": "  CASE@Outreach.Example  "},
+            headers=owner,
+        )
+
+        assert second.json()["id"] == first.json()["id"]
+
+    async def test_it_never_answers_with_a_500(self, api, owner):
+        """The symptom the operator actually saw."""
+        for _ in range(3):
+            response = api.post(
+                "/api/v1/mailboxes",
+                json={"from_name": "Asha", "from_email": "repeat@outreach.example"},
+                headers=owner,
+            )
+            assert response.status_code < 500, response.text
+
+    async def test_another_orgs_mailbox_is_not_returned(self, api, owner, stranger):
+        """The uniqueness is per org, so the same address in another org is a different row."""
+        mine = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Asha", "from_email": "shared@outreach.example"},
+            headers=owner,
+        ).json()
+        theirs = api.post(
+            "/api/v1/mailboxes",
+            json={"from_name": "Rival", "from_email": "shared@outreach.example"},
+            headers=stranger,
+        ).json()
+
+        assert mine["id"] != theirs["id"]
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def stranger(db, keypair):
+    """An owner of a different org, for the tenancy assertions."""
+    private, _ = keypair
+    other = Org(name="Rival Two Ltd")
+    db.add(other)
+    await db.flush()
+    subject = f"rival-{uuid.uuid4()}"
+    db.add(Member(org_id=other.id, user_id=subject, email="rival@example.com", role="owner"))
+    await db.commit()
+    return {"Authorization": f"Bearer {token_for(private, subject=subject)}"}
+
+
+class TestAnUnexpectedErrorIsStillReadableByTheBrowser:
+    """A 500 must carry its CORS headers, or the operator is told the wrong thing.
+
+    FastAPI handles a bare `Exception` in `ServerErrorMiddleware`, which sits *outside* every
+    user middleware including CORS — so by default a 500 response never passes through
+    `CORSMiddleware` and arrives without `Access-Control-Allow-Origin`. The browser then refuses
+    to expose it and `fetch` rejects, so the dashboard reported "the API did not answer with
+    JSON. Check that the backend is running" while the backend was running perfectly and had
+    answered with JSON.
+
+    That cost real diagnosis time on a live system: it sent the investigation towards CORS,
+    DNS and connectivity when the actual fault was a duplicate key three layers in.
+    """
+
+    @pytest_asyncio.fixture(loop_scope="session")
+    async def exploding_api(self, session_factory, keypair):
+        _, public = keypair
+        application = create_app(
+            Settings(CORS_ALLOWED_ORIGINS="https://dash.example"),
+            limiter=RateLimit(limit=10_000, window_seconds=60.0),
+        )
+
+        @application.get("/api/v1/_boom")
+        async def boom() -> dict[str, str]:  # pragma: no cover - raises by design
+            raise RuntimeError("something went wrong deep inside")
+
+        async def override_session():
+            async with session_factory() as session:
+                yield session
+
+        application.dependency_overrides[deps.get_session] = override_session
+        deps.set_verifier(TokenVerifier(jwks_url="unused", issuer=ISSUER, cache=FakeJwks(public)))
+        with TestClient(application, raise_server_exceptions=False) as client:
+            yield client
+        deps.set_verifier(None)
+
+    async def test_a_500_carries_the_cors_header(self, exploding_api):
+        response = exploding_api.get("/api/v1/_boom", headers={"Origin": "https://dash.example"})
+
+        assert response.status_code == 500
+        assert response.headers.get("access-control-allow-origin") == "https://dash.example", (
+            "a 500 without this header reads to the browser as the API being unreachable"
+        )
+
+    async def test_a_500_is_still_json(self, exploding_api):
+        response = exploding_api.get("/api/v1/_boom", headers={"Origin": "https://dash.example"})
+
+        assert response.headers["content-type"].startswith("application/json")
+        assert "request_id" in response.json()
+
+    async def test_it_does_not_echo_an_arbitrary_origin(self, exploding_api):
+        """The header is reflected only for an allowed origin, never for whoever asked."""
+        response = exploding_api.get(
+            "/api/v1/_boom", headers={"Origin": "https://attacker.example"}
+        )
+
+        assert response.headers.get("access-control-allow-origin") != "https://attacker.example"
+
+    async def test_the_detail_is_never_the_exception_text(self, exploding_api):
+        """An exception's text is as likely to hold a connection string as anything useful."""
+        body = exploding_api.get("/api/v1/_boom", headers={"Origin": "https://dash.example"}).json()
+
+        assert "something went wrong deep inside" not in str(body)

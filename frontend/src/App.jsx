@@ -1153,9 +1153,16 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     event.preventDefault()
     setBusy(true)
     try {
+      // The API is idempotent on the address, so posting one that already exists returns it
+      // rather than failing. Say which happened: silently reusing a mailbox somebody thought
+      // they were creating is the kind of surprise that gets noticed much later.
       const created = await postJson('/mailboxes', { json: mailbox })
       await patchJson(`/campaigns/${campaign.id}`, { json: { mailbox_id: created.id } })
-      onToast('Mailbox attached. Set the campaign running when you are ready.')
+      onToast(
+        created.created
+          ? 'Mailbox created and attached. Set the campaign running when you are ready.'
+          : `Attached the existing mailbox for ${created.from_email}.`
+      )
       setAttaching(false)
       onChanged(false)
     } catch (err) {
