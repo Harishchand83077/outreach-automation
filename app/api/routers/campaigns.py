@@ -192,6 +192,22 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
             }
         )
 
+    if campaign.mode == "research" and campaign.persona:
+        try:
+            undraftable = Persona.model_validate(campaign.persona).missing_for_drafting()
+        except ValidationError:
+            undraftable = []  # already reported above as unreadable
+        if undraftable:
+            found.append(
+                {
+                    "code": "persona_incomplete",
+                    "message": (
+                        "This campaign asks a model to write each email and the persona does "
+                        "not say enough for that: " + ", ".join(field for field, _ in undraftable)
+                    ),
+                }
+            )
+
     try:
         CampaignSettings.model_validate(campaign.settings or {})
     except ValidationError as exc:
@@ -684,6 +700,29 @@ def _mailbox_summary(mailbox: Mailbox, *, created: bool) -> dict[str, Any]:
     }
 
 
+def _refuse_if_undraftable(persona: Persona) -> None:
+    """Refuse a research campaign whose persona a model could not write from.
+
+    The fields are reported with *why each one matters*, not merely named. "agency_name is
+    required" sends somebody back to a form to type anything that passes; "name the company you
+    are writing on behalf of -- it signs the email" tells them what the field is for, and a
+    persona filled in to get past a validator is a persona the drafter will quote.
+    """
+    missing = persona.missing_for_drafting()
+    if not missing:
+        return
+    raise HTTPException(
+        status.HTTP_422_UNPROCESSABLE_ENTITY,
+        {
+            "message": (
+                "A research campaign asks a model to write each email, so it needs to know who "
+                "it is writing for."
+            ),
+            "errors": [{"field": f"persona.{field}", "message": why} for field, why in missing],
+        },
+    )
+
+
 def _templates_or_422(raw: Any, *, mode: str) -> dict[str, Any]:
     """Validate a `template`-mode campaign's fixed emails, or refuse the campaign.
 
@@ -777,6 +816,13 @@ async def create_campaign(
                 "errors": _field_errors(exc, fallback="persona"),
             },
         ) from exc
+
+    # **Checked here rather than in the model.** A model validator would apply the same rule
+    # to every persona that exists, including a `template`-mode campaign's -- which never calls
+    # a model and may legitimately have no agency and no offer, because somebody job-hunting has
+    # neither. The requirement belongs to the drafter that has it (ADR-013).
+    if mode == "research":
+        _refuse_if_undraftable(persona)
 
     mailbox_id: uuid.UUID | None = None
     if raw_mailbox := payload.get("mailbox_id"):
@@ -884,7 +930,10 @@ async def update_campaign(
 
     if "persona" in payload:
         try:
-            campaign.persona = Persona.model_validate(payload["persona"]).model_dump(mode="json")
+            replacement = Persona.model_validate(payload["persona"])
+            if campaign.mode == "research":
+                _refuse_if_undraftable(replacement)
+            campaign.persona = replacement.model_dump(mode="json")
         except ValidationError as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,

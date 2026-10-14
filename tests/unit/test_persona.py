@@ -32,24 +32,67 @@ class TestPersonaBasics:
         assert persona.max_words == 120
 
     def test_the_sender_must_be_named(self):
-        """An honest sender identity is a compliance requirement, not a nicety."""
-        for required in ("sender_name", "agency_name", "offer", "goal"):
-            with pytest.raises(ValidationError):
-                Persona(**{**MINIMAL, required: ""})
+        """The one field no email can do without: it signs the message and it is in the footer,
+        so a recipient can always tell who wrote to them. That is a compliance requirement."""
+        with pytest.raises(ValidationError):
+            Persona(**{**MINIMAL, "sender_name": ""})
+
+    def test_everything_else_about_the_sender_is_optional(self):
+        """**Deliberately relaxed (ADR-013).** `agency_name`, `offer` and `goal` were required
+        because the *research* drafter needs them -- it writes on our behalf, so it has to be
+        told who that is. A `template`-mode campaign never calls a model, and somebody
+        job-hunting has no agency and no offer, so requiring them meant typing something to get
+        past a form. A persona filled in to satisfy a validator is a persona the drafter would
+        go on to quote, which is the opposite of what hard rule 6 is for."""
+        persona = Persona(sender_name="Harish Chand")
+        assert persona.agency_name == ""
+        assert persona.offer == ""
+        assert persona.booking_url is None
 
     def test_unknown_fields_are_refused(self):
         """A typo'd field would otherwise be silently ignored and quietly do nothing."""
         with pytest.raises(ValidationError):
             Persona(**MINIMAL, sendr_name="typo")
 
+
+class TestWhatModelWrittenDraftingNeeds:
+    """The requirement is real; it belongs to the drafter that has it rather than to the data.
+
+    As two model validators it applied to every persona that exists, so a template-mode campaign
+    was refused for not naming an agency it does not have. `missing_for_drafting()` is asked by
+    `POST /campaigns` for a research campaign, and by `handle_draft_lead` before a model is
+    called at all.
+    """
+
+    def test_a_complete_persona_needs_nothing(self):
+        assert Persona(**MINIMAL).missing_for_drafting() == []
+
     def test_a_goal_needs_a_concrete_next_step(self):
         """Asking for a call with nowhere to book it is not a usable campaign."""
         without = {k: v for k, v in MINIMAL.items() if k != "booking_url"}
-        with pytest.raises(ValidationError, match="booking_url or cta_text"):
-            Persona(**without)
+        missing = dict(Persona(**without).missing_for_drafting())
+        assert "cta_text" in missing
+        assert "next step" in missing["cta_text"]
 
         # Either one satisfies it.
-        Persona(**without, cta_text="reply with a time that suits you")
+        assert (
+            Persona(**without, cta_text="reply with a time that suits you").missing_for_drafting()
+            == []
+        )
+
+    def test_each_missing_field_says_why_it_matters(self):
+        """ "agency_name is required" sends somebody back to type anything that passes. What the
+        field is *for* is the only version that produces a usable answer."""
+        missing = dict(Persona(sender_name="Harish Chand").missing_for_drafting())
+        assert set(missing) == {"sender_role", "agency_name", "offer", "goal", "cta_text"}
+        for field, why in missing.items():
+            assert len(why) > 20, (field, why)
+
+    def test_a_template_persona_is_not_judged_by_this(self):
+        """It is never asked: nothing calls `missing_for_drafting()` for a template campaign,
+        because no model writes its emails."""
+        persona = Persona(sender_name="Harish Chand")
+        assert persona.sender_name == "Harish Chand"
 
     def test_a_bad_booking_url_is_refused(self):
         with pytest.raises(ValidationError):

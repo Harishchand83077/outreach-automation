@@ -629,6 +629,109 @@ class TestCampaignMode:
         )
 
 
+class TestWhatEachModeAsksOfThePersona:
+    """A job hunter has no agency and no offer, and typing something to get past a form is the
+    opposite of what hard rule 6 is for: a persona filled in to satisfy a validator is a persona
+    the drafter would go on to quote (ADR-013).
+    """
+
+    async def test_a_template_campaign_needs_only_a_name(self, api, owner):
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Job hunt",
+                "mode": "template",
+                "persona": {"sender_name": "Harish Chand"},
+                "templates": TEMPLATES,
+            },
+        )
+        assert response.status_code == 201, response.json()
+        assert response.json()["sender_name"] == "Harish Chand"
+
+    async def test_a_template_campaign_still_needs_a_name(self, api, owner):
+        """The footer has to say who wrote, whoever wrote it."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Anonymous",
+                "mode": "template",
+                "persona": {},
+                "templates": TEMPLATES,
+            },
+        )
+        assert response.status_code == 422
+
+    async def test_a_research_campaign_is_refused_without_an_offer(self, api, owner):
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Thin", "persona": {"sender_name": "Harish Chand"}},
+        )
+        assert response.status_code == 422
+        errors = {e["field"]: e["message"] for e in response.json()["detail"]["errors"]}
+        assert "persona.offer" in errors
+        assert "persona.agency_name" in errors
+        assert len(errors["persona.offer"]) > 20, (
+            "naming the field is not enough -- it has to say what the field is for"
+        )
+
+    async def test_a_research_campaign_cannot_be_patched_into_that_state(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Full", "persona": PERSONA}
+        ).json()
+
+        response = api.patch(
+            f"/api/v1/campaigns/{created['id']}",
+            headers=owner,
+            json={"persona": {"sender_name": "Harish Chand"}},
+        )
+
+        assert response.status_code == 422
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+        assert detail["persona"]["offer"] == PERSONA["offer"], (
+            "a refused patch must leave the working persona in place"
+        )
+
+    async def test_a_template_campaign_can_be_patched_to_a_light_persona(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Switchable",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": TEMPLATES,
+            },
+        ).json()
+
+        response = api.patch(
+            f"/api/v1/campaigns/{created['id']}",
+            headers=owner,
+            json={"persona": {"sender_name": "Harish Chand"}},
+        )
+
+        assert response.status_code == 200, response.json()
+
+    async def test_a_research_campaign_with_a_thin_persona_says_so(self, api, owner, db):
+        """A row edited by hand, or one created before this rule existed. It would otherwise
+        draft nothing and give no reason."""
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Hand edited", "persona": PERSONA}
+        ).json()
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        campaign.persona = {"sender_name": "Harish Chand"}
+        await db.commit()
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+
+        blocker = next(b for b in detail["blockers"] if b["code"] == "persona_incomplete")
+        assert "offer" in blocker["message"]
+
+
 class TestWhyNothingSends:
     """`blockers` answers the one question the dashboard could not: I approved a draft and no
     email arrived -- why?
@@ -650,20 +753,25 @@ class TestWhyNothingSends:
         assert "not_running" in codes, "a draft campaign sends nothing, and should say so"
 
     async def test_an_unreadable_persona_is_named_by_field(self, api, owner, db):
-        """A hand-edited row is the only way this happens, and it is how it happened."""
+        """A hand-edited row is the only way this happens, and it is how it happened.
+
+        "Unreadable" means the model refuses it, which since ADR-013 is a narrower thing than
+        "thin": an empty `sender_name` is unreadable, a missing agency is merely incomplete and
+        is reported separately."""
         from app.db.models import Campaign as C
 
         created = api.post(
             "/api/v1/campaigns", headers=owner, json={"name": "Broken", "persona": PERSONA}
         ).json()
         campaign = await db.get(C, uuid.UUID(created["id"]))
-        campaign.persona = {"sender_name": "Asha"}
+        campaign.persona = {"sender_name": "", "max_words": 9000}
         await db.commit()
 
         detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
 
         blocker = next(b for b in detail["blockers"] if b["code"] == "persona_unreadable")
-        assert "offer" in blocker["message"], blocker
+        assert "sender_name" in blocker["message"], blocker
+        assert "max_words" in blocker["message"], blocker
 
     async def test_the_message_never_echoes_what_is_stored(self, api, owner, db):
         """Field names travel to a browser and into screenshots; values do not."""
@@ -849,14 +957,18 @@ class TestCreatingACampaign:
 
     async def test_neither_is_refused_naming_the_rule(self, api, owner):
         """The form guards this itself now; the API must still say which rule was broken, or a
-        caller that is not our dashboard gets 'invalid' and nothing to act on."""
+        caller that is not our dashboard gets 'invalid' and nothing to act on.
+
+        Since ADR-013 the rule is asked of a *research* campaign rather than of every persona,
+        so this is the same requirement checked one layer out."""
         persona = {k: v for k, v in PERSONA.items() if k != "cta_text"}
         response = api.post(
             "/api/v1/campaigns", headers=owner, json={"name": "No ask", "persona": persona}
         )
         assert response.status_code == 422
-        errors = response.json()["detail"]["errors"]
-        assert any("booking_url or cta_text" in item["message"] for item in errors), errors
+        errors = {e["field"]: e["message"] for e in response.json()["detail"]["errors"]}
+        assert "persona.cta_text" in errors, errors
+        assert "next step" in errors["persona.cta_text"]
 
     async def test_an_unknown_field_in_the_persona_is_refused(self, api, owner):
         """`extra="forbid"`: a typo like `sender_rol` must not silently become no role at all."""
