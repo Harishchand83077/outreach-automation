@@ -174,7 +174,6 @@ async def run_once(
         db,
         org_id=org.id,
         mailbox=mailbox,
-        persona=PERSONA,
         settings=settings,
         sender=sender,
         now=now,
@@ -233,7 +232,10 @@ class TestAnActualSend:
         assert "List-Unsubscribe:" in raw
         assert "mailto:asha@outreach.example?subject=unsubscribe" in raw
         assert "no thanks" in raw, "the opt-out line must be in the body"
-        assert "Acme Software" in raw, "the sender identity must be in the body"
+        # The campaign's own persona, which is now the only source of the footer identity.
+        # It used to be whatever persona the caller handed `send_one`, which is how a lead could
+        # go out signed by a campaign it did not belong to.
+        assert "Arkvane" in raw, "the sender identity must be in the body"
 
     async def test_a_followup_is_scheduled_after_the_first_send(
         self, db, ctx, org, mailbox, lead_factory, smtp_server
@@ -605,7 +607,6 @@ class TestFailureHandling:
             db,
             org_id=org.id,
             mailbox=mailbox,
-            persona=PERSONA,
             settings=SETTINGS,
             sender=broken,
             now=INSIDE,

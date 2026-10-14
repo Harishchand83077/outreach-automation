@@ -149,7 +149,24 @@ async def org(db: AsyncSession):
 async def campaign(db: AsyncSession, org):
     from app.db.models import Campaign
 
-    record = Campaign(org_id=org.id, name="Test Campaign", status="running")
+    # **With a persona**, because `POST /campaigns` has always required one and a campaign
+    # without one could not exist in production. The fixture creating something the API would
+    # refuse is why the suite could not see that a campaign with an unreadable persona crashed
+    # the send loop: every test passed its own persona straight to `send_one`, so the campaign
+    # row never had to have one.
+    record = Campaign(
+        org_id=org.id,
+        name="Test Campaign",
+        status="running",
+        persona={
+            "sender_name": "Asha Rao",
+            "sender_role": "Founder",
+            "agency_name": "Arkvane",
+            "offer": "a two-week prototype",
+            "goal": "book a 20-minute call",
+            "cta_text": "Worth a 20-minute call next week?",
+        },
+    )
     db.add(record)
     await db.commit()
     return record

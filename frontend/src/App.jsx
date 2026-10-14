@@ -1214,21 +1214,27 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
         What this campaign is, who it comes from, and whether it is allowed to send.
       </p>
 
-      {campaign.mailbox_id ? null : (
+      {/* Every reason an approved draft would sit still, computed by the API from the same
+          models the send loop validates with. These used to be two hand-written banners here
+          covering the two causes somebody had thought of — so a campaign whose persona the
+          worker could not read showed a clean screen, a running status and approved drafts,
+          and the reason existed only in the worker log. */}
+      {detail?.blockers?.length ? (
         <div className="banner" data-tone="warn">
           <span>
-            This campaign cannot send until a mailbox is attached. It must be an address your SPF
-            and DKIM records cover — otherwise mail goes out unauthenticated against a domain
-            with no matching records, which is worse than no setup at all.
-          </span>
-        </div>
-      )}
-
-      {campaign.mailbox_id && campaign.status === 'draft' ? (
-        <div className="banner" data-tone="info">
-          <span>
-            This campaign is a draft, so nothing will send even once a draft is approved. Set it
-            running when you are ready.
+            <strong>Nothing will send from this campaign yet.</strong>
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              {detail.blockers.map((blocker) => (
+                <li key={blocker.code}>{blocker.message}</li>
+              ))}
+            </ul>
+            {detail.blockers.some((b) => b.code === 'no_mailbox') ? (
+              <span className="muted">
+                A mailbox must be an address your SPF and DKIM records cover — otherwise mail
+                goes out unauthenticated against a domain with no matching records, which is
+                worse than no setup at all.
+              </span>
+            ) : null}
           </span>
         </div>
       ) : null}

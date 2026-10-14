@@ -888,3 +888,60 @@ personal inbox and classified none of them.
 five now, including one asserting that a *paused* mailbox is still read: pausing stops sending,
 deliberately, and an opt-out we refused to read because we had stopped sending is the one we
 would breach on starting again.
+**A campaign with an unreadable persona crash-looped the send loop, and it was my regression.**
+Reported as "test campaign 2 is running, I approved a draft, nothing sent, and it says something
+about the persona" — while a draft approved in the *first* campaign on the same mailbox went out
+fine.
+
+PR #67 gave each candidate its own campaign so that a lead could not go out signed by a different
+campaign. It did that with two **lazy properties**, `Candidate.persona` and `Candidate.settings`,
+which called `model_validate` when read — and they are read inside `send_one`, *after* the
+candidate has been chosen, with no `try` between there and `WorkerTask.run`. So a campaign whose
+persona was missing a field raised, the error escaped `tick()`, the task recorded a failure and
+backed off, and **no mailbox sent anything at all**, with the reason visible only as a traceback.
+Which campaign's lead happened to be chosen first decided whether anything went out that cycle,
+which is exactly the behaviour the owner described.
+
+**That is the identical shape as the `send_days` incident that produced per-mailbox reporting in
+the first place**, and a lazy property put it straight back. The lesson generalises better than
+the fix: *validation that happens where the failure cannot be contained is the bug, not the
+invalid data.* Both values are now resolved once inside `find_candidates`, in the same guarded
+block that already handled unreadable settings, and a campaign that cannot be read contributes no
+candidates while the others have their turn.
+
+**The fallback was the other half of it.** `send_one` resolved
+`chosen.persona if chosen.campaign.persona else persona`, so a campaign with an *empty* persona
+borrowed the mailbox's first campaign's identity — the very thing PR #67 was written to stop,
+surviving in the one branch meant to handle its absence. `send_one` no longer takes a `persona`
+parameter at all: a message is signed by the campaign the lead belongs to and by nothing else, so
+the only correct source is the chosen candidate, and passing one in is what made the mistake
+expressible. `SendLoop._send_for` no longer resolves a persona either, and no longer returns
+early when one is missing — it reads the mailbox-level defaults for the cap's day boundary and
+falls back to the product defaults, because one campaign's bad row is not the mailbox's problem.
+
+**Why 1,290 tests could not see it: the fixture created a campaign the API would refuse.** The
+shared `campaign` fixture had `persona={}`, and every send test passed its own persona straight
+into `send_one` — so the campaign row never needed one, and the production path, which reads the
+row, was never exercised. The fixture now carries a persona, which is what `POST /campaigns` has
+always required. Four tests were added against `send_pass` rather than `send_one`, because the
+crash-loop lived in the layers between them: the same lesson as PR #54, which is now the second
+time a defect has hidden in exactly that gap.
+
+**And the dashboard could not have told anyone.** The worker's reasons go to the log and nowhere
+else, so a campaign whose persona the send loop could not read showed a running status, an
+attached mailbox and approved drafts, with no explanation anywhere. `GET /campaigns/{id}` now
+returns **`blockers`**: every reason an approved draft will sit still — no mailbox, not running,
+paused, an unreadable persona, unreadable settings, unreadable templates, the org paused, the
+send mode disabled — each computed **from the same Pydantic models the worker validates with**
+rather than from a second set of rules that would answer differently the first time either side
+changed. Field names only, never stored values: this travels to a browser and into screenshots.
+The campaign screen lists them, replacing two hand-written banners that covered the two causes
+somebody had thought of.
+
+**One more defect fell out of writing that test.** `campaign_summary` rendered the settings
+through `CampaignSettings`, so an unreadable row made it raise — turning `GET /campaigns/{id}`
+into a 500 and, because the same function builds every row of the list, taking out the campaigns
+list for every healthy campaign beside it. **The one campaign an operator most needs to open was
+the only one they could not.** It falls back to the product defaults for display now; the fault is
+reported by `blockers`, and the detail route still returns the row exactly as stored, because the
+settings form edits what is actually there.
