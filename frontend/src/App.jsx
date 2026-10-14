@@ -1016,6 +1016,10 @@ function Import({ campaignId, onError, onToast }) {
   const [preview, setPreview] = useState(null)
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
+  //: The last import, kept so it can be undone. Only in this component's state on purpose: an
+  //: undo offered for ever would eventually be pressed long after the leads were worked on, and
+  //: the API refuses to remove anything already emailed regardless.
+  const [lastImport, setLastImport] = useState(null)
 
   const choose = async (event) => {
     const chosen = event.target.files?.[0]
@@ -1038,8 +1042,38 @@ function Import({ campaignId, onError, onToast }) {
     try {
       const result = await uploadFile(`/campaigns/${campaignId}/imports/commit`, file)
       onToast(`Imported ${result.imported} lead(s). Research is queued.`, 'success')
+      setLastImport({
+        batchId: result.batch_id,
+        imported: result.imported,
+        name: file.name,
+      })
       setPreview(null)
       setFile(null)
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancel = () => {
+    setPreview(null)
+    setFile(null)
+    // The file input keeps its value after a cancel, so choosing the *same* file again would
+    // fire no change event and look like the button was broken.
+    const input = document.getElementById('sheet')
+    if (input) input.value = ''
+  }
+
+  const undo = async () => {
+    if (!lastImport?.batchId) return
+    setBusy(true)
+    try {
+      const result = await deleteJson(
+        `/campaigns/${campaignId}/imports/${lastImport.batchId}`
+      )
+      onToast(result.message, result.removed ? 'success' : undefined)
+      setLastImport(null)
     } catch (err) {
       onError(err)
     } finally {
@@ -1065,6 +1099,30 @@ function Import({ campaignId, onError, onToast }) {
           </p>
         </div>
       </div>
+
+      {lastImport && !preview ? (
+        <div className="banner" data-tone="info">
+          <span>
+            Imported {lastImport.imported} lead(s) from <strong>{lastImport.name}</strong>. Wrong
+            sheet?{' '}
+            <button
+              type="button"
+              className="btn"
+              onClick={undo}
+              disabled={busy}
+              style={{ marginLeft: 6 }}
+            >
+              Undo this import
+            </button>
+            <span className="muted" style={{ display: 'block', marginTop: 6 }}>
+              Removes the leads this upload created, along with their research and drafts.
+              Nothing is added to the suppression list — nobody here asked not to be contacted —
+              so the corrected sheet imports normally. A lead that has already been emailed is
+              kept, and you will be told how many.
+            </span>
+          </span>
+        </div>
+      ) : null}
 
       {preview ? (
         <div className="card">
@@ -1118,7 +1176,13 @@ function Import({ campaignId, onError, onToast }) {
             >
               Import the importable rows
             </button>
+            <button type="button" className="btn" onClick={cancel} disabled={busy}>
+              Cancel
+            </button>
           </div>
+          <p className="muted" style={{ marginTop: 8 }}>
+            Nothing has been written yet. Cancelling forgets this file entirely.
+          </p>
           {!preview.can_commit ? (
             <p className="muted" style={{ marginTop: 10 }}>
               Nothing here can be imported. Check that the sheet has email, name and company

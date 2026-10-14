@@ -187,6 +187,11 @@ async def commit(
             "Confirm the column mapping first."
         )
 
+    # One id for this upload, generated here rather than by the caller: the batch is a
+    # property of the insert, and a caller that forgets to pass one would silently produce an
+    # import nobody can undo.
+    batch_id = uuid.uuid4()
+
     leads: list[Lead] = []
     for row in result.importable_rows:
         assert row.email_norm is not None  # guaranteed by `importable`
@@ -205,6 +210,7 @@ async def commit(
             extra=row.extra,
             state="NEW",
             flags=row.flags,
+            import_batch_id=batch_id,
         )
         session.add(lead)
         leads.append(lead)

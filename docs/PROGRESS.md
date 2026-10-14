@@ -963,3 +963,34 @@ returns each missing field **with why it matters**, and is asked at the three pl
 it: creating or patching a `research` campaign, `handle_draft_lead` before the model is called,
 and `blockers` so an existing campaign in that state says so rather than silently drafting
 nothing. The footer already skipped an empty agency line, so nothing at send time changed.
+**An import can be undone, and the reason it needed its own operation is the interesting part.**
+Asked for as: what happens if someone uploads the wrong sheet?
+
+Half of it already existed — `/imports/preview` writes nothing and the screen shows every row's
+verdict before anything is committed — but there was no way to **abandon** a preview short of
+choosing a different file, and no way back at all once committed. The preview now has a Cancel
+button (which also clears the file input, or choosing the *same* file again fires no change event
+and looks broken).
+
+**The undo could not reuse `DELETE /leads/{id}`, and that is the decision worth recording.** That
+route is the erasure path for a data-subject request, and it deliberately leaves a **hashed
+suppression** behind — so that somebody who opted out and then asked to be forgotten cannot be
+mailed again by the next import of the same sheet. Undoing a *mistaken upload* through it would
+permanently block every address in the sheet: re-uploading the corrected one would skip exactly
+the people it was meant to reach, and nothing on screen would say why. The test that proves an
+undo suppresses nothing is the most important one in the file, and the one after it re-imports the
+same address to show it.
+
+`leads.import_batch_id` stamps each upload, returned by the commit so the dashboard undoes the
+batch it actually made rather than hunting for "the most recent" — which would be the wrong one
+for anybody with two tabs open. Leads imported before this column existed have NULL, which is the
+truth: there is no record of which upload they came from, and inventing one would make an undo
+delete rows it was not asked about.
+
+**An undo does not unsay anything.** A lead that has been emailed is kept, whatever the operator
+meant to upload — the record of what we sent to whom is the one thing here that must not be
+editable, because a reply can still arrive, an opt-out has to be honourable and a bounce has to be
+attributable. A message still `sending` counts as emailed, since ADR-002 is explicit that we never
+assume such a message did not leave. So is a lead that has replied or bounced: something happened
+to that person. The response says what was kept and why — *"Removed 9 lead(s). Kept 1: 1 already
+emailed."* — rather than reporting a silent partial success.

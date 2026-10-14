@@ -19,14 +19,15 @@ from __future__ import annotations
 import uuid
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 
-from app.api.deps import CurrentUserDep, SessionDep
+from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import Campaign
 from app.db.queue import JobKind, enqueue
 from app.services.importer import service as importer
 from app.services.importer.service import ImportPreview
 from app.services.importer.sheet import SheetError
+from app.services.importer.undo import undo_import
 
 router = APIRouter(tags=["imports"])
 
@@ -163,4 +164,43 @@ async def commit_import(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    return {"imported": len(leads), "preview": _serialise(result)}
+    # The batch id is what makes the import undoable, so it is returned rather than only
+    # stored: a dashboard that has to go looking for "the most recent batch" would undo the
+    # wrong one for anybody with two tabs open.
+    batch_id = str(leads[0].import_batch_id) if leads else None
+    return {"imported": len(leads), "batch_id": batch_id, "preview": _serialise(result)}
+
+
+@router.delete("/campaigns/{campaign_id}/imports/{batch_id}")
+async def undo_an_import(
+    campaign_id: uuid.UUID,
+    batch_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+) -> dict[str, Any]:
+    """Remove the leads an upload created, while none of them has been emailed.
+
+    **Not the erasure path, and the difference matters.** `DELETE /leads/{id}` exists for a
+    data-subject request and deliberately leaves a hashed suppression behind, so that somebody
+    who opted out and was then erased cannot be mailed again by the next import of the same
+    sheet. Undoing a *mistaken upload* through that path would permanently block every address
+    in it -- re-uploading the corrected sheet would skip exactly the people it was meant to
+    reach, and nothing on screen would say why.
+
+    Nobody here asked not to be contacted. A sheet was uploaded by mistake, and the correct
+    state of the world is that it never happened, so **nothing is suppressed**.
+
+    Admin-only: it deletes rows. A lead that has already been emailed is kept whatever the
+    operator intended, and the response says how many and why -- the record of what we sent to
+    whom is the one thing in this system that must not be editable.
+    """
+    await _owned_campaign(session, user, campaign_id)
+
+    report = await undo_import(session, user.ctx, campaign_id=campaign_id, batch_id=batch_id)
+    await session.commit()
+
+    return {
+        "removed": report.removed,
+        "kept": report.kept,
+        "message": report.summary(),
+    }
