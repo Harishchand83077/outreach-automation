@@ -124,8 +124,14 @@ async def commit_import(
     session: SessionDep,
     file: Annotated[UploadFile, File()],
 ) -> dict[str, Any]:
-    """Re-validate from the file and insert what survives, with research queued for each lead."""
-    await _owned_campaign(session, user, campaign_id)
+    """Re-validate from the file and insert what survives, with the next job queued per lead.
+
+    Which job depends on the campaign's mode. A `research` campaign researches first; a
+    `template` campaign goes straight to drafting, because there is nothing to research -- the
+    email is already written and the sheet fills in the blanks. Queuing research for it would
+    spend a page fetch and a model call to produce findings nothing reads.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
     data = await _read_upload(file)
 
     try:
@@ -138,14 +144,17 @@ async def commit_import(
         )
         # Queued in the same transaction as the insert, so a lead never exists without the work
         # that moves it forward, and a rollback takes both.
+        template_mode = campaign.mode == "template"
+        kind = JobKind.DRAFT_LEAD if template_mode else JobKind.RESEARCH_LEAD
+        prefix = "draft" if template_mode else "research"
         for lead in leads:
             await enqueue(
                 session,
                 org_id=user.org_id,
-                kind=JobKind.RESEARCH_LEAD,
+                kind=kind,
                 lead_id=lead.id,
                 payload={"lead_id": str(lead.id)},
-                dedupe_key=f"research:{lead.id}",
+                dedupe_key=f"{prefix}:{lead.id}",
             )
         await session.commit()
     except SheetError as exc:

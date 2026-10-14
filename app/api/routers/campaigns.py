@@ -26,6 +26,7 @@ from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
+from app.domain.template import CampaignTemplates
 from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
@@ -70,8 +71,12 @@ def campaign_summary(campaign: Campaign) -> dict[str, Any]:
         "status": campaign.status,
         "paused": campaign.paused,
         "mailbox_id": str(campaign.mailbox_id) if campaign.mailbox_id else None,
+        "mode": campaign.mode,
         # Whether a persona exists is what the UI needs to know; its contents are not list data.
         "has_persona": bool(persona),
+        # Same reasoning for the templates: a list screen needs to know a template-mode campaign
+        # has its emails, not to carry a few kilobytes of them per row.
+        "has_templates": bool(campaign.templates),
         "sender_name": persona.get("sender_name"),
         # Rendered through `CampaignSettings` rather than returned raw, so the client is shown
         # the values the worker will actually use -- defaults included -- instead of whatever
@@ -129,6 +134,7 @@ async def get_campaign(
         **campaign_summary(campaign),
         "persona": campaign.persona,
         "settings": campaign.settings,
+        "templates": campaign.templates,
         "lead_counts": counts,
     }
 
@@ -554,6 +560,53 @@ def _mailbox_summary(mailbox: Mailbox, *, created: bool) -> dict[str, Any]:
     }
 
 
+def _templates_or_422(raw: Any, *, mode: str) -> dict[str, Any]:
+    """Validate a `template`-mode campaign's fixed emails, or refuse the campaign.
+
+    A `research`-mode campaign carries `{}`: storing templates it will never render would leave
+    two sources of truth for what the email says, and the mode is the one that decides.
+
+    `template` mode without templates is refused outright rather than created empty. An empty
+    one looks healthy -- a campaign in `draft`, a mailbox attached, leads imported -- and then
+    drafts nothing, which is this project's most repeated failure and the one hardest to see
+    from outside.
+    """
+    if mode != "template":
+        if raw:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "templates only apply to a campaign in 'template' mode.",
+            )
+        return {}
+
+    if not raw:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "message": "A template-mode campaign needs its emails.",
+                "errors": [
+                    {
+                        "field": "templates.initial",
+                        "message": "write the first email, with merge fields like "
+                        "{{first_name}} where each lead's own details go",
+                    }
+                ],
+            },
+        )
+
+    try:
+        validated = CampaignTemplates.model_validate(raw)
+    except ValidationError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "message": "The templates are not valid.",
+                "errors": _field_errors(exc, fallback="templates"),
+            },
+        ) from exc
+    return validated.model_dump(mode="json")
+
+
 @router.post("/campaigns", status_code=status.HTTP_201_CREATED)
 async def create_campaign(
     session: SessionDep,
@@ -574,6 +627,14 @@ async def create_campaign(
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "name is required.")
+
+    mode = str(payload.get("mode") or "research").strip().lower()
+    if mode not in ("research", "template"):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "mode must be 'research' (research the company and draft with a model) or "
+            "'template' (render your own text with merge fields).",
+        )
 
     persona_in = payload.get("persona") or {}
     try:
@@ -608,13 +669,20 @@ async def create_campaign(
             # 404, as everywhere: a mailbox in another org must look like one that is not there.
             raise HTTPException(status.HTTP_404_NOT_FOUND, "Mailbox not found.")
 
+    # Validated at the door for the same reason as the persona, and with more force: a
+    # template-mode campaign has no model to fall back on, so a template discovered to be
+    # malformed at drafting time is a campaign that silently drafts nothing at all.
+    templates = _templates_or_422(payload.get("templates"), mode=mode)
+
     campaign = Campaign(
         org_id=user.org_id,
         name=name,
         status="draft",
+        mode=mode,
         mailbox_id=mailbox_id,
         persona=persona.model_dump(mode="json"),
         settings=dict(payload.get("settings") or {}),
+        templates=templates,
         paused=False,
     )
     session.add(campaign)
@@ -682,6 +750,13 @@ async def update_campaign(
             if owned is None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "Mailbox not found.")
             campaign.mailbox_id = mailbox_id
+
+    if "templates" in payload:
+        # Editing the template changes what every *future* draft says and nothing about a draft
+        # already written -- drafts are rows, never regenerated behind a reviewer's back. An
+        # operator who wants the new wording rejects the old drafts, which already regenerates
+        # them.
+        campaign.templates = _templates_or_422(payload["templates"], mode=campaign.mode)
 
     if "persona" in payload:
         try:

@@ -473,3 +473,80 @@ the company's own domain, and searches for nothing when it has neither.
 sharing an email domain do not share research; the same company is one fetch whatever its
 founders write from; a stale hit keeps what lasts and drops what does not; a stale hit with
 nothing durable left is a miss; a hit inside the month is untouched.
+
+## ADR-012 — A campaign has a mode: research-and-draft, or render the operator's own template
+
+**Context.** `ARCHITECTURE_TARGET.md` assumes one drafter: research the company, then ask a model
+for a grounded email. That is the right default for agency outreach, where the opening line *is*
+the email. It is the wrong tool for the other half of the work the owner wants this to do — a job
+hunt, or any list where every recipient genuinely should receive the same message with their own
+name in it. For those, researching each company spends a page fetch and a model call per lead to
+produce findings nothing reads, against a free tier whose daily limit is the real throughput
+ceiling.
+
+**Decision.** `campaigns.mode` is `research` (the default, and the existing behaviour unchanged)
+or `template`. A `template` campaign carries `campaigns.templates`: one initial email and up to
+five follow-ups, written by the operator with merge fields, and **no model is called for a first
+email or a follow-up**. Replies stay with the model in both modes — a reply has to answer what
+the person actually said, and a template cannot.
+
+**The mode changes who writes the email and nothing else about what happens to it.** Both
+drafters return the same `DraftResult`, so a rendered email is stored as a draft row, approved by
+a person, and sent by the send loop under the same cap, the same IST window, the same suppression
+check and the same `approval_mode = review_all`. A test asserts a template-mode lead still cannot
+reach `SENT` without passing through approval.
+
+**What the renderer is careful about** (`app/domain/template.py`, pure functions, no I/O):
+
+1. **An unresolved placeholder never reaches a recipient.** `Hi {{first_name}},` is the most
+   recognisable failure of mail-merge and `Hi ,` is the second; both are worse than a generic
+   opening because both announce that nobody read it. A placeholder either resolves, or has an
+   explicit fallback (`{{first_name|there}}`), or the render **fails** and the draft is stored
+   unsendable with the missing fields named. It is checked twice, independently: once at
+   substitution, and once by the existing `_check_placeholders` looking at the finished text.
+2. **Substitution is one pass and never recursive.** The template is the operator's, the values
+   come from an uploaded spreadsheet. A company name of `{{booking_url}}` renders as those
+   literal characters. One pass makes that true by construction rather than by escaping.
+3. **Nothing is evaluated** — a field name and a literal fallback, no expressions, no attribute
+   access. A templating engine would hand a spreadsheet a path into the process.
+4. **Another tool's syntax is refused when the template is saved**, not when it is sent.
+   `{first_name}`, `{{first name}}`, `%NAME%` and `${name}` are all shapes an operator arrives
+   with, and accepting them means emailing them verbatim with a recipient as the first person to
+   notice.
+5. **A sheet column wins over our derived value, but an empty cell does not.** Somebody who
+   mapped a `first_name` column knows their list better than `first_name_of` does; an unfilled
+   column must not blank an email the full name could have filled.
+
+**Validation is deliberately narrower for a rendered template** (`validate_rendered`).
+`validate_draft` exists because a *model* was asked to write about a company, and most of its
+rules catch invention: unresolved claims, numbers absent from the evidence, proper nouns never
+mentioned, a subject over six words. **None of that applies to text a person typed** — hard rule
+6 forbids the drafter inventing facts about the sender, and an operator is the authority on their
+own offer. What still applies is everything about the shape of the message, because that is about
+the recipient and about deliverability: unresolved merge fields, forbidden phrases and spam
+triggers, plain text only, and at most one link which must be the booking URL. The word limit
+becomes a *warning*: `max_words` is advice to a model, and an operator who writes 160 words has
+decided to.
+
+**`NEW -> DRAFTED` is now a legal transition**, for template mode only in practice. Routing a
+template lead through `ENRICHING` and `RESEARCHED` to keep the path uniform would record research
+that never happened, and the audit trail is the one thing that must not be decorative. The
+self-transition ban is untouched.
+
+**An unreadable template fails the job**, rather than skipping the lead or storing an empty
+draft. Skipping reaches a terminal state, so fixing the template later would mean hand-recovering
+every lead it touched; an empty draft puts a row in front of a reviewer that no editing can
+rescue. Failing retries, eventually goes `dead`, and the scheduler already alerts on dead jobs —
+while the lead stays `NEW` and needs only a re-queue. The route refuses to create a campaign in
+that state, so reaching it means the row was edited by hand, which is exactly how a hand-edited
+`send_days` once stopped sending for every mailbox.
+
+**Consequences.** A thousand drafts in seconds for a list that wants one message, with the review
+queue and bulk approval already built. The free-tier model budget is spent only where it buys
+something. Two drafters is a second path to keep correct, which the shared `DraftResult` and the
+shared send path limit to the drafting step itself.
+
+**Proved by** `tests/unit/test_template.py` (40 tests over the renderer's rules),
+`tests/integration/test_template_mode.py` (rendering, the state machine, and the handler with a
+router that raises if it is touched), and `test_api_operations.py::TestCampaignMode` /
+`::TestImportRoutesByMode`.

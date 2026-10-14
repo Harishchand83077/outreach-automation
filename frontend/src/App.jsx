@@ -1378,6 +1378,12 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
 function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   const [form, setForm] = useState({
     name: '',
+    mode: 'research',
+    initial_subject: '',
+    initial_body: '',
+    followup_subject: '',
+    followup_body: '',
+    followup_after_days: 3,
     sender_name: '',
     sender_role: '',
     agency_name: '',
@@ -1392,6 +1398,7 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   const [fieldErrors, setFieldErrors] = useState([])
 
   const set = (key) => (event) => setForm({ ...form, [key]: event.target.value })
+  const setMode = (mode) => setForm({ ...form, mode })
 
   const submit = async (event) => {
     event.preventDefault()
@@ -1399,6 +1406,17 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
     // The persona validator refuses a campaign with neither a booking link nor an explicit
     // ask, because a draft has to end by asking for something. That rule used to be enforced
     // only on the server, where it arrived as a sentence naming a field this form did not have.
+    if (form.mode === 'template' && !form.initial_body.trim()) {
+      setFieldErrors([
+        {
+          field: 'templates.initial.body',
+          message:
+            'Write the first email. Use {{first_name}}, {{company}} or any column from your ' +
+            'sheet where each lead\u2019s own details should go.',
+        },
+      ])
+      return
+    }
     if (!form.cta_text.trim() && !form.booking_url.trim()) {
       setFieldErrors([
         {
@@ -1423,9 +1441,33 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
         mailboxId = mailbox.id
       }
 
+      const templates =
+        form.mode === 'template'
+          ? {
+              initial: {
+                subject: form.initial_subject || 'Quick question',
+                body: form.initial_body,
+              },
+              // A follow-up is only sent if one was written. `max_followups` defaults to 1, and
+              // the shorter of the two wins -- a campaign must never try to send an email that
+              // does not exist.
+              followups: form.followup_body.trim()
+                ? [
+                    {
+                      subject: form.followup_subject || 'Re: {{company}}',
+                      body: form.followup_body,
+                      after_days: Number(form.followup_after_days) || 3,
+                    },
+                  ]
+                : [],
+            }
+          : undefined
+
       await postJson('/campaigns', {
         json: {
           name: form.name,
+          mode: form.mode,
+          ...(templates ? { templates } : {}),
           mailbox_id: mailboxId,
           persona: {
             sender_name: form.sender_name,
@@ -1455,13 +1497,85 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
     <>
       <h1 className="page-title">New campaign</h1>
       <p className="page-note">
-        A campaign carries the sender persona and the goal, so one tool serves more than one
-        offer. The persona is the list of claims a draft may make about us — it is validated now
-        rather than at drafting time, because a malformed one quietly produces weaker drafts.
+        A campaign carries the sender persona, the goal and how its emails get written, so one
+        tool serves more than one job. The persona is the list of claims a draft may make about
+        us — it is validated now rather than at drafting time, because a malformed one quietly
+        produces weaker drafts.
       </p>
 
       <form className="card" onSubmit={submit}>
         <Field label="Campaign name" value={form.name} onChange={set('name')} required />
+
+        <h2 className="section-title">How the emails get written</h2>
+        <div className="mode-choice">
+          <ModeOption
+            value="research"
+            active={form.mode === 'research'}
+            onChange={setMode}
+            title="Research each company"
+            note="Reads the company's own site, finds something specific and true, and drafts
+              each email around it. Slower and better for agency outreach, where the opening
+              line is the whole email."
+          />
+          <ModeOption
+            value="template"
+            active={form.mode === 'template'}
+            onChange={setMode}
+            title="One email, personalised"
+            note="You write the email once and each lead's own details fill the blanks. No
+              research and no model, so a sheet of a thousand drafts in seconds — right for a
+              job hunt, or any list that should genuinely get the same message."
+          />
+        </div>
+
+        {form.mode === 'template' ? (
+          <>
+            <h2 className="section-title">The email</h2>
+            <p className="muted">
+              Write it once. Put <code>{'{{first_name}}'}</code>, <code>{'{{company}}'}</code> or
+              any column from your sheet where that lead's own details belong. A field with no
+              value stops that one draft rather than sending a gap — give it a fallback like{' '}
+              <code>{'{{first_name|there}}'}</code> if a blank is acceptable.
+            </p>
+            <Field
+              label="Subject"
+              value={form.initial_subject}
+              onChange={set('initial_subject')}
+              hint="Merge fields work here too."
+            />
+            <TextArea
+              label="Body"
+              value={form.initial_body}
+              onChange={set('initial_body')}
+              rows={10}
+              required
+            />
+
+            <h2 className="section-title">The follow-up</h2>
+            <p className="muted">
+              Optional. Sent once, three days after the first email by default, and only to
+              someone who has not replied — a reply, a bounce or an opt-out cancels it.
+            </p>
+            <Field
+              label="Follow-up subject"
+              value={form.followup_subject}
+              onChange={set('followup_subject')}
+              hint="Leave blank for 'Re:' plus the first subject."
+            />
+            <TextArea
+              label="Follow-up body"
+              value={form.followup_body}
+              onChange={set('followup_body')}
+              rows={6}
+            />
+            <Field
+              label="Days after the first email"
+              value={form.followup_after_days}
+              onChange={set('followup_after_days')}
+              type="number"
+            />
+          </>
+        ) : null}
 
         <h2 className="section-title">Who it comes from</h2>
         <div className="field-grid">
@@ -1986,6 +2100,35 @@ function Suppressions({ onError, onToast }) {
 }
 
 /* ------------------------------------------------------------------ bits */
+
+function ModeOption({ value, active, onChange, title, note }) {
+  return (
+    <button
+      type="button"
+      className="mode-option"
+      data-active={active ? 'true' : undefined}
+      onClick={() => onChange(value)}
+      aria-pressed={active}
+    >
+      <strong>{title}</strong>
+      <span>{note}</span>
+    </button>
+  )
+}
+
+function TextArea({ label, value, onChange, rows = 6, required, hint }) {
+  const id = `t-${label.replace(/\W+/g, '-').toLowerCase()}`
+  return (
+    <div className="field">
+      <label htmlFor={id}>
+        {label}
+        {required ? null : <span className="muted"> (optional)</span>}
+      </label>
+      <textarea id={id} rows={rows} value={value} onChange={onChange} required={required} />
+      {hint ? <p className="hint">{hint}</p> : null}
+    </div>
+  )
+}
 
 function Field({ label, value, onChange, required, hint, type = 'text' }) {
   const id = `f-${label.replace(/\W+/g, '-').toLowerCase()}`

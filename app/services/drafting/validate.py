@@ -176,6 +176,59 @@ def validate_draft(
     return report
 
 
+def validate_rendered(
+    draft: DraftOutput,
+    *,
+    persona: Persona,
+    kind: str = "initial",
+) -> ValidationReport:
+    """Validate an email the **operator** wrote, rendered from a template.
+
+    Deliberately a narrower set of rules than `validate_draft`, and the difference is the whole
+    design. `validate_draft` exists because a model was asked to write about a company it was
+    told about, and most of its rules are there to catch invention: unresolved claims, numbers
+    that appear nowhere in the evidence, proper nouns that were never mentioned, a subject longer
+    than six words. **None of that applies to text a person typed.** Hard rule 6 forbids the
+    *drafter* inventing facts about the sender; an operator writing their own email is the
+    authority on what their offer is, and failing their draft for saying so would be the system
+    refusing to send the email it was asked to send.
+
+    What still applies is everything about the *shape* of the message, because that is about
+    deliverability and about the recipient rather than about truthfulness:
+
+    - **an unresolved merge field**, which is the whole point. `Rendered.missing` already catches
+      this and this catches it again from the other side, looking at the finished text rather
+      than at the substitution. Two independent checks, because `Hi {{first_name}},` reaching a
+      recipient is the single most embarrassing thing this feature can do.
+    - **forbidden phrases**, spam triggers and anything the campaign added to `avoid`.
+    - **plain text only** -- no markdown, no HTML, since neither is rendered by this sender.
+    - **at most one link, and only the booking URL.** Several links read as marketing whoever
+      wrote them.
+
+    Length is a *warning* rather than a failure here: `max_words` is advice to a model, and an
+    operator who writes 160 words has decided to.
+    """
+    report = ValidationReport()
+
+    _check_placeholders(draft, report)
+    _check_plain_text(draft, report)
+    _check_forbidden_phrases(draft, persona, report)
+    _check_links(draft, persona, report)
+
+    if not draft.subject.strip():
+        report.fail("the subject is empty")
+    if kind == "initial" and draft.subject.lower().startswith(("re:", "fwd:", "fw:")):
+        # Faking a reply to a conversation that never happened is a deception whoever typed it.
+        report.fail("a first email must not begin with 'Re:' or 'Fwd:'")
+
+    words = len(draft.body.split())
+    limit = persona.max_words
+    if words > limit:
+        report.warn(f"the body is {words} words against this campaign's limit of {limit}")
+
+    return report
+
+
 def _check_subject(draft: DraftOutput, report: ValidationReport, *, kind: str) -> None:
     words = draft.subject_word_count
     # A reply keeps the thread's subject, so its length is whatever they chose and is not ours
