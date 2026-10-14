@@ -24,6 +24,7 @@ import uuid
 from typing import Any, Protocol
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import drafts as draft_store
@@ -35,7 +36,9 @@ from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
 from app.domain.state import LeadState
-from app.services.drafting.generator import generate_draft
+from app.domain.template import CampaignTemplates
+from app.services.drafting.from_template import draft_from_template
+from app.services.drafting.generator import DraftResult, generate_draft
 from app.services.reply.drafter import draft_reply
 from app.services.research.fetcher import Fetcher
 from app.services.research.service import research_lead
@@ -147,31 +150,81 @@ async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: J
     )
 
 
+def _render_for(campaign: Campaign, lead: Lead, persona: Persona) -> DraftResult:
+    """Render a `template`-mode campaign's first email for one lead.
+
+    **An unreadable template fails the job, and that is the deliberate choice.** The two
+    alternatives are both worse. Skipping the lead would reach a terminal state, so fixing the
+    template later would mean hand-recovering every lead it touched. Storing an empty failed
+    draft would put a row in front of a reviewer that no editing can rescue, and `save_draft`
+    refuses it anyway.
+
+    Failing is contained and it is loud in the right way: the job retries, eventually goes
+    `dead`, and the scheduler already alerts on dead jobs -- while the lead stays `NEW`, so
+    correcting the template and re-queueing is all the recovery needed. The route refuses to
+    create a campaign in this state, so reaching here means the row was edited by hand, which is
+    exactly how a hand-edited `send_days` once stopped sending for every mailbox.
+
+    The field names are named and the stored *values* never are: this message reaches the logs.
+    """
+    try:
+        templates = CampaignTemplates.model_validate(campaign.templates or {})
+    except ValidationError as exc:
+        fields = sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()})
+        raise ValueError(
+            f"campaign {campaign.id} is in template mode and its templates are not readable "
+            f"({', '.join(fields)}); no email can be rendered until they are fixed"
+        ) from exc
+
+    return draft_from_template(
+        template=templates.initial,
+        persona=persona,
+        lead_id=lead.id,
+        full_name=lead.full_name,
+        email=lead.email_norm,
+        company_name=lead.company_name,
+        company_url=lead.company_url,
+        domain=lead.domain,
+        job_title=lead.job_title,
+        notes=lead.notes,
+        extra=lead.extra,
+        kind="initial",
+    )
+
+
 async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
-    """Generate the first email for a researched lead and queue it for review."""
+    """Write the first email for a lead and queue it for review.
+
+    Who writes it is the campaign's `mode`. `research` asks a model, grounded in the hooks the
+    research step verified. `template` renders the operator's own text with this lead's details
+    merged in, and calls no model at all. Everything after this point is identical -- the same
+    stored draft, the same human approval, the same send loop.
+    """
     lead, campaign = await _lead_and_campaign(session, job)
     persona = _persona(campaign)
-    router = ctx.router_for(session, job.org_id)
-    hooks = await _hooks_for(session, job.org_id, lead.id)
-
     ctx_org = OrgContext(org_id=job.org_id)
-    # If this is a regeneration, the reviewer said why. Carry it, or they will reject the same
-    # draft twice and conclude the feedback box does nothing.
-    reviewer_feedback = await draft_store.latest_rejection_feedback(
-        session, ctx_org, lead_id=lead.id, kind="initial"
-    )
 
-    result = await generate_draft(
-        router=router,
-        persona=persona,
-        hooks=hooks,
-        lead_id=lead.id,
-        lead_name=lead.full_name,
-        lead_company=lead.company_name,
-        job_title=lead.job_title,
-        kind="initial",
-        reviewer_feedback=reviewer_feedback,
-    )
+    if campaign.mode == "template":
+        result = _render_for(campaign, lead, persona)
+    else:
+        router = ctx.router_for(session, job.org_id)
+        hooks = await _hooks_for(session, job.org_id, lead.id)
+        # If this is a regeneration, the reviewer said why. Carry it, or they will reject the
+        # same draft twice and conclude the feedback box does nothing.
+        reviewer_feedback = await draft_store.latest_rejection_feedback(
+            session, ctx_org, lead_id=lead.id, kind="initial"
+        )
+        result = await generate_draft(
+            router=router,
+            persona=persona,
+            hooks=hooks,
+            lead_id=lead.id,
+            lead_name=lead.full_name,
+            lead_company=lead.company_name,
+            job_title=lead.job_title,
+            kind="initial",
+            reviewer_feedback=reviewer_feedback,
+        )
 
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)
 

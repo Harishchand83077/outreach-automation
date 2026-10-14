@@ -83,7 +83,18 @@ NEEDS_HUMAN: frozenset[LeadState] = frozenset(
 
 #: The legal transition table. Anything absent here is a bug, not an edge case.
 _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
-    LeadState.NEW: frozenset({LeadState.ENRICHING, LeadState.SKIPPED, LeadState.FAILED}),
+    LeadState.NEW: frozenset(
+        {
+            LeadState.ENRICHING,
+            # A `template`-mode campaign has nothing to research: the operator wrote the email
+            # and the lead's own columns fill it in. Routing it through ENRICHING and RESEARCHED
+            # to keep the path uniform would mean recording research that never happened, and
+            # the audit trail is the one thing that must not be decorative.
+            LeadState.DRAFTED,
+            LeadState.SKIPPED,
+            LeadState.FAILED,
+        }
+    ),
     LeadState.ENRICHING: frozenset(
         {
             LeadState.RESEARCHED,

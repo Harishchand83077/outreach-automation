@@ -157,8 +157,15 @@ class Campaign(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="draft")
+    #: Who writes the email. `research` researches the company and asks a model for a grounded
+    #: draft; `template` renders the operator's own text with merge fields and calls no model
+    #: for a first email or a follow-up. Replies use a model in both modes -- a reply has to
+    #: answer what the person actually said. See `app/domain/template.py`.
+    mode: Mapped[str] = mapped_column(String(20), nullable=False, default="research")
     persona: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: `CampaignTemplates` for a `template`-mode campaign; `{}` for a `research` one.
+    templates: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
@@ -167,6 +174,7 @@ class Campaign(Base):
             "status IN ('draft','running','paused','completed','archived')",
             name="ck_campaigns_status",
         ),
+        CheckConstraint("mode IN ('research','template')", name="ck_campaigns_mode"),
     )
 
 

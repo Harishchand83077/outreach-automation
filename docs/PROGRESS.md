@@ -764,3 +764,54 @@ rule is right and stays. The form offered no `booking_url` field at all and labe
 was not on it. Both are now offered under a heading saying to fill in at least one, the pair
 rule is checked in the form as well as the API, and `booking_url` is omitted rather than sent
 empty — `''` is not a URL and would have traded the error for a different one.
+
+**A campaign now has a mode, so this is two tools (ADR-012).** `research` is unchanged: read the
+company's site, find something specific and true, ask a model for a grounded email. `template`
+is new: the operator writes the email once with merge fields, and each lead's own details fill
+the blanks. No research and no model for a first email or a follow-up, which makes a sheet of a
+thousand drafts a matter of seconds rather than of a free tier's daily model limit. Replies stay
+with a model in both modes, because a reply has to answer what the person actually said.
+
+**The mode changes who writes the email and nothing else about what happens to it.** Both
+drafters return the same `DraftResult`, so a rendered email is stored as a draft row, approved by
+a person, and sent under the same cap, window, suppression check and `review_all` rule. A test
+asserts a template lead still cannot reach `SENT` without a human.
+
+The renderer's rules, and the one that matters most: **an unresolved placeholder never reaches a
+recipient.** `Hi {{first_name}},` is the most recognisable failure of mail-merge and `Hi ,` is
+the second — both worse than a generic opening, because both announce that nobody read it. So a
+placeholder resolves, or has a fallback like `{{first_name|there}}`, or the render fails and the
+draft is stored unsendable naming the field. It is checked twice independently: at substitution,
+and again by the existing placeholder check reading the finished text. Substitution is one pass,
+so a spreadsheet cell containing `{{booking_url}}` renders as those characters; nothing is
+evaluated; and another tool's syntax (`{first_name}`, `%NAME%`, `${name}`) is refused when the
+template is *saved* rather than when it is sent.
+
+**Validation is narrower for a rendered template, on purpose.** `validate_draft` mostly catches
+*invention* — unresolved claims, numbers absent from the evidence, a subject over six words —
+and none of that applies to text a person typed. Hard rule 6 forbids the **drafter** inventing
+facts about the sender; an operator is the authority on their own offer, and failing their email
+for saying so would be the system refusing to send what it was asked to send. What still applies
+is the shape of the message, because that is about the recipient: merge fields, forbidden
+phrases, plain text, one link and only the booking URL.
+
+**Two real gaps found while wiring this up, and neither has ever worked.** Both are the same
+shape as every other defect in this project — a correct table and a correct consumer with
+nothing producing the thing in between:
+
+1. **No follow-up draft is ever created.** The send loop looks for an approved draft of kind
+   `followup`, `domain/scheduling` computes when one is due, `SendLoop` sets `next_action_at`
+   after a first send, the state machine has `SENT -> FOLLOWUP_SENT`, and `CampaignSettings` has
+   `followup_after_days` and `max_followups` — and **nothing anywhere writes a
+   `Draft(kind="followup")`.** A grep for it across `app/` returns only the constant and its
+   consumers. So the locked product rule "one follow-up three calendar days after the first
+   email" has never once happened. It is invisible so far only because the first real sends were
+   two days ago.
+2. **Nothing ever sets `NO_RESPONSE`.** `next_silent_close` computes the date; no code writes the
+   state. A lead that never replies stays `SENT` for ever, so `final_wait_days` does nothing and
+   the lifecycle has no end.
+
+Both are the next change rather than this one: the `Scheduler` gains a pass that queues follow-up
+drafts when they come due and closes silent leads, and the follow-up drafter serves both modes —
+`generate_draft(kind="followup")` already exists for research campaigns, and
+`CampaignTemplates.followups` for template ones.

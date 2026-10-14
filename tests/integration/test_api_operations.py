@@ -479,6 +479,220 @@ PERSONA = {
 }
 
 
+TEMPLATES = {
+    "initial": {
+        "subject": "{{company}} and a two-week prototype",
+        "body": "Hi {{first_name|there}},\n\nShort note.\n\n{{sender_name}}",
+    },
+    "followups": [
+        {
+            "subject": "Re: {{company}}",
+            "body": "Following up.\n\n{{sender_name}}",
+            "after_days": 3,
+        }
+    ],
+}
+
+
+class TestCampaignMode:
+    """`research` drafts with a model from real research; `template` renders the operator's own
+    text with merge fields.
+
+    Two different jobs -- agency outreach, and a job hunt or any list where everybody genuinely
+    should get the same message with their own name in it -- and the second one should not have
+    a model writing the email at all.
+    """
+
+    async def test_research_is_the_default(self, api, owner):
+        """Every campaign that already exists is a research campaign, so it has to be the
+        default, or the migration would have changed what they send."""
+        response = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Default", "persona": PERSONA}
+        )
+        assert response.status_code == 201
+        assert response.json()["mode"] == "research"
+        assert response.json()["has_templates"] is False
+
+    async def test_a_template_campaign_carries_its_emails(self, api, owner):
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Job hunt",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": TEMPLATES,
+            },
+        )
+        assert response.status_code == 201, response.json()
+        body = response.json()
+        assert body["mode"] == "template"
+        assert body["has_templates"] is True
+
+        detail = api.get(f"/api/v1/campaigns/{body['id']}", headers=owner).json()
+        assert detail["templates"]["initial"]["subject"].startswith("{{company}}")
+        assert detail["templates"]["followups"][0]["after_days"] == 3
+
+    async def test_template_mode_without_templates_is_refused(self, api, owner):
+        """An empty one looks healthy -- draft status, a mailbox attached, leads imported --
+        and then drafts nothing. That exact failure has happened three times in this project."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Empty", "mode": "template", "persona": PERSONA},
+        )
+        assert response.status_code == 422
+        assert "templates.initial" in str(response.json()["detail"]["errors"])
+
+    async def test_another_tools_placeholder_syntax_is_refused(self, api, owner):
+        """`{first_name}` would be emailed verbatim, and the first person to notice it would be
+        a recipient."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Bad syntax",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": {"initial": {"subject": "Hi", "body": "Hi {first_name},"}},
+            },
+        )
+        assert response.status_code == 422
+        assert "merge field" in str(response.json()["detail"]["errors"])
+
+    async def test_an_unknown_mode_is_refused(self, api, owner):
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Odd", "mode": "freestyle", "persona": PERSONA},
+        )
+        assert response.status_code == 422
+
+    async def test_a_research_campaign_may_not_carry_templates(self, api, owner):
+        """Two sources of truth for what the email says, with the mode deciding which is read.
+        Storing the other one is how they drift."""
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Confused", "persona": PERSONA, "templates": TEMPLATES},
+        )
+        assert response.status_code == 422
+
+    async def test_the_template_can_be_edited_afterwards(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Editable",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": TEMPLATES,
+            },
+        ).json()
+
+        response = api.patch(
+            f"/api/v1/campaigns/{created['id']}",
+            headers=owner,
+            json={
+                "templates": {
+                    "initial": {"subject": "New subject", "body": "Hi {{first_name|there}}"}
+                }
+            },
+        )
+        assert response.status_code == 200, response.json()
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+        assert detail["templates"]["initial"]["subject"] == "New subject"
+        assert detail["templates"]["followups"] == []
+
+    async def test_an_edit_that_breaks_the_template_leaves_the_old_one(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Breakable",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": TEMPLATES,
+            },
+        ).json()
+
+        response = api.patch(
+            f"/api/v1/campaigns/{created['id']}",
+            headers=owner,
+            json={"templates": {"initial": {"subject": "Hi\nBcc: x@example.com", "body": "Hi"}}},
+        )
+        assert response.status_code == 422
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+        assert detail["templates"]["initial"]["subject"].startswith("{{company}}"), (
+            "a refused edit must leave the working template in place"
+        )
+
+
+class TestImportRoutesByMode:
+    """A campaign in `template` mode has nothing to research, so importing must not queue it.
+
+    This is the chaining failure in its other form. Research queuing nothing stopped the
+    pipeline; research being queued *pointlessly* would spend a page fetch and a model call per
+    lead to produce findings that no template reads -- against a free tier whose daily limit is
+    the real throughput ceiling.
+    """
+
+    def _upload(self, rows: int = 2):
+        lines = ["email,full name,company,website,title"]
+        for n in range(1, rows + 1):
+            lines.append(
+                f"lead{n}@example.com,Lead {n},Company {n},https://company{n}.example,Founder"
+            )
+        return {"file": ("leads.csv", ("\n".join(lines) + "\n").encode(), "text/csv")}
+
+    async def test_a_research_campaign_queues_research(self, api, owner, db):
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Researching", "persona": PERSONA}
+        ).json()
+        api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._upload(),
+        )
+
+        kinds = (await db.execute(select(Job.kind))).scalars().all()
+        assert "research_lead" in kinds
+
+    async def test_a_template_campaign_queues_drafting_and_no_research(self, api, owner, db):
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Templating",
+                "mode": "template",
+                "persona": PERSONA,
+                "templates": TEMPLATES,
+            },
+        ).json()
+        response = api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._upload(),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["imported"] == 2
+
+        campaign_id = uuid.UUID(created["id"])
+        lead_ids = (
+            (await db.execute(select(Lead.id).where(Lead.campaign_id == campaign_id)))
+            .scalars()
+            .all()
+        )
+        assert lead_ids
+        jobs = (await db.execute(select(Job.kind).where(Job.lead_id.in_(lead_ids)))).scalars().all()
+        assert set(jobs) == {"draft_lead"}, jobs
+        assert await db.scalar(select(C.mode).where(C.id == campaign_id)) == "template"
+
+
 class TestCreatingACampaign:
     async def test_it_creates_one_in_draft(self, api, owner):
         response = api.post(
