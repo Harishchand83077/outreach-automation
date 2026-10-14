@@ -307,6 +307,117 @@ class TestRejection:
         assert stored.feedback == "mention the pipeline"
 
 
+class TestADraftThatFailedValidationIsStillJudgeable:
+    """A failed draft is shown in the review queue on purpose -- a reviewer needs to see that a
+    weak model produced something unusable. It could not then be *acted* on:
+
+        draft 452f5d21-... is validation_failed, so it cannot be rejected
+
+    So the lead sat in a dead end. The only control the screen offered was the one the API
+    refused, and the screen even promised "reject it with a note and it will be rewritten".
+    Nothing available to a reviewer could move that lead.
+    """
+
+    async def test_it_can_be_rejected_and_that_queues_a_new_one(self, db, ctx, lead_factory):
+        from app.db.models import Job
+
+        lead = await lead_factory(state="DRAFTED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+        assert draft.status == "validation_failed"
+
+        rejected = await drafts_repo.reject(
+            db,
+            ctx,
+            draft_id=draft.id,
+            rejected_by="reviewer@example.com",
+            feedback="mention the pipeline rebuild",
+        )
+        await db.commit()
+
+        assert rejected.status == "rejected"
+        assert rejected.feedback == "mention the pipeline rebuild"
+        queued = await db.scalar(
+            select(Job).where(Job.lead_id == lead.id, Job.kind == "draft_lead")
+        )
+        assert queued is not None, "rejecting has to queue the rewrite, or nothing happens"
+
+    async def test_it_cannot_be_approved_untouched(self, db, ctx, lead_factory):
+        """The check objected to something concrete in *this* text, and the reasons are on
+        screen beside the button. Approving it unchanged is clicking past a warning."""
+        lead = await lead_factory(state="DRAFTED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+
+        with pytest.raises(ValueError, match="cannot be approved as it stands"):
+            await drafts_repo.approve(
+                db, ctx, draft_id=draft.id, approved_by="reviewer@example.com"
+            )
+
+    async def test_it_can_be_approved_once_a_person_fixes_it(self, db, ctx, lead_factory):
+        """`review_all` means a person decides what leaves, and an edit to an *accepted* draft
+        is unchecked too -- deliberately, because the reviewer is the authority on what goes
+        out. Requiring an edit here turns "I accept the risk" into "I fixed it"."""
+        lead = await lead_factory(state="DRAFTED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+        before = draft.version
+
+        approved = await drafts_repo.approve(
+            db,
+            ctx,
+            draft_id=draft.id,
+            approved_by="reviewer@example.com",
+            edited_body="Hi there,\n\nShort and fixed.\n\nAsha",
+        )
+        await db.commit()
+
+        assert approved.status == "approved"
+        assert approved.version == before + 1, "an edit is a new version, never a rewrite"
+        await db.refresh(lead)
+        assert lead.state == "APPROVED"
+
+    async def test_a_decided_draft_is_still_closed(self, db, ctx, lead_factory):
+        """The statuses that stay shut are the ones where the decision was already made:
+        acting on one of those means the queue on screen is stale and should be reloaded."""
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+        await drafts_repo.reject(
+            db, ctx, draft_id=draft.id, rejected_by="reviewer@example.com", feedback="no"
+        )
+        await db.commit()
+
+        with pytest.raises(ValueError, match="cannot be rejected"):
+            await drafts_repo.reject(
+                db, ctx, draft_id=draft.id, rejected_by="reviewer@example.com", feedback="again"
+            )
+
+    async def test_bulk_approval_still_skips_it(self, db, ctx, lead_factory):
+        """The asymmetry is the design: the failure mode of a bulk button is somebody clearing
+        a hundred without reading any, and the weak ones are the ones worth reading."""
+        lead = await lead_factory(state="DRAFTED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+
+        approved, skipped = await drafts_repo.bulk_approve(
+            db, ctx, draft_ids=[draft.id], approved_by="reviewer@example.com"
+        )
+
+        assert approved == []
+        assert str(draft.id) in {str(key) for key in skipped}
+
+
 class TestReviewQueue:
     async def test_it_carries_the_evidence_with_each_draft(self, db, ctx, org, lead_factory):
         """A reviewer who has to look up whether a claim is true will stop checking by the

@@ -33,6 +33,19 @@ from app.services.drafting.generator import DraftResult
 #: A draft in one of these states is still live; anything else has been resolved.
 LIVE_STATUSES = ("generated", "validated", "pending_review")
 
+#: Statuses a **reviewer** may still act on, which is a different question from which are live.
+#: `validation_failed` belongs here: the draft is shown in the review queue by design, because a
+#: reviewer needs to see that a weak model produced something unusable -- and the only sensible
+#: thing to do with it is to say why and have it written again. Refusing that left the lead in a
+#: dead end with nothing on screen that could move it:
+#:
+#:     draft 452f5d21-... is validation_failed, so it cannot be rejected
+#:
+#: The statuses that stay closed are the ones where the decision has already been made --
+#: `approved`, `rejected`, `superseded`, `sent` -- and acting on one of those means the queue on
+#: screen is stale.
+JUDGEABLE_STATUSES = (*LIVE_STATUSES, "validation_failed")
+
 
 @dataclass
 class ReviewItem:
@@ -150,7 +163,7 @@ async def approve(
     now = now or datetime.now(tz=UTC)
     draft = await _locked_draft(session, ctx, draft_id)
 
-    if draft.status not in LIVE_STATUSES:
+    if draft.status not in JUDGEABLE_STATUSES:
         raise ValueError(f"draft {draft_id} is {draft.status}, so it cannot be approved")
 
     lead = await session.get(Lead, draft.lead_id)
@@ -161,6 +174,21 @@ async def approve(
     edited = (edited_subject is not None and edited_subject != draft.subject) or (
         edited_body is not None and edited_body != draft.body
     )
+
+    # **A draft that failed validation may be approved only after somebody changes it.** Not
+    # because a human needs permission -- `review_all` already means a person decides, and an
+    # edit to an accepted draft is unchecked too, deliberately, because the reviewer is the
+    # authority on what leaves. It is because the validator says something concrete is wrong
+    # with *this text*: a forbidden phrase, a claim resting on nothing, an unfilled merge field.
+    # Approving it unchanged is almost always a reviewer clicking past a warning they did not
+    # read, and the reasons are on screen beside the button. Requiring an edit turns "I accept
+    # the risk" into "I fixed it", which is the only version worth allowing.
+    if draft.status == "validation_failed" and not edited:
+        raise ValueError(
+            f"draft {draft_id} failed validation, so it cannot be approved as it stands. "
+            "Edit the text to fix what the check objected to, or reject it with a note and it "
+            "will be written again."
+        )
 
     if edited:
         subject = (edited_subject if edited_subject is not None else draft.subject).strip()
@@ -194,6 +222,25 @@ async def approve(
     target.approved_by = approved_by
     target.approved_at = now
 
+    # A draft that failed validation left the lead in `DRAFTED`: the handler only moves it to
+    # `AWAITING_APPROVAL` once a draft passes. So approving a reviewer's fixed-up version used
+    # to die on `DRAFTED -> APPROVED is not a legal transition`, after the edit had been stored.
+    #
+    # The step is written rather than the table being widened. `DRAFTED -> APPROVED` as a legal
+    # move would let anything skip review, and the two-step version is also what actually
+    # happened: a person was shown this draft, and then approved it.
+    if LeadState(lead.state) is LeadState.DRAFTED:
+        await transition(
+            session,
+            org_id=ctx.org_id,
+            lead_id=lead.id,
+            to_state=LeadState.AWAITING_APPROVAL,
+            actor="user",
+            actor_id=approved_by,
+            data={"draft_id": str(target.id), "reason": "a reviewer opened a failed draft"},
+            now=now,
+        )
+
     await transition(
         session,
         org_id=ctx.org_id,
@@ -225,7 +272,7 @@ async def reject(
     now = now or datetime.now(tz=UTC)
     draft = await _locked_draft(session, ctx, draft_id)
 
-    if draft.status not in LIVE_STATUSES:
+    if draft.status not in JUDGEABLE_STATUSES:
         raise ValueError(f"draft {draft_id} is {draft.status}, so it cannot be rejected")
 
     draft.status = "rejected"

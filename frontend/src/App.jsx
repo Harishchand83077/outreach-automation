@@ -396,6 +396,19 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
     }
   }
 
+  // Whether the reviewer has changed anything. Used to decide if a draft that failed
+  // validation may be approved: the check objected to something concrete in *this* text, so
+  // approving it untouched is a reviewer clicking past a warning rather than answering it.
+  const hasEdit = (item) => {
+    const edit = edits[item.draft_id] || {}
+    const subject = edit.subject
+    const body = edit.body
+    return (
+      (subject !== undefined && subject !== item.subject) ||
+      (body !== undefined && body !== item.body)
+    )
+  }
+
   const reject = async (item) => {
     const feedback = (edits[item.draft_id] || {}).feedback || ''
     if (!feedback.trim()) {
@@ -570,7 +583,10 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
                 className="btn"
                 data-variant="primary"
                 onClick={() => approve(item)}
-                disabled={busy === item.draft_id || item.status === 'validation_failed'}
+                disabled={
+                  busy === item.draft_id ||
+                  (item.status === 'validation_failed' && !hasEdit(item))
+                }
               >
                 Approve
               </button>
@@ -585,8 +601,9 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
             </div>
             {item.status === 'validation_failed' ? (
               <p className="muted" style={{ marginTop: 10 }}>
-                This draft failed the grounding checks, so it cannot be approved. Reject it with a
-                note and it will be rewritten.
+                This draft failed the checks above, so it cannot be sent as it stands. Reject it
+                with a note and it will be written again, or edit the text yourself — Approve
+                becomes available once you have changed something.
               </p>
             ) : null}
             {skipped[item.draft_id] ? (
