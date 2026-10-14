@@ -1384,6 +1384,7 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
     offer: '',
     goal: 'book a 20-minute call',
     cta_text: '',
+    booking_url: '',
     from_name: '',
     from_email: '',
   })
@@ -1395,6 +1396,21 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   const submit = async (event) => {
     event.preventDefault()
     setBusy(true)
+    // The persona validator refuses a campaign with neither a booking link nor an explicit
+    // ask, because a draft has to end by asking for something. That rule used to be enforced
+    // only on the server, where it arrived as a sentence naming a field this form did not have.
+    if (!form.cta_text.trim() && !form.booking_url.trim()) {
+      setFieldErrors([
+        {
+          field: 'persona.cta_text',
+          message:
+            'Fill in either a booking link or a call to action. A draft has to end by asking ' +
+            'for something specific, and this is the sentence it asks with.',
+        },
+      ])
+      setBusy(false)
+      return
+    }
     setFieldErrors([])
     try {
       // The mailbox first: a campaign can exist without one, but it could never send, and
@@ -1418,6 +1434,8 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
             offer: form.offer,
             goal: form.goal,
             cta_text: form.cta_text,
+            // Omitted rather than sent empty: the field is a URL or absent, and '' is neither.
+            ...(form.booking_url.trim() ? { booking_url: form.booking_url.trim() } : {}),
           },
         },
       })
@@ -1471,13 +1489,26 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           required
           hint="One line, specific. This is what every draft is built around."
         />
+        <Field label="Goal" value={form.goal} onChange={set('goal')} required />
+
+        <h2 className="section-title">What the email asks for</h2>
+        <p className="muted">
+          Fill in at least one of these. A cold email that does not end with a concrete next step
+          gets read and forgotten, so a campaign without one is refused.
+        </p>
         <div className="field-grid">
-          <Field label="Goal" value={form.goal} onChange={set('goal')} required />
+          <Field
+            label="Booking link"
+            value={form.booking_url}
+            onChange={set('booking_url')}
+            type="url"
+            hint="Your Cal.com or Calendly link. Must start with https://"
+          />
           <Field
             label="Call to action"
             value={form.cta_text}
             onChange={set('cta_text')}
-            hint="Optional. The ask at the end of the email."
+            hint="The ask, in your own words — e.g. worth a 20-minute call next week?"
           />
         </div>
 

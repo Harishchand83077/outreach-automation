@@ -502,6 +502,32 @@ class TestCreatingACampaign:
         detail = response.json()["detail"]
         assert detail["errors"], "the owner needs to know which field"
 
+    async def test_a_booking_link_alone_is_a_complete_persona(self, api, owner):
+        """The dashboard offers a booking link beside the call to action, and either satisfies
+        the rule. It only offered the call to action before, and labelled it optional, so the
+        obvious way through the form produced a 422 naming a field that was not on screen."""
+        persona = {k: v for k, v in PERSONA.items() if k != "cta_text"}
+        response = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Link only",
+                "persona": {**persona, "booking_url": "https://cal.example.com/asha"},
+            },
+        )
+        assert response.status_code == 201, response.json()
+
+    async def test_neither_is_refused_naming_the_rule(self, api, owner):
+        """The form guards this itself now; the API must still say which rule was broken, or a
+        caller that is not our dashboard gets 'invalid' and nothing to act on."""
+        persona = {k: v for k, v in PERSONA.items() if k != "cta_text"}
+        response = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "No ask", "persona": persona}
+        )
+        assert response.status_code == 422
+        errors = response.json()["detail"]["errors"]
+        assert any("booking_url or cta_text" in item["message"] for item in errors), errors
+
     async def test_an_unknown_field_in_the_persona_is_refused(self, api, owner):
         """`extra="forbid"`: a typo like `sender_rol` must not silently become no role at all."""
         response = api.post(
