@@ -10,7 +10,7 @@ dependencies = [
     "fastapi==0.143.0",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.32",
-    "pydantic==2.14.0",
+    "pydantic==2.14.1",
     "pydantic-settings==2.15.0",
     "python-dotenv==1.2.4",
     "openpyxl==3.1.5",
@@ -43,7 +43,7 @@ dependencies = [
     # `app/api/security.py` makes on every request, before any signature has been checked. The
     # same release also fixes OKP key-identity confusion (GHSA-x33g-cr3x-6449) and an
     # options-dict mutation that could silently skip claim verification on a reused dict.
-    "pyjwt[crypto]==2.15.0",
+    "pyjwt[crypto]==2.15.1",
     # Main-content extraction: strips nav, footers and boilerplate, so the evidence budget is
     # spent on prose rather than menus.
     "trafilatura==2.3.1",
