@@ -815,3 +815,40 @@ Both are the next change rather than this one: the `Scheduler` gains a pass that
 drafts when they come due and closes silent leads, and the follow-up drafter serves both modes —
 `generate_draft(kind="followup")` already exists for research campaigns, and
 `CampaignTemplates.followups` for template ones.
+
+**A draft that failed validation could not be rejected, so the lead had no way out.**
+
+```
+draft 452f5d21-dd3b-4ad0-b7a7-45552a935853 is validation_failed, so it cannot be rejected
+```
+
+A failed draft is shown in the review queue deliberately — a reviewer has to be able to see that
+a weak model produced something unusable, rather than wonder where the lead went. But
+`validation_failed` was not in `LIVE_STATUSES`, so both `approve` and `reject` refused it. The
+only control the screen offered was the one the API would not do, and the screen even promised
+*"reject it with a note and it will be rewritten"*. **Nothing available to a reviewer could move
+that lead.**
+
+`JUDGEABLE_STATUSES` is now the question that was actually being asked. `validation_failed` is
+judgeable; the statuses that stay shut are the ones where the decision has already been made —
+`approved`, `rejected`, `superseded`, `sent` — where acting again means the queue on screen is
+stale.
+
+**Approving a failed draft requires an edit.** Not because a human needs permission:
+`approval_mode = review_all` already means a person decides, and an edit to an *accepted* draft is
+unvalidated too, deliberately, because the reviewer is the authority on what leaves. It is because
+the validator objected to something concrete in *this text* — a forbidden phrase, a claim resting
+on nothing, an unfilled merge field — and the reasons are on screen beside the button. Approving
+it untouched is a reviewer clicking past a warning rather than answering it, so Approve stays
+disabled until something changes, which turns "I accept the risk" into "I fixed it". Bulk approval
+still skips failed drafts entirely: the failure mode of a bulk button is somebody clearing a
+hundred without reading any, and the weak ones are exactly the ones worth reading.
+
+**And a second defect behind it.** A failed draft leaves the lead in `DRAFTED`, because the
+handler only moves it to `AWAITING_APPROVAL` once a draft passes — so approving a reviewer's
+fixed-up version died on `DRAFTED -> APPROVED is not a legal transition`, *after* the edit had
+been written. The missing step is written rather than the table widened: `DRAFTED -> APPROVED` as
+a legal move would let anything skip review, and the two-step version is also what really
+happened — a person was shown this draft, and then approved it. That is the fourth time this
+project has hit a transition the table did not describe, and the second time the right answer was
+to add the step rather than loosen the rule.
