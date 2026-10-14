@@ -1440,7 +1440,7 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
       ])
       return
     }
-    if (!form.cta_text.trim() && !form.booking_url.trim()) {
+    if (form.mode === 'research' && !form.cta_text.trim() && !form.booking_url.trim()) {
       setFieldErrors([
         {
           field: 'persona.cta_text',
@@ -1494,11 +1494,22 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           mailbox_id: mailboxId,
           persona: {
             sender_name: form.sender_name,
-            sender_role: form.sender_role,
-            agency_name: form.agency_name,
-            offer: form.offer,
-            goal: form.goal,
-            cta_text: form.cta_text,
+            // The rest are what the *research* drafter needs in order to write on your behalf.
+            // A template campaign has no use for them -- you wrote the email -- and somebody
+            // job-hunting has no agency and no offer, so sending empty strings would store a
+            // persona that exists only to get past a form.
+            ...(form.mode === 'research'
+              ? {
+                  sender_role: form.sender_role,
+                  agency_name: form.agency_name,
+                  offer: form.offer,
+                  goal: form.goal,
+                  cta_text: form.cta_text,
+                }
+              : {
+                  ...(form.sender_role.trim() ? { sender_role: form.sender_role } : {}),
+                  ...(form.agency_name.trim() ? { agency_name: form.agency_name } : {}),
+                }),
             // Omitted rather than sent empty: the field is a URL or absent, and '' is neither.
             ...(form.booking_url.trim() ? { booking_url: form.booking_url.trim() } : {}),
           },
@@ -1601,53 +1612,87 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
         ) : null}
 
         <h2 className="section-title">Who it comes from</h2>
+        {form.mode === 'template' ? (
+          <p className="muted">
+            Your name signs every email and appears in the footer, so a recipient can always tell
+            who wrote to them. Nothing else here is needed — you wrote the email yourself.
+          </p>
+        ) : null}
         <div className="field-grid">
-          <Field label="Your name" value={form.sender_name} onChange={set('sender_name')} required />
+          <Field
+            label="Your name"
+            value={form.sender_name}
+            onChange={set('sender_name')}
+            required
+          />
           <Field
             label="Your role"
             value={form.sender_role}
             onChange={set('sender_role')}
-            required
+            required={form.mode === 'research'}
             hint="e.g. Founder"
           />
           <Field
             label="Agency name"
             value={form.agency_name}
             onChange={set('agency_name')}
-            required
+            required={form.mode === 'research'}
+            hint={form.mode === 'template' ? 'Leave blank if you are writing as yourself.' : ''}
           />
         </div>
 
-        <h2 className="section-title">What you are offering</h2>
-        <Field
-          label="Offer"
-          value={form.offer}
-          onChange={set('offer')}
-          required
-          hint="One line, specific. This is what every draft is built around."
-        />
-        <Field label="Goal" value={form.goal} onChange={set('goal')} required />
+        {form.mode === 'research' ? (
+          <>
+            <h2 className="section-title">What you are offering</h2>
+            <p className="muted">
+              A model writes each email from this, so it has to know what it is writing for.
+            </p>
+            <Field
+              label="Offer"
+              value={form.offer}
+              onChange={set('offer')}
+              required
+              hint="One line, specific. This is what every draft is built around."
+            />
+            <Field label="Goal" value={form.goal} onChange={set('goal')} required />
 
-        <h2 className="section-title">What the email asks for</h2>
-        <p className="muted">
-          Fill in at least one of these. A cold email that does not end with a concrete next step
-          gets read and forgotten, so a campaign without one is refused.
-        </p>
-        <div className="field-grid">
-          <Field
-            label="Booking link"
-            value={form.booking_url}
-            onChange={set('booking_url')}
-            type="url"
-            hint="Your Cal.com or Calendly link. Must start with https://"
-          />
-          <Field
-            label="Call to action"
-            value={form.cta_text}
-            onChange={set('cta_text')}
-            hint="The ask, in your own words — e.g. worth a 20-minute call next week?"
-          />
-        </div>
+            <h2 className="section-title">What the email asks for</h2>
+            <p className="muted">
+              Fill in at least one of these. A cold email that does not end with a concrete next
+              step gets read and forgotten, so a campaign without one is refused.
+            </p>
+            <div className="field-grid">
+              <Field
+                label="Booking link"
+                value={form.booking_url}
+                onChange={set('booking_url')}
+                type="url"
+                hint="Your Cal.com or Calendly link. Must start with https://"
+              />
+              <Field
+                label="Call to action"
+                value={form.cta_text}
+                onChange={set('cta_text')}
+                hint="The ask, in your own words — e.g. worth a 20-minute call next week?"
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <h2 className="section-title">Booking link</h2>
+            <p className="muted">
+              Optional. If you give one, <code>{'{{booking_url}}'}</code> works as a merge field
+              in your template, and it is the only link a draft is allowed to contain.
+            </p>
+            <Field
+              label="Booking link"
+              value={form.booking_url}
+              onChange={set('booking_url')}
+              type="url"
+              hint="Must start with https://"
+            />
+          </>
+        )}
 
         <h2 className="section-title">Mailbox</h2>
         <p className="muted">

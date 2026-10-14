@@ -341,8 +341,11 @@ class TestACampaignThatCannotSignItsMailDoesNotSend:
         self, db, org, shared_mailbox, smtp_server
     ):
         mailbox, first, second = shared_mailbox
-        # A persona that is missing required fields: exactly what a hand-edited row looks like.
-        second.persona = {"sender_name": "Vik Menon"}
+        # Unreadable, not merely thin: since ADR-013 a persona with only a name is valid and
+        # sends perfectly well -- the footer needs a name and nothing else. What the send loop
+        # cannot work with is a row the model refuses outright, which is what a hand-edited
+        # value produces.
+        second.persona = {"sender_name": "", "max_words": 9000}
         await approved_lead_in(db, org, second.id, "broken@example.com", approved_at=INSIDE)
         await approved_lead_in(db, org, first.id, "fine@example.com", approved_at=INSIDE)
         await db.commit()
@@ -398,7 +401,7 @@ class TestACampaignThatCannotSignItsMailDoesNotSend:
         from app.worker.send_task import SendLoop
 
         _mailbox, _first, second = shared_mailbox
-        second.persona = {"sender_name": "Vik"}
+        second.persona = {"sender_name": "", "max_words": 9000}
         await approved_lead_in(db, org, second.id, "broken2@example.com", approved_at=INSIDE)
         await db.commit()
 

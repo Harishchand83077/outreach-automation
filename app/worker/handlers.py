@@ -207,6 +207,16 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
     if campaign.mode == "template":
         result = _render_for(campaign, lead, persona)
     else:
+        # A model is about to be asked to write on our behalf, so it has to be told who that is.
+        # The route refuses to create a research campaign without this and refuses to patch one
+        # into that state, so reaching here means the row was edited by hand -- and an email
+        # written from a persona with no offer in it is the exact failure hard rule 6 exists to
+        # prevent. Fail the job rather than send something invented.
+        if undraftable := persona.missing_for_drafting():
+            raise ValueError(
+                f"campaign {campaign.id} researches and drafts with a model, and its persona "
+                "does not say enough for that: " + ", ".join(field for field, _ in undraftable)
+            )
         router = ctx.router_for(session, job.org_id)
         hooks = await _hooks_for(session, job.org_id, lead.id)
         # If this is a regeneration, the reviewer said why. Carry it, or they will reject the

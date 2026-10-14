@@ -945,3 +945,21 @@ list for every healthy campaign beside it. **The one campaign an operator most n
 the only one they could not.** It falls back to the product defaults for display now; the fault is
 reported by `blockers`, and the detail route still returns the row exactly as stored, because the
 settings form edits what is actually there.
+
+**Template mode asked for an agency and an offer from people who have neither (ADR-013).** The
+owner's second use for this is job hunting, and `Persona` required `sender_role`, `agency_name`,
+`offer`, `goal` and a booking link or an ask — so the only way through the form was to type
+something that passes. **A persona filled in to satisfy a validator is a persona the drafter
+would go on to quote**, so the rule meant to stop invention was requiring it.
+
+Those requirements are real, and they belong to the **research** drafter: it asks a model to
+write on our behalf, so it has to be told who that is, or the model makes it up (issue A3, the
+worst thing the prototype did). They were expressed as model validators, which made them a
+property of the data instead — and so they applied to a campaign that never calls a model.
+
+`sender_name` stays required: it signs the message and it is in the footer, so a recipient can
+always tell who wrote to them. The rest moved into `Persona.missing_for_drafting()`, which
+returns each missing field **with why it matters**, and is asked at the three places that need
+it: creating or patching a `research` campaign, `handle_draft_lead` before the model is called,
+and `blockers` so an existing campaign in that state says so rather than silently drafting
+nothing. The footer already skipped an empty agency line, so nothing at send time changed.

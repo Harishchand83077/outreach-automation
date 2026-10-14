@@ -550,3 +550,53 @@ shared send path limit to the drafting step itself.
 `tests/integration/test_template_mode.py` (rendering, the state machine, and the handler with a
 router that raises if it is touched), and `test_api_operations.py::TestCampaignMode` /
 `::TestImportRoutesByMode`.
+
+## ADR-013 — The persona's required fields belong to the drafter that needs them
+
+**Context.** `Persona` required `sender_name`, `sender_role`, `agency_name`, `offer` and `goal`,
+plus one of `booking_url`/`cta_text`, enforced by two model validators. Those requirements are
+real, and they exist for one reason: the **research drafter** asks a model to write an email on
+our behalf, so it has to be told who "we" are and what we are offering, or the model invents it —
+which is issue A3, the worst thing the prototype did.
+
+ADR-012 then added a second drafter. A `template`-mode campaign never calls a model for a first
+email or a follow-up: the operator wrote every word. And the use the owner built it for is job
+hunting, where there **is** no agency and no offer. The validators applied anyway, so the only way
+through the form was to type something that passes — and a persona filled in to satisfy a
+validator is a persona the drafter would go on to quote. The rule meant to stop invention was
+requiring it.
+
+**Decision.** `sender_name` stays required: it signs the message and it is in the footer, so a
+recipient can always tell who wrote to them, which is a compliance requirement rather than a
+nicety. `sender_role`, `agency_name`, `offer` and `goal` become optional, and the
+booking-link-or-ask rule moves out of the model into **`Persona.missing_for_drafting()`**, which
+returns each missing field *with why it matters*.
+
+It is asked in exactly the places that need it:
+
+- **`POST /campaigns` and `PATCH /campaigns/{id}`**, for a `research` campaign only, which is
+  where the decision to have a model write the emails is actually made.
+- **`handle_draft_lead`**, before the model is called, so a row edited by hand fails the job
+  rather than producing an email written from a persona with no offer in it.
+- **`GET /campaigns/{id}`'s `blockers`**, so a campaign in that state says so instead of
+  silently drafting nothing.
+
+**Why not a second model.** A `TemplatePersona` class would duplicate fifteen fields and two
+validators, and the first change to either would be made to one of them. A `mode` discriminator
+inside `Persona` would make the data know about the drafter, which is backwards: the drafter has
+the requirement, so the drafter should state it.
+
+**Why the messages say why.** "agency_name is required" sends somebody back to a form to type
+anything that passes. "Name the company you are writing on behalf of — it signs the email" tells
+them what the field is for. The difference matters more than usual here, because the field's
+contents are quoted to strangers.
+
+**Consequences.** One tool serves agency outreach and a job hunt without either compromising the
+other's guarantees. A research campaign is still refused unless a model could write from it, now
+with better errors. The footer already handled an empty `agency_name` — `build_footer` skips the
+line — so nothing at send time changes. The reply drafter still refuses a campaign with no
+persona at all, and will write from a thin one; a reply is reviewed by a person in both modes, so
+the floor is the same.
+
+**Proved by** `tests/unit/test_persona.py::TestWhatModelWrittenDraftingNeeds` and
+`tests/integration/test_api_operations.py::TestWhatEachModeAsksOfThePersona`.
