@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
@@ -30,10 +30,17 @@ logger = logging.getLogger(__name__)
 BUSY_INTERVAL = timedelta(minutes=3)
 QUIET_INTERVAL = timedelta(minutes=15)
 
-#: INBOX only for now. Spam is worth adding once a real campaign has run, because replies do
-#: land there — but polling a folder we have never seen in production is a good way to discover
-#: a provider quirk at the worst moment.
+#: The fallback when the server cannot be asked. The real list comes from
+#: `ImapPoller.folders()`, which is INBOX plus whatever this server calls its junk folder.
+#:
+#: This was INBOX only, with a comment saying Spam was worth adding "once a real campaign has
+#: run". A real campaign ran, and the first reply it produced went to Spam -- so the reply engine
+#: never saw it and the dashboard showed nothing, which looks the same as no reply at all.
 FOLDERS: tuple[str, ...] = ("INBOX",)
+
+#: How long a discovered folder list is reused. Folders do not come and go, and a LIST on every
+#: three-minute cycle is a login the provider counts.
+FOLDER_TTL = timedelta(hours=6)
 
 
 @dataclass
@@ -55,6 +62,37 @@ class ImapLoop(WorkerTask):
         #: Used only to decide the polling cadence. Per-campaign windows govern sending, but a
         #: mailbox is shared, so the cadence follows the default working day.
         self.settings = settings or CampaignSettings()
+        #: Discovered once and reused: folders do not come and go, and a LIST on every cycle is
+        #: a login the provider counts against us.
+        self._folder_cache: tuple[str, ...] | None = None
+        self._folders_at: datetime | None = None
+
+    async def _folders(self) -> tuple[str, ...]:
+        """INBOX plus this server's junk folder, asked for at most once every `FOLDER_TTL`.
+
+        A failure to discover is not a failure to poll: the poller returns `FOLDERS` and the
+        next expiry tries again.
+        """
+        now = datetime.now(tz=UTC)
+        if (
+            self._folder_cache is not None
+            and self._folders_at is not None
+            and now - self._folders_at < FOLDER_TTL
+        ):
+            return self._folder_cache
+
+        discover = getattr(self.ctx.poller, "folders", None)
+        found: tuple[str, ...] = FOLDERS
+        if discover is not None:
+            try:
+                found = tuple(await discover()) or FOLDERS
+            except Exception as exc:
+                logger.warning("could not list folders", extra={"error": str(exc)})
+                found = FOLDERS
+
+        self._folder_cache = found
+        self._folders_at = now
+        return found
 
     async def tick(self, now: datetime) -> timedelta:
         await self.poll_all(now)
@@ -75,7 +113,7 @@ class ImapLoop(WorkerTask):
                 # or an opt-out that arrives while it is paused still has to be honoured.
                 logger.debug("polling a paused mailbox", extra={"mailbox": str(mailbox.id)})
             report.mailboxes += 1
-            for folder in FOLDERS:
+            for folder in await self._folders():
                 await self._poll_one(report, mailbox, folder, now)
 
         return report
