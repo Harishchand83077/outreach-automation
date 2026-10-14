@@ -268,6 +268,81 @@ class TestDomainCache:
         assert len(site.calls) == calls_after_first, "no page was fetched again"
         assert len(router.prompts) == 1, "the model was not called again"
 
+    async def test_two_companies_sharing_an_email_domain_do_not_share_research(
+        self, db, org, lead_factory, fetcher
+    ):
+        """The cache key must be the company *website*, not the address the founder writes from.
+
+        A founder on Gmail is imported with a warning, not rejected (hard rule: a founder may
+        genuinely use one), so `leads.domain` stays `gmail.com`. Keying the cache on that made
+        every Gmail-addressed lead in the org share **one** row — so the second one was served
+        the first company's findings, and the drafter cites those findings as fact. An email to
+        one company describing another is not a quality problem, it is the worst output this
+        system can produce.
+        """
+        other_home = HOME.replace("Acme Analytics", "Zenith Logistics")
+        with respx.mock(assert_all_called=False) as mock:
+            mock.get("https://acme.example/").mock(return_value=httpx.Response(200, html=HOME))
+            mock.get("https://zenith.example/").mock(
+                return_value=httpx.Response(200, html=other_home)
+            )
+            mock.get(url__regex=r"https://(acme|zenith)\.example/.+").mock(
+                return_value=httpx.Response(404)
+            )
+
+            first = await lead_factory(
+                company_name="Acme Analytics",
+                company_url="https://acme.example",
+                domain="gmail.com",
+            )
+            second = await lead_factory(
+                company_name="Zenith Logistics",
+                company_url="https://zenith.example",
+                domain="gmail.com",
+            )
+            router = FakeRouter(grounded_result(), grounded_result())
+
+            await research_lead(
+                db, org_id=org.id, lead=first, offer=OFFER, router=router, fetcher=fetcher
+            )
+            await db.commit()
+            outcome = await research_lead(
+                db, org_id=org.id, lead=second, offer=OFFER, router=router, fetcher=fetcher
+            )
+            await db.commit()
+
+        assert outcome.from_cache is False, "the second company was served the first's research"
+        assert len(router.prompts) == 2, "the second company was never actually researched"
+
+    async def test_the_same_company_is_cached_whatever_the_founders_write_from(
+        self, db, org, lead_factory, fetcher, site
+    ):
+        """The other half of the same key: two founders at one company, one on the company
+        domain and one on Gmail, are one company and must be researched once."""
+        router = FakeRouter(grounded_result(), grounded_result())
+        on_domain = await lead_factory(
+            company_name="Acme Analytics",
+            company_url="https://acme.example",
+            domain="acme.example",
+        )
+        on_gmail = await lead_factory(
+            company_name="Acme Analytics",
+            company_url="https://acme.example",
+            domain="gmail.com",
+        )
+
+        await research_lead(
+            db, org_id=org.id, lead=on_domain, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+        outcome = await research_lead(
+            db, org_id=org.id, lead=on_gmail, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+
+        assert outcome.from_cache is True
+        assert len(router.prompts) == 1, "the same company was researched twice"
+
     async def test_an_expired_cache_entry_is_refetched(self, db, org, lead, fetcher, site):
         from datetime import UTC, datetime, timedelta
 
@@ -290,6 +365,113 @@ class TestDomainCache:
         )
         assert outcome.from_cache is False
         assert len(router.prompts) == 2
+
+    async def test_a_stale_hit_keeps_what_lasts_and_drops_what_does_not(
+        self, db, org, lead, lead_factory, fetcher, site
+    ):
+        """Past 30 days a cache hit is still used, minus the hooks that describe a moment.
+
+        "I saw you are hiring two backend engineers" is a good opening line for a month and an
+        embarrassing one after three — the recipient knows whether it is still true. What the
+        company *does* has not changed, so throwing that away with it would be the expensive
+        half of the same mistake.
+        """
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select
+
+        router = FakeRouter(grounded_result())
+        await research_lead(
+            db, org_id=org.id, lead=lead, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+
+        row = await db.scalar(select(DomainResearch).where(DomainResearch.domain == "acme.example"))
+        # One durable hook beside the perishable one the fixture produces.
+        findings = dict(row.findings)
+        hooks = list(findings["hooks"])
+        durable = {**hooks[0], "kind": "product"}
+        perishable = {**hooks[0], "kind": "hiring"}
+        findings["hooks"] = [durable, perishable]
+        row.findings = findings
+        row.fetched_at = datetime.now(tz=UTC) - timedelta(days=45)
+        await db.commit()
+
+        colleague = await lead_factory(
+            company_name="Acme Analytics",
+            company_url="https://acme.example",
+            domain="acme.example",
+        )
+        outcome = await research_lead(
+            db, org_id=org.id, lead=colleague, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+
+        assert outcome.from_cache is True, "a stale company is not an unknown company"
+        kinds = {hook.kind for hook in outcome.verified.hooks}
+        assert "product" in kinds
+        assert "hiring" not in kinds, "a three-month-old hiring hook was offered as current"
+        assert any("time-sensitive" in gap for gap in outcome.verified.gaps), (
+            "the reviewer cannot see that something was dropped"
+        )
+        assert len(router.prompts) == 1, "the company was researched again for no reason"
+
+    async def test_a_stale_hit_with_nothing_durable_left_is_a_miss(
+        self, db, org, lead, lead_factory, fetcher, site
+    ):
+        """If every hook was perishable, dropping them leaves findings not worth an email, so
+        the company is researched again rather than mailed on the strength of nothing."""
+        from datetime import UTC, datetime, timedelta
+
+        from sqlalchemy import select
+
+        router = FakeRouter(grounded_result(), grounded_result())
+        await research_lead(
+            db, org_id=org.id, lead=lead, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+
+        row = await db.scalar(select(DomainResearch).where(DomainResearch.domain == "acme.example"))
+        findings = dict(row.findings)
+        findings["hooks"] = [{**hook, "kind": "news"} for hook in findings["hooks"]]
+        row.findings = findings
+        row.fetched_at = datetime.now(tz=UTC) - timedelta(days=45)
+        await db.commit()
+
+        colleague = await lead_factory(
+            company_name="Acme Analytics",
+            company_url="https://acme.example",
+            domain="acme.example",
+        )
+        outcome = await research_lead(
+            db, org_id=org.id, lead=colleague, offer=OFFER, router=router, fetcher=fetcher
+        )
+
+        assert outcome.from_cache is False
+        assert len(router.prompts) == 2, "the stale row was used instead of being replaced"
+
+    async def test_a_hit_inside_the_month_keeps_everything(
+        self, db, org, lead, lead_factory, fetcher, site
+    ):
+        """The common case must not pay for the stale one: a fresh hit is untouched."""
+        router = FakeRouter(grounded_result())
+        await research_lead(
+            db, org_id=org.id, lead=lead, offer=OFFER, router=router, fetcher=fetcher
+        )
+        await db.commit()
+
+        colleague = await lead_factory(
+            company_name="Acme Analytics",
+            company_url="https://acme.example",
+            domain="acme.example",
+        )
+        outcome = await research_lead(
+            db, org_id=org.id, lead=colleague, offer=OFFER, router=router, fetcher=fetcher
+        )
+
+        assert outcome.from_cache is True
+        assert len(outcome.verified.hooks) == 1
+        assert not any("time-sensitive" in gap for gap in outcome.verified.gaps)
 
     async def test_another_orgs_cache_is_not_reused(self, db, org, lead, fetcher, site):
         """Cached research is per org: one tenant must not read another's work."""

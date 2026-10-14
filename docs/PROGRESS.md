@@ -716,3 +716,51 @@ that had no replacement — C2's — was written in Phase 9 rather than quietly 
 | PR | Branch | Issues | Status |
 |---|---|---|---|
 | — | — | — | none opened yet |
+
+**The research cache was keyed on the wrong domain, and one company's findings could be mailed
+to another (ADR-011).** Asked as a storage question — keep `domain_research` to save Tavily
+credits and tokens, or flush it after 30 days? Measuring it answered a different and worse
+question.
+
+**The key was `leads.domain`, which is the domain the founder writes *from*, not the company's
+site.** A founder on a free-mail provider is imported with a warning rather than rejected —
+deliberately, because founders do use Gmail — so that column is routinely `gmail.com`. Every
+Gmail-addressed lead in an org therefore shared **one** `domain_research` row keyed `gmail.com`,
+and the second such lead was served the **first company's findings**, which the drafter goes on
+to cite as fact. An email to one company describing another is the worst output this system is
+capable of, and it was one shared key away. The key is now the registrable domain of
+`company_url`, which fixes both directions: unrelated companies never collide, and two founders
+at one company are one fetch however either of them happens to write to us.
+
+The same root cause was spending Tavily credits on nothing: the search fallback queried
+`f"{lead.company_name or lead.domain} company news"`, so a nameless free-mail lead searched for
+*"gmail.com company news"* out of a budget of 1,000 a month.
+
+**On the storage question itself: it is not a tradeoff.** `evidence_text` is capped at 20,000
+characters and nulled after 30 days; what survives is ~2 KB of findings and sources. At 100
+emails a day — about 1,100 new companies a month in the worst case where no two leads share one
+— keeping every company's research **forever** costs ~3 MB a month, **40 MB a year**, against 23
+GB free, plus a constant ~22 MB for the rolling month of un-purged text. Three orders of
+magnitude from mattering.
+
+**And the 30-day expiry was the worst of both.** Nothing has ever deleted a `domain_research`
+row — the retention sweep only nulls the text and lead erasure sets the FK to NULL — so the
+expiry saved no storage at all. It only stopped the reuse.
+
+**What actually constrains reuse is staleness, and it is not uniform.** What a company does, and
+what it is built with, reads the same in April as in January. What it announced last week does
+not, and a cold email opening on a stale "saw you're hiring two backend engineers" is *worse*
+than one that opens on nothing, because the recipient knows whether it is still true. A single
+expiry date cannot express that. So `CACHE_DAYS` is 90, rows are kept, and **hooks age rather
+than rows**: past 30 days a hit keeps only its durable hooks, `news`/`hiring`/`launch` are
+dropped with a note in `gaps` so the reviewer can see it happened, and **if that leaves no hooks
+the row is treated as a miss** and the company is researched again — the durable findings alone
+are not worth an email.
+
+**The campaign form did not offer the field its own validator required.** Creating a campaign
+failed with *"set booking_url or cta_text: a draft needs a concrete next step to ask for"*. The
+rule is right and stays. The form offered no `booking_url` field at all and labelled `cta_text`
+*optional*, so the obvious way through the screen was refused by a sentence naming a field that
+was not on it. Both are now offered under a heading saying to fill in at least one, the pair
+rule is checked in the form as well as the API, and `booking_url` is omitted rather than sent
+empty — `''` is not a URL and would have traded the error for a different one.
