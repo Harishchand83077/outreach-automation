@@ -24,6 +24,7 @@ import contextlib
 import imaplib
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -62,7 +63,7 @@ _JUNK_ATTRIBUTE = rb"\\Junk"
 _LIST_LINE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delim>"[^"]*"|NIL)\s+(?P<name>.*)$')
 
 
-def junk_folder_from_list(lines: list[bytes | None] | None) -> str | None:
+def junk_folder_from_list(lines: Sequence[object] | None) -> str | None:
     """This server's junk folder, from the raw `LIST` response, or None if it has none.
 
     Pure, so the part that actually goes wrong -- parsing one provider's reply -- is testable
@@ -72,6 +73,10 @@ def junk_folder_from_list(lines: list[bytes | None] | None) -> str | None:
 
     A name is only returned if the server listed it. Polling a folder that is not there is an
     error on every cycle for ever, which is a worse failure than not reading spam at all.
+
+    Typed as loosely as `imaplib` actually is -- it returns `list[None]` for an empty mailbox
+    and can hand back `tuple[bytes, bytes]` entries for a literal continuation -- so anything
+    that is not a line of bytes is skipped rather than asserted about.
     """
     names: list[str] = []
     advertised: str | None = None
