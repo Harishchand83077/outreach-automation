@@ -22,16 +22,90 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import imaplib
+import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.core.settings import Settings, config
 from app.services.mail.parse import ParsedMessage, parse_message
 
-#: INBOX first. Spam is worth polling because genuine replies land there more often than anyone
-#: would like, and a reply we never see looks identical to no reply at all.
+logger = logging.getLogger(__name__)
+
+#: INBOX first, then whatever this server calls its junk folder. **Spam is not optional.** The
+#: first real reply this system ever received was put in Spam by the receiving account -- a
+#: consequence of sending `From: rahul@arkvane.in` through an unrelated Gmail, so the message was
+#: unauthenticated -- and because the loop read only INBOX, the reply engine never saw it. The
+#: dashboard showed no reply, which is indistinguishable from no reply having been sent.
+#:
+#: Reading a message out of Spam is safe here, and cheap. A reply is matched to a lead by
+#: `In-Reply-To`/`References` against a `Message-ID` we generated, before any model is called, so
+#: unrelated junk costs one row and nothing else -- already demonstrated at scale when 1,400
+#: unrelated messages were ingested from a personal inbox and classified none of them.
 DEFAULT_FOLDERS: tuple[str, ...] = ("INBOX",)
+
+#: Folder names providers use for junk, tried in order when the server does not advertise
+#: `\\Junk` itself. Gmail's is `[Gmail]/Spam` in an English account and translated otherwise,
+#: which is exactly why the advertised attribute is tried first.
+JUNK_FOLDER_GUESSES: tuple[str, ...] = (
+    "[Gmail]/Spam",
+    "Junk",
+    "Junk E-mail",
+    "Spam",
+    "INBOX.Junk",
+    "INBOX.spam",
+)
+
+#: RFC 6154 special-use attribute for the junk folder. A server that supports it names its own
+#: folder, whatever the language, which beats guessing.
+_JUNK_ATTRIBUTE = rb"\\Junk"
+_LIST_LINE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?P<delim>"[^"]*"|NIL)\s+(?P<name>.*)$')
+
+
+def junk_folder_from_list(lines: Sequence[object] | None) -> str | None:
+    """This server's junk folder, from the raw `LIST` response, or None if it has none.
+
+    Pure, so the part that actually goes wrong -- parsing one provider's reply -- is testable
+    without a network or an account. The attribute is preferred over the name because Gmail
+    calls the folder `[Gmail]/Spam` in an English account and translates it otherwise, so a
+    hardcoded name is correct for exactly one locale.
+
+    A name is only returned if the server listed it. Polling a folder that is not there is an
+    error on every cycle for ever, which is a worse failure than not reading spam at all.
+
+    Typed as loosely as `imaplib` actually is -- it returns `list[None]` for an empty mailbox
+    and can hand back `tuple[bytes, bytes]` entries for a literal continuation -- so anything
+    that is not a line of bytes is skipped rather than asserted about.
+    """
+    names: list[str] = []
+    advertised: str | None = None
+    for raw in lines or []:
+        if not isinstance(raw, bytes):
+            continue
+        match = _LIST_LINE.match(raw.strip())
+        if match is None:
+            continue
+        names.append(_folder_name(match.group("name")))
+        if re.search(_JUNK_ATTRIBUTE, match.group("flags"), re.IGNORECASE):
+            advertised = names[-1]
+
+    if advertised:
+        return advertised
+
+    lowered = {name.lower(): name for name in names}
+    for guess in JUNK_FOLDER_GUESSES:
+        if guess.lower() in lowered:
+            return lowered[guess.lower()]
+    return None
+
+
+def _folder_name(raw: bytes) -> str:
+    name = raw.strip()
+    if name.startswith(b'"') and name.endswith(b'"'):
+        name = name[1:-1]
+    return name.decode("utf-8", "replace")
+
 
 #: How far back to look when UIDVALIDITY changes and every stored UID becomes meaningless.
 RESCAN_DAYS = 14
@@ -94,6 +168,42 @@ class ImapPoller:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or config
+
+    async def folders(self) -> tuple[str, ...]:
+        """INBOX plus this server's junk folder, discovered rather than guessed at.
+
+        An unreachable server returns just INBOX: a folder list is not worth failing a poll
+        over, and the next cycle tries again.
+        """
+        return await asyncio.to_thread(self._folders_sync)
+
+    def _folders_sync(self) -> tuple[str, ...]:
+        settings = self._settings
+        if not settings.IMAP_EMAIL or not settings.IMAP_PASSWORD:
+            return DEFAULT_FOLDERS
+
+        try:
+            connection = imaplib.IMAP4_SSL(settings.IMAP_HOST, settings.IMAP_PORT)
+        except Exception:
+            return DEFAULT_FOLDERS
+
+        try:
+            try:
+                connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
+            except imaplib.IMAP4.error:
+                return DEFAULT_FOLDERS
+
+            status, lines = connection.list()
+            if status != "OK":
+                return DEFAULT_FOLDERS
+
+            junk = junk_folder_from_list(lines)
+            return ("INBOX", junk) if junk else DEFAULT_FOLDERS
+        finally:
+            try:
+                connection.logout()
+            except Exception as exc:
+                logger.debug("imap logout failed after listing", extra={"error": str(exc)})
 
     async def poll(
         self,

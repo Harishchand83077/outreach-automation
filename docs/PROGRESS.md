@@ -852,3 +852,39 @@ a legal move would let anything skip review, and the two-step version is also wh
 happened — a person was shown this draft, and then approved it. That is the fourth time this
 project has hit a transition the table did not describe, and the second time the right answer was
 to add the step rather than loosen the rule.
+**The first reply this system ever received went to Spam, and the reply engine could not see
+it.** Reported as: the lead replied to both addresses, the dashboard shows nothing, and in the
+Gmail account the reply is in spam.
+
+`ImapLoop` polled `FOLDERS = ("INBOX",)`, with a comment saying Spam was worth adding *"once a
+real campaign has run, because replies do land there"*. A real campaign ran; the first reply it
+produced landed in Spam; and the loop could not see it. The dashboard showed no reply, which is
+indistinguishable from no reply having been sent — and `DEFAULT_FOLDERS` in `imap.py` carried the
+same comment above the same INBOX-only tuple, and was referenced by nothing at all.
+
+**Why it was in Spam is the sending-identity problem, arriving as predicted.** The message went
+out as `From: rahul@arkvane.in` authenticated as an unrelated Gmail account, so it carried no
+SPF or DKIM alignment for `arkvane.in` — `GO_LIVE.md` §1 records this, and the owner chose to
+defer it. An unauthenticated message to Gmail is a spam-folder message, and a *reply* to one
+inherits that judgement. Polling Spam makes the reply visible; it does not make the mail
+authenticated, and at real volume unauthenticated mail is not a spam-folder problem but a
+suspended-account one.
+
+**The folder is discovered, not hardcoded.** Gmail calls it `[Gmail]/Spam` in an English account
+and translates it otherwise, so a hardcoded name is correct for exactly one locale. The loop asks
+the server (`LIST`, RFC 6154's `\Junk` attribute), falls back to the names providers actually use,
+and **only ever polls a folder the server listed** — polling one that does not exist is an error
+on every cycle for ever, which is a worse failure than not reading spam. The parsing is a pure
+function, `junk_folder_from_list`, so the part that actually breaks is testable without an
+account. The list is cached for six hours, because a `LIST` is a login and the provider counts
+those.
+
+**Reading out of Spam is safe here.** A reply is matched to a lead by `In-Reply-To`/`References`
+against a `Message-ID` we generated, before any model is called, so unrelated junk costs one row
+and nothing more — already demonstrated when 1,400 unrelated messages were ingested from a
+personal inbox and classified none of them.
+
+`ImapLoop` had **no test at all**, which is how it came to read one folder in production. It has
+five now, including one asserting that a *paused* mailbox is still read: pausing stops sending,
+deliberately, and an opt-out we refused to read because we had stopped sending is the one we
+would breach on starting again.

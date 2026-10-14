@@ -332,3 +332,45 @@ async def _poll_with(
         )
     finally:
         FakeIMAP.__init__ = original_init  # type: ignore[method-assign]
+
+
+class TestFindingTheJunkFolder:
+    """The first real reply this system received was put in Spam by the receiving account, and
+    the loop read only INBOX -- so the reply engine never saw it and the dashboard showed no
+    reply, which is indistinguishable from no reply having been sent.
+
+    The folder is *discovered* rather than hardcoded. Gmail calls it `[Gmail]/Spam` in an English
+    account and translates it otherwise, so a hardcoded name works for exactly one locale.
+    """
+
+    def test_the_servers_own_junk_attribute_wins(self):
+        lines = [
+            rb'(\HasNoChildren) "/" "INBOX"',
+            rb'(\HasChildren \Noselect) "/" "[Gmail]"',
+            rb'(\HasNoChildren \Junk) "/" "[Gmail]/Spam"',
+        ]
+        assert imap_module.junk_folder_from_list(lines) == "[Gmail]/Spam"
+
+    def test_a_translated_folder_is_still_found(self):
+        """This is the whole argument for RFC 6154 over a list of English names."""
+        lines = [
+            rb'(\HasNoChildren) "/" "INBOX"',
+            rb'(\HasNoChildren \Junk) "/" "Pourriel"',
+        ]
+        assert imap_module.junk_folder_from_list(lines) == "Pourriel"
+
+    def test_a_known_name_is_used_when_nothing_is_advertised(self):
+        lines = [
+            rb'(\HasNoChildren) "/" "INBOX"',
+            rb'(\HasNoChildren) "/" "Junk E-mail"',
+        ]
+        assert imap_module.junk_folder_from_list(lines) == "Junk E-mail"
+
+    def test_a_folder_that_does_not_exist_is_never_guessed_at(self):
+        """Polling a folder the server does not have is an error on every cycle for ever."""
+        lines = [rb'(\HasNoChildren) "/" "INBOX"']
+        assert imap_module.junk_folder_from_list(lines) is None
+
+    def test_unparseable_lines_are_ignored_rather_than_fatal(self):
+        lines = [b"* LIST junk", rb'(\Junk) "/" "Spam"', None]
+        assert imap_module.junk_folder_from_list(lines) == "Spam"
