@@ -24,6 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,17 +42,43 @@ from app.services.research.fetcher import Fetcher
 from app.services.research.findings import (
     PROMPT_VERSION,
     SYSTEM_PROMPT,
+    Hook,
     ResearchResult,
     Source,
     VerifiedResearch,
     build_user_prompt,
     verify,
 )
-from app.services.research.net import UnsafeTarget, validate_url
+from app.services.research.net import UnsafeTarget, registrable_domain, validate_url
 from app.services.research.search import SearchBudget, SearchProvider
 
-#: §12. A company page does not change weekly, and the cost of re-fetching is real.
-CACHE_DAYS = 30
+#: How long a company's research may be reused. A quarter, not the original month, and the
+#: reasoning is worth keeping because the obvious variable to economise on is the wrong one.
+#:
+#: **Storage is not the constraint.** `evidence_text` is capped at 20,000 characters and the
+#: retention sweep nulls it after `RESEARCH_TEXT_RETENTION_DAYS`; what survives is the findings
+#: and the source list, measured at ~2 KB. At 100 emails a day — about 1,100 new companies a
+#: month in the worst case where no two leads share one — keeping every company's research
+#: **forever** costs ~40 MB a year against 23 GB free, plus a constant ~22 MB for the rolling
+#: month of un-purged text. Nothing in that is worth a decision.
+#:
+#: And nothing ever deleted these rows anyway, so the old 30-day expiry bought the worst of
+#: both: we paid the storage permanently and stopped getting the reuse after a month.
+#:
+#: **Staleness is the constraint.** What a company does, and what it is built with, is the same
+#: in April as it was in January. What it announced last week is not — and a cold email opening
+#: on a stale "saw you're hiring" is worse than one that opens on nothing, because the recipient
+#: knows it is wrong. So the window is long and the *perishable* hooks are dropped early, rather
+#: than a short window throwing the durable findings away with them.
+CACHE_DAYS = 90
+
+#: Beyond this age a cache hit keeps only its durable hooks. If that leaves none, the row is
+#: treated as a miss and the company is researched again — the hooks are the entire value.
+PERISHABLE_AFTER_DAYS = 30
+
+#: Hooks that describe a moment rather than a company. These are the most useful hooks we get
+#: and the ones that embarrass us first.
+PERISHABLE_KINDS: frozenset[str] = frozenset({"news", "hiring", "launch"})
 #: At most this many pages per lead, home page included.
 MAX_PAGES = 5
 #: A page needs at least this much text to be worth including as evidence. Low on purpose: a
@@ -96,14 +123,16 @@ async def research_lead(
         # send us off to fetch gmail.com (see the importer's same refusal).
         return ResearchOutcome(skipped_reason="lead has no company_url")
 
-    domain = lead.domain or ""
+    domain = cache_key(lead.company_url)
     cached = await _fresh_cache(session, org_id, domain, now)
     if cached is not None:
-        verified = _verified_from_cache(cached)
-        await _store_lead_research(
-            session, org_id=org_id, lead=lead, verified=verified, domain_row=cached
-        )
-        return ResearchOutcome(verified=verified, from_cache=True)
+        # None means the row had nothing durable left to say, so it is a miss rather than a hit.
+        from_cache = _verified_from_cache(cached, now)
+        if from_cache is not None:
+            await _store_lead_research(
+                session, org_id=org_id, lead=lead, verified=from_cache, domain_row=cached
+            )
+            return ResearchOutcome(verified=from_cache, from_cache=True)
 
     pages, errors = await _fetch_pages(fetcher, lead.company_url)
     if not pages:
@@ -228,6 +257,25 @@ def _keywords(offer: str) -> list[str]:
     return [w for w in words if len(w) > 3 and w not in stop][:12]
 
 
+def cache_key(company_url: str | None) -> str:
+    """The cache key for a company: the registrable domain of its **website**.
+
+    Not `leads.domain`, which is the domain of the address the founder writes *from*. A founder
+    on Gmail is imported with a warning rather than rejected, so that column is routinely
+    `gmail.com` — and keying on it made every Gmail-addressed lead in an org share one cache
+    row. The second such lead was then served the first company's findings, which the drafter
+    goes on to cite as fact. An email to one company describing another is the worst output
+    this system is capable of, and it was one shared key away.
+
+    The website is also the *right* key on its own terms: it is where the findings came from.
+    Two founders at one company are one fetch however either of them happens to write to us.
+    """
+    if not company_url:
+        return ""
+    host = urlparse(company_url if "//" in company_url else f"//{company_url}").hostname or ""
+    return registrable_domain(host) if host else ""
+
+
 async def _fresh_cache(
     session: AsyncSession, org_id: uuid.UUID, domain: str, now: datetime
 ) -> DomainResearch | None:
@@ -242,21 +290,42 @@ async def _fresh_cache(
     )
 
 
-def _verified_from_cache(row: DomainResearch) -> VerifiedResearch:
-    """Rebuild the verified result from a cached row.
+def _verified_from_cache(row: DomainResearch, now: datetime) -> VerifiedResearch | None:
+    """Rebuild the verified result from a cached row, or None if it is too stale to use.
 
     No re-verification: these hooks were checked against the fetched text when they were
     written, and the text they were checked against is the text that produced them.
+
+    Age is applied to the *hooks*, not to the row. Past `PERISHABLE_AFTER_DAYS` the hooks that
+    describe a moment are dropped, because "I saw you are hiring two backend engineers" is a
+    good opening line for a month and an embarrassing one after three. If that leaves no hooks
+    at all, the caller gets None and researches the company again: the durable findings alone
+    are not worth an email.
     """
     findings: dict[str, Any] = dict(row.findings or {})
+    hooks: list[dict[str, Any]] = list(findings.get("hooks") or [])
+    gaps: list[str] = list(findings.get("gaps") or [])
+
+    kept = [Hook.model_validate(hook) for hook in hooks]
+    if kept and now - row.fetched_at > timedelta(days=PERISHABLE_AFTER_DAYS):
+        durable = [hook for hook in kept if hook.kind not in PERISHABLE_KINDS]
+        if not durable:
+            return None
+        if len(durable) != len(kept):
+            gaps.append(
+                f"{len(kept) - len(durable)} time-sensitive hook(s) dropped: this company was "
+                f"researched on {row.fetched_at.date().isoformat()}"
+            )
+        kept = durable
+
     return VerifiedResearch(
         company=findings.get("company", {}),
-        hooks=findings.get("hooks", []),
+        hooks=kept,
         sources=[Source.model_validate(item) for item in (row.sources or [])],
         confidence=row.confidence,
-        gaps=findings.get("gaps", []),
+        gaps=gaps,
         rejected=findings.get("rejected", []),
-        thin=not findings.get("hooks"),
+        thin=not kept,
     )
 
 
@@ -380,9 +449,19 @@ async def _try_search(
         verified.gaps.append("search budget exhausted for this month")
         return False
 
-    query = f"{lead.company_name or lead.domain} company news"
+    # The company's own domain, never `lead.domain`: for a founder on Gmail that column says
+    # `gmail.com`, and "gmail.com company news" is a wasted credit from a budget of 1,000 a
+    # month. With neither a name nor a site there is nothing to search for, so we do not.
+    company = lead.company_name or cache_key(lead.company_url)
+    if not company:
+        verified.gaps.append("no company name or website to search for")
+        return False
+
+    query = f"{company} company news"
     hits = await search.search(query, max_results=3)
-    await budget.record(provider=search.name, credits=1, domain=lead.domain, lead_id=lead.id)
+    await budget.record(
+        provider=search.name, credits=1, domain=cache_key(lead.company_url), lead_id=lead.id
+    )
 
     if not hits:
         return True

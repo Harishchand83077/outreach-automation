@@ -411,3 +411,65 @@ the sender honours it before a socket opens) and
 `tests/integration/test_api_settings.py::TestChangingTheSendMode` (an owner may restrict, it
 records who, `null` hands authority back, `live` is refused outside production, `live` needs the
 typed confirmation, an unknown mode is a 422, and neither an admin nor a member may change it).
+
+## ADR-011 — Company research is keyed on the website, kept for a quarter, and ages by hook
+
+**Context.** Asked as a storage question: keep `domain_research` and save Tavily credits and
+tokens, or flush it after 30 days and pay for the research again? The honest answer required
+measuring, and the measurement changed the question.
+
+**What it costs to keep everything.** `evidence_text` is capped at 20,000 characters and the
+retention sweep nulls it after `RESEARCH_TEXT_RETENTION_DAYS` (30). What survives is the findings
+and the source list: measured at **~2 KB** for a realistic row (four hooks with their quotes, a
+company summary, five sources). At 100 emails a day — about 1,100 new companies a month in the
+*worst* case, where no two leads share a company — keeping every company's research **forever**
+costs about **3 MB a month, 40 MB a year**, plus a constant ~22 MB for the rolling month of
+un-purged text. The instance has 23 GB free. **Storage is three orders of magnitude away from
+being the constraint**, so it is not a tradeoff and should not be managed like one.
+
+**And the old setting was the worst of both.** Nothing has ever deleted a `domain_research` row —
+the retention sweep only nulls the text, and the lead-erasure path sets `domain_research_id` to
+NULL rather than cascading. So the 30-day expiry did not save a byte. It only stopped the reuse.
+
+**The real constraint is staleness, and it is not uniform.** What a company does, and what it is
+built with, reads the same in April as in January. What it announced last week does not — and a
+cold email opening on a stale "saw you're hiring two backend engineers" is *worse* than one that
+opens on nothing, because the recipient knows whether it is still true. A single expiry date
+cannot express that: a short one throws away the durable findings to protect against the
+perishable ones, and a long one mails the perishable ones as current.
+
+**Decision.**
+
+1. **The cache key is the registrable domain of the company's website**, derived from
+   `company_url`, not `leads.domain`. This was also a live correctness bug, not only a design
+   choice: `leads.domain` is the domain of the address the founder writes *from*, a founder on a
+   free-mail provider is imported with a warning rather than rejected (deliberately), so that
+   column is routinely `gmail.com`. Every Gmail-addressed lead in an org therefore shared **one**
+   cache row, and the second one was served the first company's findings — which the drafter goes
+   on to cite as fact. An email to one company describing another is the worst output this system
+   can produce, and it was one shared key away. Keying on the website fixes both directions: two
+   unrelated companies never collide, and two founders at one company are one fetch however
+   either of them happens to write to us.
+2. **Rows are kept indefinitely** (as they already were), and `CACHE_DAYS` rises from 30 to
+   **90**. A quarter is roughly how long "what they do" stays true.
+3. **Hooks age, not rows.** Past `PERISHABLE_AFTER_DAYS` (30) a cache hit keeps only its durable
+   hooks; `news`, `hiring` and `launch` are dropped, and the reviewer is told so in `gaps` rather
+   than silently handed less. **If that leaves no hooks at all the row is treated as a miss** and
+   the company is researched again, because the durable findings on their own are not worth an
+   email.
+
+**Consequences.** A company researched once is reused for a quarter instead of a month, which is
+the saving that was asked for, and it is spent on freshness exactly where freshness matters. A
+reviewer can see when a hook was dropped for age. The free-mail collision is gone. Nothing about
+the storage question needs revisiting below several gigabytes of findings, which at these volumes
+is a century away.
+
+**Also fixed as part of the same root cause:** the Tavily fallback built its query as
+`f"{lead.company_name or lead.domain} company news"`, so a nameless free-mail lead spent a credit
+searching for *"gmail.com company news"* out of a budget of 1,000 a month. It now falls back to
+the company's own domain, and searches for nothing when it has neither.
+
+**Proved by** `tests/integration/test_research_service.py::TestDomainCache` — two companies
+sharing an email domain do not share research; the same company is one fetch whatever its
+founders write from; a stale hit keeps what lasts and drops what does not; a stale hit with
+nothing durable left is a miss; a hit inside the month is untouched.
