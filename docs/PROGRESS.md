@@ -1032,3 +1032,24 @@ drafted at all, so guessing could propose an answer to somebody who asked to be 
 
 **The new tests drive the real producers rather than a payload a test author wrote.** That is the
 only shape of test that could have caught this: both sides were already covered in isolation.
+
+**And the first reply draft ever written was then refused for ending its last sentence with a
+full stop.** The message, from the live database:
+
+```
+the only link allowed is the booking URL https://calendar.google.com/calendar/u/0/r?pli=1,
+not https://calendar.google.com/calendar/u/0/r?pli=1.
+```
+
+The two strings are identical except for a trailing `.`. `_URL` matches greedily, so a sentence
+ending *"book here: https://cal.example.com/asha."* captures the stop as part of the URL, and
+`_check_links` then compared it against the persona's booking URL and found a mismatch. A correct
+draft, refused, with a message nobody could act on — which is the worse half: an operator reading
+that has no way to tell what is wrong. `found_url()` takes the sentence's punctuation back off
+before a URL is counted or compared. The rule is unchanged: one link, and it must be the booking
+URL.
+
+**Worth the owner's attention, separately:** the booking URL on that campaign is
+`https://calendar.google.com/calendar/u/0/r?pli=1`, which opens *the reader's own* Google
+Calendar. It books nothing. A recipient clicking it sees their own week. That is a persona value,
+not a bug, and it should be a real booking link before any of this reaches a stranger.

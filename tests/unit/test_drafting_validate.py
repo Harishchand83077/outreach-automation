@@ -17,6 +17,7 @@ from app.domain.persona import Persona
 from app.services.drafting.schema import Claim, DraftOutput
 from app.services.drafting.validate import (
     evidence_corpus,
+    found_url,
     resolve_evidence,
     validate_draft,
 )
@@ -323,3 +324,61 @@ class TestFeedback:
 
     def test_a_passing_draft_has_empty_feedback(self):
         assert check(draft()).feedback() == ""
+
+
+class TestAUrlAtTheEndOfASentence:
+    """A correct draft was refused on the live system because its last sentence ended with a
+    full stop, and the message printed two strings that looked identical:
+
+        the only link allowed is the booking URL https://calendar.google.com/...pli=1,
+        not https://calendar.google.com/...pli=1.
+
+    `_URL` matches greedily and swallowed the stop. None of `.,;:!?` carries meaning at the end
+    of a URL; a trailing one is always the prose's.
+    """
+
+    def test_a_trailing_full_stop_is_not_part_of_the_url(self):
+        assert found_url("https://cal.example.com/asha.") == "https://cal.example.com/asha"
+
+    def test_other_sentence_punctuation_too(self):
+        for suffix in (",", ";", ":", "!", "?", ".."):
+            assert found_url(f"https://cal.example.com/asha{suffix}") == (
+                "https://cal.example.com/asha"
+            )
+
+    def test_a_path_is_left_alone(self):
+        assert found_url("https://cal.example.com/a.b/c") == "https://cal.example.com/a.b/c"
+
+    def test_a_query_string_survives(self):
+        url = "https://calendar.google.com/calendar/u/0/r?pli=1"
+        assert found_url(f"{url}.") == url
+
+    def test_the_booking_link_passes_at_the_end_of_a_sentence(self):
+        persona = PERSONA
+        draft = DraftOutput(
+            subject="Your pipeline",
+            body=(
+                "Hi Ben,\n\nSaw you are hiring.\n\n"
+                "Worth a short call? Book here: https://cal.example.com/asha.\n\nAsha"
+            ),
+            claims=[],
+        )
+
+        report = validate_draft(draft, persona=persona, hooks=[], lead_name="Ben")
+
+        assert not any("only link allowed" in failure for failure in report.failures), (
+            report.failures
+        )
+
+    def test_a_different_link_is_still_refused(self):
+        """The rule itself is unchanged: one link, and it must be the booking URL."""
+        persona = PERSONA
+        draft = DraftOutput(
+            subject="Your pipeline",
+            body="Hi Ben,\n\nSee https://elsewhere.example/x.\n\nAsha",
+            claims=[],
+        )
+
+        report = validate_draft(draft, persona=persona, hooks=[], lead_name="Ben")
+
+        assert any("only link allowed" in failure for failure in report.failures)
