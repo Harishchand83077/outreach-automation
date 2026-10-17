@@ -21,7 +21,7 @@ database row.
 from __future__ import annotations
 
 import re
-from typing import Annotated, Self
+from typing import Annotated, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
@@ -77,22 +77,33 @@ class Persona(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     # --- Who is writing ---
+    #: The one field no email can do without. It signs the message and it is in the footer, so
+    #: a recipient can always tell who wrote to them -- which is a compliance requirement rather
+    #: than a nicety.
     sender_name: NonEmptyStr
-    sender_role: NonEmptyStr
-    agency_name: NonEmptyStr
+    #: **Optional, and that is new.** These were required because the *research drafter* needs
+    #: them: it is asked to write an email about a company on our behalf, so it has to be told
+    #: who "we" are and what we sell. A `template`-mode campaign has no such need -- the
+    #: operator wrote every word -- and somebody job-hunting has no agency and no offer at all.
+    #: Requiring them anyway meant inventing values to get past a form, which is the opposite of
+    #: hard rule 6. What research drafting needs is now asked for by `missing_for_drafting()`,
+    #: enforced where that drafting is set up, rather than asserted about every persona that
+    #: exists. See ADR-013.
+    sender_role: str = Field(default="", max_length=500)
+    agency_name: str = Field(default="", max_length=500)
     agency_url: HttpUrl | None = None
 
     # --- What we do ---
     services: list[NonEmptyStr] = Field(default_factory=list, max_length=20)
     ideal_customer: str = Field(default="", max_length=1000)
-    offer: NonEmptyStr
+    offer: str = Field(default="", max_length=500)
 
     #: The only claims about ourselves a draft may assert. Everything else must come from cited
     #: research evidence about the recipient.
     proof_points: list[ProofPoint] = Field(default_factory=list, max_length=20)
 
     # --- What we want ---
-    goal: NonEmptyStr = Field(description='e.g. "book a 20-minute call"')
+    goal: str = Field(default="", max_length=500, description='e.g. "book a 20-minute call"')
     cta_text: str = Field(default="", max_length=300)
     booking_url: HttpUrl | None = None
 
@@ -127,14 +138,36 @@ class Persona(BaseModel):
             raise ValueError("proof_point ids must be unique — a draft cites them by id")
         return self
 
-    @model_validator(mode="after")
-    def _a_call_to_action_needs_somewhere_to_go(self) -> Self:
-        """A goal of booking a call is unreachable without a link or an explicit ask."""
+    #: What a model needs before it can be asked to write an email on our behalf, and the
+    #: message to show for each. Not a validator: the same rule applied to every persona would
+    #: refuse the ones belonging to campaigns that never call a model.
+    DRAFTING_REQUIREMENTS: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("sender_role", "say what your role is -- it signs the email"),
+        ("agency_name", "name the company or team you are writing on behalf of"),
+        ("offer", "one line on what you are offering: every draft is built around it"),
+        ("goal", 'what the email is for, e.g. "book a 20-minute call"'),
+    )
+
+    def missing_for_drafting(self) -> list[tuple[str, str]]:
+        """Fields a *model-written* draft cannot do without, with why each one matters.
+
+        This used to be two model validators, which made it a property of the data rather than
+        of the drafter -- so a `template`-mode campaign, which never calls a model, was refused
+        for not naming an agency it does not have. The requirement is real; it just belongs to
+        the one drafter that has it, and is checked where that campaign is set up.
+        """
+        missing = [
+            (field, why) for field, why in self.DRAFTING_REQUIREMENTS if not getattr(self, field)
+        ]
         if not self.booking_url and not self.cta_text:
-            raise ValueError(
-                "set booking_url or cta_text: a draft needs a concrete next step to ask for"
+            missing.append(
+                (
+                    "cta_text",
+                    "set a booking link or a call to action: a draft needs a concrete next step "
+                    "to ask for",
+                )
             )
-        return self
+        return missing
 
     @property
     def forbidden_phrases(self) -> frozenset[str]:
