@@ -33,6 +33,7 @@ import {
   uploadFile,
 } from './api'
 import { signOut } from './supabase'
+import { Empty, Icons, SkeletonList, ThemeToggle, useTheme } from './ui'
 import './app.css'
 
 const STATES = [
@@ -78,6 +79,7 @@ export default function App() {
 }
 
 function Dashboard({ session }) {
+  const [theme, toggleTheme] = useTheme()
   const [me, setMe] = useState(null)
   const [error, setError] = useState(null)
   const [toasts, setToasts] = useState([])
@@ -175,15 +177,24 @@ function Dashboard({ session }) {
     )
   }
 
-  if (!me) return <Centered>Loading…</Centered>
+  if (!me) {
+    return (
+      <div className="content" aria-busy="true">
+        <div className="skeleton" style={{ height: 30, width: 220, marginBottom: 18 }} />
+        <SkeletonList count={2} rows={4} />
+      </div>
+    )
+  }
 
   const nav = [
-    { id: 'review', label: 'Review queue', count: queueCount ?? undefined },
-    { id: 'leads', label: 'Leads' },
-    { id: 'import', label: 'Import' },
-    { id: 'campaign', label: 'Campaign' },
-    ...(mayAdminister ? [{ id: 'settings', label: 'Settings' }] : []),
+    { id: 'review', label: 'Review queue', icon: Icons.review, count: queueCount ?? undefined },
+    { id: 'leads', label: 'Leads', icon: Icons.leads },
+    { id: 'import', label: 'Import', icon: Icons.import },
+    { id: 'campaign', label: 'Campaign', icon: Icons.campaign },
+    ...(mayAdminister ? [{ id: 'settings', label: 'Settings', icon: Icons.settings }] : []),
   ]
+
+  const who = me.email || session.user?.email || ''
 
   return (
     <div className="shell">
@@ -204,6 +215,7 @@ function Dashboard({ session }) {
             aria-current={view === item.id ? 'page' : undefined}
             onClick={() => setView(item.id)}
           >
+            <item.icon className="nav-icon" size={17} />
             {item.label}
             {item.count === undefined ? null : (
               <span className="count" data-zero={item.count === 0}>
@@ -214,14 +226,21 @@ function Dashboard({ session }) {
         ))}
 
         <div className="sidebar-foot">
-          {me.email || session.user?.email}
-          <br />
-          {me.role}
+          <div className="sidebar-user">
+            <span className="avatar" aria-hidden="true">
+              {who.slice(0, 1) || '?'}
+            </span>
+            <span className="sidebar-identity">
+              <strong title={who}>{who}</strong>
+              <span>{me.role}</span>
+            </span>
+          </div>
           <button
             type="button"
             className="btn"
             data-variant="quiet"
-            style={{ marginTop: 10, padding: '6px 10px' }}
+            data-size="sm"
+            style={{ width: '100%', marginTop: 6 }}
             onClick={() => signOut()}
           >
             Sign out
@@ -238,7 +257,6 @@ function Dashboard({ session }) {
             id="campaign"
             value={campaignId || ''}
             onChange={(event) => setCampaignId(event.target.value || null)}
-            style={{ maxWidth: 280 }}
           >
             {campaigns.length === 0 ? <option value="">No campaigns yet</option> : null}
             {campaigns.map((row) => (
@@ -260,12 +278,14 @@ function Dashboard({ session }) {
             </>
           ) : null}
           <span className="spacer" />
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <button
             type="button"
             className="btn"
             data-variant="primary"
             onClick={() => setView('new')}
           >
+            <Icons.plus size={15} />
             New campaign
           </button>
         </div>
@@ -346,9 +366,18 @@ function Dashboard({ session }) {
       </div>
 
       <div className="toast-host">
-        {toasts.map((t) => (
-          <div key={t.id} className="toast" data-kind={t.kind} role="status">
-            {t.message}
+        {toasts.map((item) => (
+          <div key={item.id} className="toast" data-kind={item.kind} role="status">
+            <span className="toast-icon">
+              {item.kind === 'success' ? (
+                <Icons.check size={16} />
+              ) : item.kind === 'error' ? (
+                <Icons.alert size={16} />
+              ) : (
+                <Icons.info size={16} />
+              )}
+            </span>
+            <span>{item.message}</span>
           </div>
         ))}
       </div>
@@ -366,6 +395,10 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
   const [busy, setBusy] = useState(null)
   const [selected, setSelected] = useState([])
   const [skipped, setSkipped] = useState({})
+  //: Which card the keyboard is on. Reviewing a hundred drafts with a mouse is a hundred
+  //: round trips to a small button; J/K and A/R is the difference between a queue somebody
+  //: works through and one they put off.
+  const [focused, setFocused] = useState(0)
 
   const load = useCallback(() => {
     const params = new URLSearchParams({ campaign_id: campaignId, limit: String(REVIEW_PAGE) })
@@ -466,6 +499,49 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
   const shown = page.drafts.length
   const seen = trail.length * REVIEW_PAGE
 
+  // Keyboard review. Deliberately *not* active while typing: an editor fixing a subject line
+  // must be able to write "approach" without approving three drafts on the way through.
+  useEffect(() => {
+    const onKey = (event) => {
+      const tag = event.target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || event.target?.isContentEditable) return
+      if (event.metaKey || event.ctrlKey || event.altKey) return
+
+      const item = page.drafts[focused]
+      const key = event.key.toLowerCase()
+
+      if (key === 'j' || key === 'arrowdown') {
+        event.preventDefault()
+        setFocused((current) => Math.min(current + 1, page.drafts.length - 1))
+      } else if (key === 'k' || key === 'arrowup') {
+        event.preventDefault()
+        setFocused((current) => Math.max(current - 1, 0))
+      } else if (key === 'a' && item) {
+        event.preventDefault()
+        approve(item)
+      } else if (key === 'r' && item) {
+        event.preventDefault()
+        reject(item)
+      } else if (key === 'x' && item) {
+        event.preventDefault()
+        toggle(item.draft_id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  // A page that shrank under the cursor must not leave the focus past its end.
+  useEffect(() => {
+    setFocused((current) => Math.min(current, Math.max(page.drafts.length - 1, 0)))
+  }, [page.drafts.length])
+
+  // Keep the focused card on screen when the keyboard moves it, not when a mouse does.
+  useEffect(() => {
+    const node = document.querySelector('.card[data-active="true"]')
+    node?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [focused])
+
   return (
     <>
       <h1 className="page-title">Review queue</h1>
@@ -474,18 +550,39 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
         re-checks the suppression list, the window and today&apos;s cap before anything leaves.
       </p>
 
-      <dl className="stat-grid">
-        <div className="stat" data-tone={page.total > 0 ? 'warn' : 'good'}>
-          <dt>Waiting for a decision</dt>
-          <dd className="num">{page.total}</dd>
-        </div>
-        <div className="stat">
-          <dt>On this page</dt>
-          <dd className="num">
-            {shown ? `${seen + 1}–${seen + shown}` : '—'}
-          </dd>
-        </div>
-      </dl>
+      <div className="queue-head">
+        <span className="badge" data-tone={page.total > 0 ? 'warn' : 'good'}>
+          <span className="dot" data-pulse={page.total > 0} />
+          {page.total} waiting
+        </span>
+        {shown ? (
+          <>
+            <span className="muted num">
+              {seen + 1}–{seen + shown} of {page.total}
+            </span>
+            <span
+              className="progress"
+              role="progressbar"
+              aria-valuenow={seen}
+              aria-valuemin={0}
+              aria-valuemax={page.total}
+              aria-label="Reviewed so far"
+            >
+              <span style={{ width: `${page.total ? (seen / page.total) * 100 : 0}%` }} />
+            </span>
+          </>
+        ) : null}
+        <span className="spacer" />
+        <span className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span className="kbd">J</span>
+          <span className="kbd">K</span>
+          move
+          <span className="kbd">A</span>
+          approve
+          <span className="kbd">R</span>
+          reject
+        </span>
+      </div>
 
       {shown === 0 ? null : (
         <div className="filters" style={{ gridTemplateColumns: '1fr auto auto' }}>
@@ -516,12 +613,19 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
       )}
 
       {shown === 0 ? (
-        <p className="empty">
-          Nothing waiting. Drafts appear here once research and drafting finish.
-        </p>
+        <Empty icon={Icons.check} title="Nothing waiting">
+          Every draft for this campaign has been judged. New ones appear here once research and
+          drafting finish — or straight away for a template campaign.
+        </Empty>
       ) : (
-        page.drafts.map((item) => (
-          <article key={item.draft_id} className="card">
+        page.drafts.map((item, index) => (
+          <article
+            key={item.draft_id}
+            className="card"
+            data-interactive="true"
+            data-active={index === focused}
+            onMouseEnter={() => setFocused(index)}
+          >
             <div className="card-head">
               <input
                 type="checkbox"
@@ -1306,6 +1410,14 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       {/* Counted from the record of what happened, not from each lead's current state. A lead
           that replied is still a lead that was emailed — the prototype's count fell as a
           campaign succeeded (issue NEW-3). */}
+      {/* **Two groups, not seven equal tiles.** Volume and outcome answer different
+          questions, and seven identical boxes made "Meetings booked: 0" look exactly as
+          important as "Leads: 2" -- so the number anybody actually cares about was the hardest
+          one to find. The outcomes also carry a tone only when they are non-zero: a red
+          "Bounced 0" is an alarm about nothing. */}
+      <h2 className="section-title" style={{ marginTop: 'var(--space-5)' }}>
+        Volume
+      </h2>
       <dl className="stat-grid">
         <div className="stat">
           <dt>Leads</dt>
@@ -1319,6 +1431,10 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           <dt>People emailed</dt>
           <dd className="num">{stats ? stats.leads_emailed : '—'}</dd>
         </div>
+      </dl>
+
+      <h2 className="section-title">Outcomes</h2>
+      <dl className="stat-grid">
         <div className="stat" data-tone={stats && stats.replied ? 'good' : undefined}>
           <dt>Replied</dt>
           <dd className="num">{stats ? stats.replied : '—'}</dd>
@@ -1382,6 +1498,9 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
               Pause sending
             </button>
           ) : null}
+          {/* Pushed away from the routine controls. A destructive action a thumb-width from
+              "Pause sending" is a destructive action somebody will eventually hit by accident. */}
+          <span className="spacer" />
           <button type="button" className="btn" data-variant="danger" disabled={busy} onClick={remove}>
             Delete campaign
           </button>

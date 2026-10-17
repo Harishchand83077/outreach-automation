@@ -1,57 +1,372 @@
+/* Design tokens and bare element defaults.
+ *
+ * `app.css` owns the components; this file owns the vocabulary they are written in. Everything
+ * is a custom property so a theme is a set of values rather than a set of overrides — the dark
+ * and light blocks below define the *same* names, and no component ever asks which theme is on.
+ *
+ * Two rules worth stating because they are easy to break later:
+ *
+ * 1. **Components never use a raw colour.** If a component needs a shade that is not here, the
+ *    shade belongs here. The moment one card hard-codes `#1a1d24`, the theme toggle produces a
+ *    screen with one wrong rectangle on it.
+ * 2. **Motion is a token too.** Every transition uses `--ease` and one of the duration tokens,
+ *    so "make the whole app calmer" is one edit, and `prefers-reduced-motion` is honoured in
+ *    exactly one place instead of in forty.
+ */
+
 :root {
-  --bg: #0d0f12;
-  --surface: #161a20;
-  --surface2: #1e242c;
-  --border: #2a323c;
-  --text: #e6edf3;
-  --textMuted: #8b949e;
-  --accent: #58a6ff;
-  --accentHover: #79b8ff;
-  --success: #3fb950;
-  --warning: #d29922;
-  --danger: #f85149;
-  --font: 'DM Sans', system-ui, sans-serif;
-  --fontMono: 'JetBrains Mono', monospace;
+  /* ---- type ---- */
+  --font: 'DM Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* A fifth-based scale. Named by role rather than by size, so a heading that needs to shrink
+     does not become `--text-14` everywhere it is used. */
+  --text-xs: 11.5px;
+  --text-sm: 12.5px;
+  --text-base: 14px;
+  --text-md: 15px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: clamp(24px, 1.6vw + 18px, 30px);
+
+  --leading-tight: 1.25;
+  --leading: 1.55;
+
+  /* ---- space ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 22px;
+  --space-6: 30px;
+  --space-7: 44px;
+
+  /* ---- shape ---- */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-full: 999px;
+
+  /* ---- layout ---- */
+  --sidebar: 240px;
+  --sidebar-collapsed: 68px;
+  --content-max: 1180px;
+
+  /* ---- motion ---- */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --fast: 110ms;
+  --normal: 180ms;
+  --slow: 320ms;
 }
 
-* {
+/* -------------------------------------------------------------- dark (default) */
+
+:root,
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --bg: #090b0f;
+  --surface: #11141a;
+  --surface-2: #171b22;
+  --surface-3: #1e232c;
+  --surface-hover: #1b2029;
+
+  --border: #222833;
+  --border-strong: #313945;
+  --border-focus: #4f8cff;
+
+  --text: #e9eef5;
+  --text-muted: #98a2b1;
+  --text-faint: #697283;
+  --text-inverse: #0a0d12;
+
+  --accent: #4f8cff;
+  --accent-hover: #6c9fff;
+  --accent-soft: #15213a;
+  --accent-text: #9dc0ff;
+
+  --success: #3fb950;
+  --success-soft: #112818;
+  --success-text: #7ee28c;
+
+  --warning: #d6a019;
+  --warning-soft: #2a2110;
+  --warning-text: #e8c468;
+
+  --danger: #f2544a;
+  --danger-soft: #2d1414;
+  --danger-text: #ff9a93;
+
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow: 0 2px 4px rgb(0 0 0 / 0.3), 0 8px 24px -14px rgb(0 0 0 / 0.7);
+  --shadow-lg: 0 10px 40px -12px rgb(0 0 0 / 0.75);
+  --ring: 0 0 0 3px rgb(79 140 255 / 0.28);
+}
+
+/* -------------------------------------------------------------- light */
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f3f5f8;
+  --surface-3: #e9edf2;
+  --surface-hover: #f0f3f7;
+
+  --border: #e2e6ec;
+  --border-strong: #ccd3dc;
+  --border-focus: #2563eb;
+
+  --text: #0f1620;
+  --text-muted: #59616e;
+  --text-faint: #858d9a;
+  --text-inverse: #ffffff;
+
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eaf1fe;
+  --accent-text: #1b4fc4;
+
+  --success: #16874a;
+  --success-soft: #e7f6ed;
+  --success-text: #10693a;
+
+  --warning: #9a6a06;
+  --warning-soft: #fdf3dd;
+  --warning-text: #7d5604;
+
+  --danger: #c7362c;
+  --danger-soft: #fdeceb;
+  --danger-text: #a52a22;
+
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06);
+  --shadow: 0 1px 3px rgb(16 24 40 / 0.08), 0 8px 24px -16px rgb(16 24 40 / 0.2);
+  --shadow-lg: 0 12px 40px -12px rgb(16 24 40 / 0.22);
+  --ring: 0 0 0 3px rgb(37 99 235 / 0.2);
+}
+
+/* Somebody who has never touched the toggle gets their system's answer. Once they have, the
+   stored choice wins — which is why this is a media query on the *unset* state rather than on
+   `:root` outright. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    color-scheme: light;
+
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #f3f5f8;
+    --surface-3: #e9edf2;
+    --surface-hover: #f0f3f7;
+    --border: #e2e6ec;
+    --border-strong: #ccd3dc;
+    --border-focus: #2563eb;
+    --text: #0f1620;
+    --text-muted: #59616e;
+    --text-faint: #858d9a;
+    --text-inverse: #ffffff;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-soft: #eaf1fe;
+    --accent-text: #1b4fc4;
+    --success: #16874a;
+    --success-soft: #e7f6ed;
+    --success-text: #10693a;
+    --warning: #9a6a06;
+    --warning-soft: #fdf3dd;
+    --warning-text: #7d5604;
+    --danger: #c7362c;
+    --danger-soft: #fdeceb;
+    --danger-text: #a52a22;
+    --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.06);
+    --shadow: 0 1px 3px rgb(16 24 40 / 0.08), 0 8px 24px -16px rgb(16 24 40 / 0.2);
+    --shadow-lg: 0 12px 40px -12px rgb(16 24 40 / 0.22);
+    --ring: 0 0 0 3px rgb(37 99 235 / 0.2);
+  }
+}
+
+/* -------------------------------------------------------------- base */
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   margin: 0;
-  font-family: var(--font);
   background: var(--bg);
   color: var(--text);
-  line-height: 1.5;
+  font-family: var(--font);
+  font-size: var(--text-base);
+  line-height: var(--leading);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* The colour swap on a theme change should feel like a light turning on, not like a page
+     reload. Backgrounds only: transitioning `color` on every element costs more than it buys. */
+  transition: background-color var(--normal) var(--ease);
 }
 
 #root {
   min-height: 100vh;
 }
 
+h1,
+h2,
+h3,
+p {
+  margin: 0;
+}
+
+/* One visible focus treatment for the whole app, on keyboard focus only. A mouse user clicking
+   a button does not need a ring; a keyboard user needs it on everything, and `:focus-visible`
+   is the browser telling us which is which. */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--text-inverse);
+}
+
+/* ---- form elements ---- */
+
 button {
-  font-family: var(--font);
+  font: inherit;
+  color: inherit;
   cursor: pointer;
   border: none;
-  border-radius: 8px;
-  padding: 10px 18px;
-  font-size: 14px;
-  font-weight: 500;
-  transition: background 0.15s, color 0.15s;
+  background: none;
+  padding: 0;
 }
 
-input, textarea {
-  font-family: var(--font);
-  background: var(--surface2);
+button:disabled {
+  cursor: not-allowed;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  width: 100%;
+  padding: 9px 11px;
+  background: var(--surface-2);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   color: var(--text);
-  padding: 10px 12px;
-  font-size: 14px;
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease),
+    background-color var(--fast) var(--ease);
 }
 
-input::placeholder, textarea::placeholder {
-  color: var(--textMuted);
+input:hover:not(:disabled),
+textarea:hover:not(:disabled),
+select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: var(--ring);
+  background: var(--surface);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+}
+
+input:disabled,
+textarea:disabled,
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+textarea {
+  line-height: var(--leading);
+  resize: vertical;
+  min-height: 92px;
+}
+
+select {
+  appearance: none;
+  padding-right: 32px;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% + 1px),
+    calc(100% - 12px) calc(50% + 1px);
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+input[type='file'] {
+  padding: 0;
+  border: none;
+  background: none;
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+/* ---- scrollbars ---- */
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--radius-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: content-box;
+}
+
+/* ---- reduced motion ----
+ * Honoured in one place. Animation here is decoration, never information: nothing in this app
+ * is communicated *only* by movement, so switching it all off loses nothing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
