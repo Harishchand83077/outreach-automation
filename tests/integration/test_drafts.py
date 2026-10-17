@@ -683,3 +683,75 @@ class TestRejectingQueuesARegeneration:
         await db.commit()
 
         assert await drafts_repo.latest_rejection_feedback(db, ctx, lead_id=lead.id) == "too formal"
+
+
+class TestAFailedDraftIsRetiredByItsReplacement:
+    """A failed draft is kept in the review queue so a reviewer can see that a weak model
+    produced something unusable -- but only until a newer attempt exists.
+
+    It was not retired, because `validation_failed` is not a *live* status, so the queue showed
+    both the failure and its replacement: two rows for one lead, one unjudgeable and the other
+    the real thing. Seen on the live system the moment regeneration started working.
+    """
+
+    async def test_the_failure_leaves_the_queue_when_a_better_one_arrives(
+        self, db, ctx, lead_factory
+    ):
+        lead = await lead_factory(state="DRAFTED")
+        failed = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+        assert failed.status == "validation_failed"
+
+        replacement = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+        await db.refresh(failed)
+
+        assert failed.status == "superseded"
+        assert replacement.status == "pending_review"
+
+        items = await drafts_repo.review_queue(db, ctx, limit=20, include_failed=True)
+        shown = [item.draft.id for item in items]
+        assert replacement.id in shown
+        assert failed.id not in shown, "one lead, one row"
+
+    async def test_nothing_is_lost_from_the_record(self, db, ctx, lead_factory):
+        """The row stays with its failures, and a `draft.created` event per attempt means the
+        lead's timeline still shows every version and why each one failed."""
+        lead = await lead_factory(state="DRAFTED")
+        failed = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+        await drafts_repo.save_draft(db, ctx, lead=lead, kind="initial", result=passing_result())
+        await db.commit()
+        await db.refresh(failed)
+
+        assert failed.validation["failures"], "the reason it failed is still on the row"
+        events = (
+            (
+                await db.execute(
+                    select(Event).where(Event.lead_id == lead.id, Event.type == "draft.created")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 2
+
+    async def test_a_reply_and_a_first_email_do_not_retire_each_other(self, db, ctx, lead_factory):
+        """Superseding is per kind: a new reply must not retire the lead's first email."""
+        lead = await lead_factory(state="DRAFTED")
+        initial = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=failing_result()
+        )
+        await db.commit()
+
+        await drafts_repo.save_draft(db, ctx, lead=lead, kind="reply", result=passing_result())
+        await db.commit()
+        await db.refresh(initial)
+
+        assert initial.status == "validation_failed"
