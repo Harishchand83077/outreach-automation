@@ -1066,3 +1066,28 @@ visible *after* a newer attempt exists is just noise in the one screen that must
 It is superseded now. Nothing is lost: the row keeps its failures and `save_draft` writes a
 `draft.created` event per attempt, so the lead's timeline still shows every version and why each
 one failed.
+
+**Approving a reply was a 500, and it was the third link in the same chain.** The operator saw
+only *"Something went wrong. Quote the request id if you report this."*
+
+`approve()` always moved the lead to `APPROVED`. A reply is sent from `REPLIED` and a follow-up
+from `SENT` — `outbox._VALID_FROM` says so and the send loop checks it — so moving either to
+`APPROVED` would make the message **unsendable by the very act of approving it**. It never got
+that far: `REPLIED -> APPROVED` is not a legal transition, so it raised inside the route.
+
+Only a first email moves the lead now. What makes a draft sendable is the *draft* being
+approved; the lead's state says where the **conversation** is, and approving our answer does not
+move the conversation — sending it does. A reply or follow-up approval writes a `draft.approved`
+event instead, so a decision a person made is still in the trail.
+
+Three defects in a row on one path, each hidden behind the last: the job was never queued in a
+runnable shape, the one draft that got written was refused over a full stop, and the one that
+passed could not be approved. Every one was a correct component meeting another correct
+component on a contract nothing checked.
+
+**And why `test_campaign`'s reply produced no draft at all: it is working as designed, and that
+was invisible.** The reply was classified `other`, whose policy is "unclear — a person decides",
+which deliberately proposes no draft. Five labels do that. Nothing recorded it, so the lead sat
+in `REPLIED` with no draft, no job and no explanation an operator could see — indistinguishable
+from drafting being broken, which it also was at the time, so the two could not be told apart. A
+`reply.no_draft_by_policy` event now names the label, the action and the reason.

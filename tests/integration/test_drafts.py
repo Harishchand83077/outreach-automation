@@ -755,3 +755,104 @@ class TestAFailedDraftIsRetiredByItsReplacement:
         await db.refresh(initial)
 
         assert initial.status == "validation_failed"
+
+
+class TestApprovingEachKindOfDraft:
+    """Approving a *reply* produced a 500 and the operator got only:
+
+        Something went wrong. Quote the request id if you report this.
+
+    `approve` always moved the lead to `APPROVED`. A reply is sent from `REPLIED` and a
+    follow-up from `SENT` -- `outbox._VALID_FROM` says so -- so moving either to `APPROVED`
+    would make the message unsendable by the very act of approving it. It never got that far:
+    `REPLIED -> APPROVED` is not a legal transition, so it raised inside the route.
+
+    What makes a draft sendable is the *draft* being approved. The lead's state says where the
+    conversation is, and approving our answer does not move the conversation -- sending it does.
+    """
+
+    async def test_a_first_email_moves_the_lead_to_approved(self, db, ctx, lead_factory):
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+
+        await drafts_repo.approve(db, ctx, draft_id=draft.id, approved_by="reviewer@example.com")
+        await db.commit()
+        await db.refresh(lead)
+
+        assert lead.state == "APPROVED"
+
+    async def test_approving_a_reply_leaves_the_lead_in_replied(self, db, ctx, lead_factory):
+        lead = await lead_factory(state="REPLIED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="reply", result=passing_result()
+        )
+        await db.commit()
+
+        approved = await drafts_repo.approve(
+            db, ctx, draft_id=draft.id, approved_by="reviewer@example.com"
+        )
+        await db.commit()
+        await db.refresh(lead)
+
+        assert approved.status == "approved"
+        assert lead.state == "REPLIED", "a reply is sent from REPLIED; moving it breaks the send"
+
+    async def test_approving_a_followup_leaves_the_lead_in_sent(self, db, ctx, lead_factory):
+        lead = await lead_factory(state="SENT")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="followup", result=passing_result()
+        )
+        await db.commit()
+
+        approved = await drafts_repo.approve(
+            db, ctx, draft_id=draft.id, approved_by="reviewer@example.com"
+        )
+        await db.commit()
+        await db.refresh(lead)
+
+        assert approved.status == "approved"
+        assert lead.state == "SENT"
+
+    async def test_the_approval_is_still_in_the_audit_trail(self, db, ctx, lead_factory):
+        """The state does not change, but a person made a decision and the trail must show it."""
+        lead = await lead_factory(state="REPLIED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="reply", result=passing_result()
+        )
+        await db.commit()
+
+        await drafts_repo.approve(db, ctx, draft_id=draft.id, approved_by="reviewer@example.com")
+        await db.commit()
+
+        events = (
+            (
+                await db.execute(
+                    select(Event).where(Event.lead_id == lead.id, Event.type == "draft.approved")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
+        assert events[0].actor_id == "reviewer@example.com"
+        assert events[0].data["kind"] == "reply"
+
+    async def test_an_approved_reply_is_what_the_send_loop_looks_for(self, db, ctx, lead_factory):
+        """The point of the whole fix: after approval the message is actually sendable. The
+        send loop wants the lead in REPLIED *and* an approved reply draft."""
+        from app.db import outbox
+        from app.domain.state import LeadState
+
+        lead = await lead_factory(state="REPLIED")
+        draft = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="reply", result=passing_result()
+        )
+        await db.commit()
+        await drafts_repo.approve(db, ctx, draft_id=draft.id, approved_by="reviewer@example.com")
+        await db.commit()
+        await db.refresh(lead)
+
+        assert LeadState(lead.state) in outbox._VALID_FROM[outbox.KIND_REPLY]

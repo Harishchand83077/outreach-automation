@@ -95,21 +95,38 @@ async def draft_reply(
     """
     now = now or datetime.now(tz=UTC)
 
-    policy = policy_for(label)
-    if not policy.draft_reply:
-        return ReplyDraftOutcome(
-            skipped_reason=(
-                f"the policy for {label.value} is {policy.action.value}, which does not send "
-                "or draft anything"
-            )
-        )
-    # Belt and braces: the only action that may reach here is the one that asks for a human.
-    if policy.action is not ReplyAction.NEEDS_HUMAN:
-        return ReplyDraftOutcome(skipped_reason=f"{label.value} does not need a human reply")
-
     lead = await session.get(Lead, lead_id)
     if lead is None or lead.org_id != ctx.org_id:
         return ReplyDraftOutcome(skipped_reason="lead not found in this org")
+
+    # **Why no draft appeared has to be on the lead, not only in this return value.** Several
+    # labels deliberately produce no proposed reply -- `other` is "unclear, a person decides",
+    # and `not_interested` is a clear no -- but nothing recorded that, so the lead sat in
+    # `REPLIED` with no draft, no job and no explanation anywhere an operator could see. From
+    # the dashboard that is indistinguishable from drafting being broken, which it also was at
+    # the time, so the two were impossible to tell apart.
+    policy = policy_for(label)
+    skip = ""
+    if not policy.draft_reply:
+        skip = (
+            f"the policy for {label.value} is {policy.action.value}, which does not send "
+            "or draft anything"
+        )
+    elif policy.action is not ReplyAction.NEEDS_HUMAN:
+        # Belt and braces: the only action that may reach here is the one that asks for a human.
+        skip = f"{label.value} does not need a human reply"
+
+    if skip:
+        await record_event(
+            session,
+            org_id=ctx.org_id,
+            campaign_id=lead.campaign_id,
+            lead_id=lead.id,
+            actor="system",
+            type="reply.no_draft_by_policy",
+            data={"label": label.value, "action": policy.action.value, "why": skip},
+        )
+        return ReplyDraftOutcome(skipped_reason=skip)
     if await is_suppressed(session, org_id=ctx.org_id, email=lead.email_norm):
         # Suppression is checked again at send time, but a suppressed address must not even
         # reach a review queue: a reviewer should never be shown an approve button for someone

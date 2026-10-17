@@ -130,6 +130,11 @@ async def save_draft(
     return row
 
 
+def kind_of(draft: Draft) -> str:
+    """A draft's kind as plain text, since the column is a free string."""
+    return str(draft.kind)
+
+
 async def _supersede_live(session: AsyncSession, *, lead_id: uuid.UUID, kind: str) -> None:
     """Retire whatever this lead's previous draft of this kind was.
 
@@ -253,16 +258,42 @@ async def approve(
             now=now,
         )
 
-    await transition(
-        session,
-        org_id=ctx.org_id,
-        lead_id=lead.id,
-        to_state=LeadState.APPROVED,
-        actor="user",
-        actor_id=approved_by,
-        data={"draft_id": str(target.id), "version": target.version, "edited": edited},
-        now=now,
-    )
+    # **Only a first email moves the lead to `APPROVED`.** A reply is sent from `REPLIED` and a
+    # follow-up from `SENT` -- `outbox._VALID_FROM` says so, and the send loop checks it -- so
+    # moving either to `APPROVED` would make the message unsendable by the very act of
+    # approving it. It never got that far: `REPLIED -> APPROVED` is not a legal transition, so
+    # approving a reply raised inside the route and the operator got
+    #
+    #     Something went wrong. Quote the request id if you report this.
+    #
+    # with the draft still pending and no way to tell why. What makes a draft sendable is the
+    # draft being `approved`; the lead's state says where the *conversation* is, and approving
+    # our answer does not move the conversation -- sending it does.
+    data = {"draft_id": str(target.id), "version": target.version, "edited": edited}
+    if kind_of(draft) == "initial":
+        await transition(
+            session,
+            org_id=ctx.org_id,
+            lead_id=lead.id,
+            to_state=LeadState.APPROVED,
+            actor="user",
+            actor_id=approved_by,
+            data=data,
+            now=now,
+        )
+    else:
+        # The state does not change, but a person made a decision and the trail has to show it.
+        await record_event(
+            session,
+            org_id=ctx.org_id,
+            campaign_id=lead.campaign_id,
+            lead_id=lead.id,
+            actor="user",
+            actor_id=approved_by,
+            type="draft.approved",
+            data={**data, "kind": kind_of(draft), "lead_state": lead.state},
+        )
+
     await session.flush()
     return target
 

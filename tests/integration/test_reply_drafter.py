@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import select
 
-from app.db.models import Draft, Message, Research
+from app.db.models import Draft, Event, Message, Research
 from app.db.repo import OrgContext, add_suppression
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
@@ -359,3 +360,74 @@ async def _give_campaign_a_persona(db, lead) -> None:
     campaign = await db.get(Campaign, lead.campaign_id)
     campaign.persona = PERSONA.model_dump(mode="json")
     await db.commit()
+
+
+class TestWhyNoDraftAppeared:
+    """Several labels deliberately produce no proposed reply. Nothing recorded that, so the
+    lead sat in `REPLIED` with no draft, no job and no explanation anywhere an operator could
+    see -- indistinguishable from drafting being broken, which it also was at the time.
+    """
+
+    async def test_an_unclear_reply_says_why_it_got_no_draft(self, db, ctx, lead_factory):
+        """`other` is "unclear, a person decides", which is a decision rather than a failure."""
+        lead = await lead_factory(state=LeadState.REPLIED.value)
+        message = await inbound(db, ctx, lead, body="?")
+
+        outcome = await draft_reply(
+            db,
+            ctx,
+            router=FakeRouter(GROUNDED),
+            lead_id=lead.id,
+            message_id=message.id,
+            label=ReplyLabel.OTHER,
+        )
+        await db.commit()
+
+        assert outcome.draft_id is None
+        event = await db.scalar(
+            select(Event).where(Event.lead_id == lead.id, Event.type == "reply.no_draft_by_policy")
+        )
+        assert event is not None, "the lead has to say why nothing was proposed"
+        assert event.data["label"] == "other"
+        assert "does not send" in event.data["why"]
+
+    async def test_a_clear_no_says_so_too(self, db, ctx, lead_factory):
+        lead = await lead_factory(state=LeadState.REPLIED.value)
+        message = await inbound(db, ctx, lead, body="not interested")
+
+        await draft_reply(
+            db,
+            ctx,
+            router=FakeRouter(GROUNDED),
+            lead_id=lead.id,
+            message_id=message.id,
+            label=ReplyLabel.NOT_INTERESTED,
+        )
+        await db.commit()
+
+        event = await db.scalar(
+            select(Event).where(Event.lead_id == lead.id, Event.type == "reply.no_draft_by_policy")
+        )
+        assert event is not None
+        assert event.data["action"] == "close"
+
+    async def test_a_label_that_does_draft_records_no_such_event(self, db, ctx, lead_factory):
+        """The event means "deliberately none", so it must not appear when one was written."""
+        lead = await lead_factory(state=LeadState.REPLIED.value)
+        message = await inbound(db, ctx, lead, body="Tell me more.")
+
+        outcome = await draft_reply(
+            db,
+            ctx,
+            router=FakeRouter(GROUNDED),
+            lead_id=lead.id,
+            message_id=message.id,
+            label=ReplyLabel.QUESTION,
+        )
+        await db.commit()
+
+        assert outcome.draft_id is not None
+        event = await db.scalar(
+            select(Event).where(Event.lead_id == lead.id, Event.type == "reply.no_draft_by_policy")
+        )
+        assert event is None
