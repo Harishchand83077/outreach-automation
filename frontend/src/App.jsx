@@ -84,6 +84,11 @@ function Dashboard({ session }) {
   const [error, setError] = useState(null)
   const [toasts, setToasts] = useState([])
   const [campaigns, setCampaigns] = useState([])
+  //: **"Empty" and "not loaded yet" are different answers and must look different.** The list
+  //: starts `[]`, which is indistinguishable from "this org has no campaigns" -- so for the
+  //: half-second before the fetch returned, the screen said "No campaign yet" to somebody with
+  //: two campaigns. A loading state that states a falsehood is worse than a spinner.
+  const [campaignsLoaded, setCampaignsLoaded] = useState(false)
   const [campaignId, setCampaignId] = useState(null)
   const [view, setView] = useState('review')
   const [attention, setAttention] = useState(null)
@@ -126,6 +131,10 @@ function Dashboard({ session }) {
         setCampaignId((current) => current || data.campaigns[0]?.id || null)
       })
       .catch(handle)
+      // Loaded means "we asked and heard back", including hearing an error -- otherwise a
+      // failed fetch leaves the screen on a skeleton for ever with the real error in a banner
+      // above it.
+      .finally(() => setCampaignsLoaded(true))
   }, [handle])
 
   const refreshAttention = useCallback(() => {
@@ -258,7 +267,9 @@ function Dashboard({ session }) {
             value={campaignId || ''}
             onChange={(event) => setCampaignId(event.target.value || null)}
           >
-            {campaigns.length === 0 ? <option value="">No campaigns yet</option> : null}
+            {campaigns.length === 0 ? (
+              <option value="">{campaignsLoaded ? 'No campaigns yet' : 'Loading…'}</option>
+            ) : null}
             {campaigns.map((row) => (
               <option key={row.id} value={row.id}>
                 {row.name}
@@ -310,6 +321,11 @@ function Dashboard({ session }) {
               }}
               onCancel={() => setView('review')}
             />
+          ) : !campaign && !campaignsLoaded ? (
+            <>
+              <div className="skeleton" style={{ height: 30, width: 240, marginBottom: 18 }} />
+              <SkeletonList count={2} rows={3} />
+            </>
           ) : !campaign ? (
             <>
               <h1 className="page-title">No campaign yet</h1>
