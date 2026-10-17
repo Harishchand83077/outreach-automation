@@ -310,6 +310,9 @@ async def reject(
         session,
         org_id=ctx.org_id,
         kind=JobKind.DRAFT_LEAD if draft.kind == "initial" else JobKind.DRAFT_REPLY,
+        # The lead travels in the **column**, which is what every other caller sets and what
+        # the FK uses to cascade a deleted lead's work away. The payload keeps it too, because
+        # a job row is read by people as well as by code.
         lead_id=lead.id,
         payload={"lead_id": str(lead.id)},
         # The partial unique index covers only live statuses, so this is refused while an
