@@ -131,12 +131,24 @@ async def save_draft(
 
 
 async def _supersede_live(session: AsyncSession, *, lead_id: uuid.UUID, kind: str) -> None:
+    """Retire whatever this lead's previous draft of this kind was.
+
+    **`validation_failed` is superseded too, and that is a change.** A failed draft is kept in
+    the review queue deliberately, so a reviewer can see that a weak model produced something
+    unusable rather than wonder where the lead went -- but only until a newer attempt exists.
+    It did not used to be retired, because it is not a *live* status, so the queue showed both
+    the failure and its replacement: two rows for one lead, one of them unjudgeable and the
+    other the real thing. Seen on the live system the moment regeneration started working.
+
+    Nothing is lost. The row stays, with its failures, and `save_draft` writes a `draft.created`
+    event per attempt, so the lead's timeline still shows every version and why each failed.
+    """
     await session.execute(
         update(Draft)
         .where(
             Draft.lead_id == lead_id,
             Draft.kind == kind,
-            Draft.status.in_(LIVE_STATUSES),
+            Draft.status.in_(JUDGEABLE_STATUSES),
         )
         .values(status="superseded")
     )

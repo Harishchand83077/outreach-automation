@@ -1053,3 +1053,16 @@ URL.
 `https://calendar.google.com/calendar/u/0/r?pli=1`, which opens *the reader's own* Google
 Calendar. It books nothing. A recipient clicking it sees their own week. That is a persona value,
 not a bug, and it should be a real booking link before any of this reaches a stranger.
+
+**A failed draft stayed in the review queue beside its own replacement.** Seen on the live
+dashboard the moment regeneration started working: one lead showing a `validation failed` reply
+at v1 *and* a `pending_review` reply at v2, two rows for one lead, one of them unjudgeable.
+
+`_supersede_live` retired the previous draft only when it was in a *live* status, and
+`validation_failed` is not one — so every failure accumulated in the queue for ever, beside
+whatever eventually succeeded. Keeping a failure visible is deliberate, so a reviewer can see
+that a weak model produced something unusable rather than wonder where the lead went; keeping it
+visible *after* a newer attempt exists is just noise in the one screen that must stay scannable.
+It is superseded now. Nothing is lost: the row keeps its failures and `save_draft` writes a
+`draft.created` event per attempt, so the lead's timeline still shows every version and why each
+one failed.
