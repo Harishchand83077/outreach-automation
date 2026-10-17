@@ -43,6 +43,9 @@ PLACEHOLDER_PATTERNS: tuple[str, ...] = (
 )
 
 _URL = re.compile(r"https?://[^\s<>\"')\]]+", re.IGNORECASE)
+#: Punctuation a sentence ends with, which the pattern above happily swallows. Stripped before
+#: a URL is counted or compared.
+_URL_TRAILING = ".,;:!?"
 #: A bare number, a percentage, or a currency amount, including a magnitude suffix. The suffix
 #: matters: without it "$2.4M" escaped the trailing non-word boundary, and an invented revenue
 #: figure is precisely what this rule exists to catch.
@@ -301,8 +304,8 @@ def _check_links(draft: DraftOutput, persona: Persona, report: ValidationReport)
     opt-out and identity lines are added by the sender, not the model, so they are not counted
     here.
     """
-    urls = _URL.findall(draft.body)
-    booking = str(persona.booking_url) if persona.booking_url else ""
+    urls = [found_url(raw) for raw in _URL.findall(draft.body)]
+    booking = found_url(str(persona.booking_url)) if persona.booking_url else ""
 
     if len(urls) > 1:
         report.fail(f"the body contains {len(urls)} links; include at most one")
@@ -311,6 +314,23 @@ def _check_links(draft: DraftOutput, persona: Persona, report: ValidationReport)
         # Compared without the trailing slash, which models add and drop at random.
         if urls[0].rstrip("/") != booking.rstrip("/"):
             report.fail(f"the only link allowed is the booking URL {booking}, not {urls[0]}")
+
+
+def found_url(raw: str) -> str:
+    """A URL as matched in prose, with the sentence's punctuation taken back off.
+
+    `_URL` deliberately matches greedily, so a sentence ending "...book here:
+    https://cal.example.com/asha." captures the full stop as part of the URL. That produced a
+    draft rejected on the live system with a message nobody could act on, because the two
+    strings it printed looked identical:
+
+        the only link allowed is the booking URL https://calendar.google.com/...pli=1,
+        not https://calendar.google.com/...pli=1.
+
+    A correct draft was refused because its last sentence ended in a full stop. None of
+    `.,;:!?` carries meaning at the end of a URL, and a trailing one is always the prose's.
+    """
+    return raw.rstrip(_URL_TRAILING)
 
 
 def _check_claims_resolve(
