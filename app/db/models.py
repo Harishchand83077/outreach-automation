@@ -211,6 +211,10 @@ class Lead(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     #: Every extra sheet column, kept so research and drafting can use it (issue A5).
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: Which upload this lead arrived in, so the wrong sheet can be undone. NULL for anything
+    #: imported before batches existed: there is no record of which upload those came from, and
+    #: inventing one would make an undo delete rows it was not asked about.
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
 
     #: Only `app.db.state.transition()` may write this.
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="NEW")
@@ -227,6 +231,11 @@ class Lead(Base):
     __table_args__ = (
         UniqueConstraint("campaign_id", "email_norm", name="uq_leads_campaign_email"),
         Index("ix_leads_org_state", "org_id", "state"),
+        Index(
+            "ix_leads_import_batch",
+            "import_batch_id",
+            postgresql_where=text("import_batch_id IS NOT NULL"),
+        ),
         # The scheduler's hot query: due work, cheapest possible scan.
         Index(
             "ix_leads_due",

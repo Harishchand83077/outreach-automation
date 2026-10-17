@@ -917,6 +917,106 @@ class TestImportRoutesByMode:
         assert await db.scalar(select(C.mode).where(C.id == campaign_id)) == "template"
 
 
+class TestUndoingAnImport:
+    """ "I uploaded the wrong sheet" had no answer. The only way back was `DELETE /leads/{id}`,
+    one lead at a time, and that is the **erasure** path for a data-subject request -- it
+    deliberately leaves a hashed suppression behind, so undoing a mistaken import through it
+    would permanently block every address in the sheet and the corrected upload would silently
+    skip exactly the people it was meant to reach.
+    """
+
+    def _sheet(self, *addresses: str):
+        lines = ["email,full name,company"]
+        for n, address in enumerate(addresses, start=1):
+            lines.append(f"{address},Lead {n},Company {n}")
+        body = ("\n".join(lines) + "\n").encode()
+        return {"file": ("leads.csv", body, "text/csv")}
+
+    async def test_the_commit_returns_the_batch_id(self, api, owner, db, org):
+        """Without it there is nothing to undo *with*, and a dashboard left to find "the most
+        recent batch" would undo the wrong one for anybody with two tabs open."""
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Undoable", "persona": PERSONA}
+        ).json()
+
+        response = api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet("undo1@example.com"),
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["batch_id"], response.json()
+
+    async def test_undoing_removes_the_leads(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Undone", "persona": PERSONA}
+        ).json()
+        batch_id = api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet("undo2@example.com", "undo3@example.com"),
+        ).json()["batch_id"]
+
+        response = api.delete(
+            f"/api/v1/campaigns/{created['id']}/imports/{batch_id}", headers=owner
+        )
+
+        assert response.status_code == 200, response.text
+        assert response.json()["removed"] == 2
+        leads = api.get(f"/api/v1/campaigns/{created['id']}/leads", headers=owner).json()
+        assert leads["leads"] == []
+
+    async def test_the_corrected_sheet_imports_normally_afterwards(self, api, owner):
+        """The consequence of suppressing nothing, demonstrated rather than asserted about."""
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Second go", "persona": PERSONA}
+        ).json()
+        batch_id = api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet("undo4@example.com"),
+        ).json()["batch_id"]
+        api.delete(f"/api/v1/campaigns/{created['id']}/imports/{batch_id}", headers=owner)
+
+        again = api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet("undo4@example.com"),
+        )
+
+        assert again.status_code == 200, again.text
+        assert again.json()["imported"] == 1, (
+            "an undo that suppressed the address would skip it here, and say nothing"
+        )
+
+    async def test_a_member_may_not_undo_an_import(self, api, db, org, keypair):
+        """It deletes rows, so it is admin-only -- the same reasoning as erasing a lead. The
+        role gate comes before the lookup, so any id demonstrates it."""
+        private, _ = keypair
+        subject = f"member-{uuid.uuid4()}"
+        db.add(Member(org_id=org.id, user_id=subject, email="member@example.com", role="member"))
+        await db.commit()
+        member = {"Authorization": f"Bearer {token_for(private, subject=subject)}"}
+
+        response = api.delete(
+            f"/api/v1/campaigns/{uuid.uuid4()}/imports/{uuid.uuid4()}", headers=member
+        )
+
+        assert response.status_code == 403
+
+    async def test_another_orgs_campaign_is_not_found(self, api, stranger, owner):
+        mine = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Mine too", "persona": PERSONA}
+        ).json()
+
+        response = api.delete(
+            f"/api/v1/campaigns/{mine['id']}/imports/{uuid.uuid4()}", headers=stranger
+        )
+
+        assert response.status_code == 404
+
+
 class TestCreatingACampaign:
     async def test_it_creates_one_in_draft(self, api, owner):
         response = api.post(
