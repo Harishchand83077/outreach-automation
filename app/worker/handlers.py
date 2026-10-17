@@ -25,10 +25,11 @@ from typing import Any, Protocol
 
 import httpx
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import drafts as draft_store
-from app.db.models import Campaign, Job, Lead
+from app.db.models import Campaign, Classification, Job, Lead, Message
 from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
 from app.db.state import transition
@@ -273,14 +274,28 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
 
 
 async def handle_draft_reply(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
-    """Propose an answer to an inbound reply. Never sends; produces a draft for review."""
-    lead_id = _payload_uuid(job, "lead_id")
-    message_id = _payload_uuid(job, "message_id")
-    raw_label = (job.payload or {}).get("label")
-    try:
-        label = ReplyLabel(str(raw_label))
-    except ValueError as exc:
-        raise PermanentFailure(f"unknown reply label {raw_label!r}") from exc
+    """Propose an answer to an inbound reply. Never sends; produces a draft for review.
+
+    **Both of this job's callers disagreed with this handler, in opposite directions**, and the
+    result was that a proposed reply was never written at all:
+
+    - `reply.service` enqueues on ingest with `payload={"message_id", "label"}` and puts the
+      lead in the `jobs.lead_id` *column*. The handler read `payload["lead_id"]`, so every
+      reply from a real inbound message died on `job payload has no lead_id` -- permanently,
+      because a missing key is not retryable. The lead reached `REPLIED` and then nothing
+      proposed an answer, which looks from the dashboard exactly like a reply nobody has got to
+      yet.
+    - `drafts.reject` enqueues a regeneration with `payload={"lead_id"}` and no `message_id`,
+      so rejecting a reply draft would have died the same way on the other key.
+
+    So the job is resolved from whatever each caller does provide: the lead from the column
+    first (every caller sets it, and `jobs.lead_id` is the FK that makes a deleted lead cascade
+    its work away), and the message from the payload or, for a regeneration, the latest inbound
+    message for that lead -- which is the message a regenerated reply is answering.
+    """
+    lead_id = job.lead_id or _payload_uuid(job, "lead_id")
+    message_id = await _reply_message_id(session, job, lead_id)
+    label = await _reply_label(session, job, message_id)
 
     await draft_reply(
         session,
@@ -290,6 +305,65 @@ async def handle_draft_reply(ctx: WorkerContext, session: AsyncSession, job: Job
         message_id=message_id,
         label=label,
     )
+
+
+async def _reply_message_id(session: AsyncSession, job: Job, lead_id: uuid.UUID) -> uuid.UUID:
+    """The inbound message this reply answers.
+
+    From the payload when the caller named one. A regeneration does not: a reviewer rejecting a
+    proposed reply is asking for a better answer to the *same* message, so the newest inbound
+    one for the lead is the right answer and the only one that is always available.
+    """
+    raw = (job.payload or {}).get("message_id")
+    if raw is not None:
+        return _payload_uuid(job, "message_id")
+
+    latest = await session.scalar(
+        select(Message.id)
+        .where(
+            Message.org_id == job.org_id,
+            Message.lead_id == lead_id,
+            Message.direction == "in",
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    if latest is None:
+        # Nothing to answer. Not retryable: an inbound message does not appear later for a job
+        # that was queued because one had already arrived.
+        raise PermanentFailure(f"lead {lead_id} has no inbound message to reply to")
+    return latest
+
+
+async def _reply_label(session: AsyncSession, job: Job, message_id: uuid.UUID) -> ReplyLabel:
+    """What we decided this inbound message was.
+
+    From the payload when the caller named one. Otherwise from `classifications`, which is the
+    authoritative record -- written before anything acts on it, precisely so that the answer
+    does not depend on re-running a model whose weights may have changed (ADR for issue B17).
+    Reading it back beats storing a second copy on the draft, which could disagree with it.
+
+    A regeneration has no label of its own, and there is no safe default: the label decides
+    whether a reply may be drafted at all, so guessing could propose an answer to somebody who
+    asked to be left alone.
+    """
+    raw = (job.payload or {}).get("label")
+    if raw is None:
+        raw = await session.scalar(
+            select(Classification.label)
+            .where(
+                Classification.org_id == job.org_id,
+                Classification.message_id == message_id,
+            )
+            .order_by(Classification.created_at.desc())
+            .limit(1)
+        )
+    if raw is None:
+        raise PermanentFailure(f"message {message_id} has no classification to reply from")
+    try:
+        return ReplyLabel(str(raw))
+    except ValueError as exc:
+        raise PermanentFailure(f"unknown reply label {raw!r}") from exc
 
 
 async def _hooks_for(

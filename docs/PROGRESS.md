@@ -994,3 +994,41 @@ attributable. A message still `sending` counts as emailed, since ADR-002 is expl
 assume such a message did not leave. So is a lead that has replied or bounced: something happened
 to that person. The response says what was kept and why — *"Removed 9 lead(s). Kept 1: 1 already
 emailed."* — rather than reporting a silent partial success.
+
+**A proposed reply has never once been written, and the deploy's own logs said so.** Found by
+reading the worker log straight after deploying everything above:
+
+```
+"job permanently failed" ... kind: "draft_reply", error: "job payload has no lead_id"
+```
+
+**Two callers queue a `draft_reply` job, with two different payload shapes, and neither matched
+what the handler read.**
+
+- `reply.service` queues on ingest with `payload={"message_id", "label"}` and puts the lead in
+  the `jobs.lead_id` **column**. The handler read `payload["lead_id"]`. So **every reply to a
+  real inbound message died**, permanently — a missing key is not retryable. The lead reached
+  `REPLIED` and nothing ever proposed an answer, which from the dashboard is indistinguishable
+  from a reply nobody has got to yet.
+- `drafts.reject` queues a regeneration with `payload={"lead_id"}` and no `message_id`, so
+  rejecting a reply draft would have died the same way on the other key.
+
+Each side was individually right and individually tested. Nothing checked that they agreed —
+which is now, unmistakably, the dominant shape of defect in this project: the rejection path,
+`NEW -> RESEARCHED`, `RESEARCHED -> AWAITING_APPROVAL`, `DRAFTED -> DRAFTED`, research queuing
+nothing, the free-mail cache key, and now this.
+
+The handler resolves the job from whatever each caller does provide: the **lead from the
+column** (every caller sets it, and it is the FK that cascades a deleted lead's work away), the
+**message** from the payload or else the newest inbound message for that lead — which is what a
+regeneration is answering — and the **label from `classifications`**, which is the authoritative
+record, written before anything acts on it precisely so the answer does not depend on re-running
+a model (issue B17). Reading it back beats storing a second copy on the draft that could
+disagree with it.
+
+Two things it still refuses, both permanently: a lead with no inbound message, and a message
+with no classification. There is no safe default for a label — it decides whether a reply may be
+drafted at all, so guessing could propose an answer to somebody who asked to be left alone.
+
+**The new tests drive the real producers rather than a payload a test author wrote.** That is the
+only shape of test that could have caught this: both sides were already covered in isolation.
