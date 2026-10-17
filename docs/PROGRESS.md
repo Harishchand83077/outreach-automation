@@ -1174,3 +1174,42 @@ the connection pool, dead letters, roles, worker liveness, the backup trade, and
 throughput ceiling is (human review, as §20 predicted). It marks what is **not** implemented as a
 gap rather than describing it as if it worked, which is how most of this project's defects got
 written down as features.
+
+**The dashboard has a design system rather than a stylesheet.** It was readable and plain: one
+weight of grey, seven identical stat tiles, "Loading…" as a loading state, and an empty state
+that was a sentence in a box. Fine to operate, not something to put in front of a founder.
+
+**Tokens first.** `index.css` is now a vocabulary — a neutral ramp, semantic colours with soft
+backgrounds and readable text pairs, a type scale named by role, spacing, radii, shadows and
+*motion* tokens. Two rules keep it honest: a component never uses a raw colour, and
+`prefers-reduced-motion` is honoured in exactly one place rather than in forty. Nothing in this
+app is communicated only by movement, so switching it all off loses nothing.
+
+**Light and dark, with a toggle.** The same token names are defined twice, so no component asks
+which theme is on. An untouched install gets the system's answer; once somebody chooses, the
+choice is stored and wins. A dark-only dashboard demoed in a bright room is a bad first
+impression, and this is three blocks of CSS.
+
+**The review queue is now keyboard-driven**, which is the screen that decides whether this tool
+is pleasant: `J`/`K` to move, `A` to approve, `R` to reject, `X` to select. Deliberately inert
+while typing — an editor fixing a subject must be able to write "approach" without approving
+three drafts on the way through. The focused card is marked and scrolled into view, and a
+progress bar replaces two stat tiles that between them held two integers: how far through you
+are is a shape, not a pair of numbers.
+
+**Seven equal stat tiles became two groups.** Volume and outcomes answer different questions,
+and giving them one visual weight made "Meetings booked: 0" look exactly as important as
+"Leads: 2" — so the number anybody cares about was the hardest to find. Outcomes take a colour
+only when non-zero: a red "Bounced 0" is an alarm about nothing.
+
+**Smaller things that add up.** Icons in the sidebar and an identity block instead of two lines
+of text; skeletons shaped like the content instead of the word "Loading"; toasts that carry an
+icon so success and failure differ by more than wording; a focus ring on `:focus-visible` only;
+a busy button that keeps its width so a row of controls does not reflow mid-click; hover lift on
+list rows; and the destructive "Delete campaign" pushed away from "Pause sending", because a
+destructive action a thumb-width from a routine one is one somebody will eventually hit by
+accident.
+
+**No UI library.** Twelve hand-written SVG paths instead of an icon package: they ship nothing,
+cannot break on a major version, and are not a dependency to audit for the life of the project.
+The CSS is ~700 lines and the whole bundle grew by 2 KB gzipped.
