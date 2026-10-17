@@ -1213,3 +1213,16 @@ accident.
 **No UI library.** Twelve hand-written SVG paths instead of an icon package: they ship nothing,
 cannot break on a major version, and are not a dependency to audit for the life of the project.
 The CSS is ~700 lines and the whole bundle grew by 2 KB gzipped.
+
+**Two things found by opening the redesigned dashboard rather than by reading it.**
+
+**It said "No campaign yet" to somebody with two campaigns.** `campaigns` starts as `[]`, which
+is indistinguishable from "this org has no campaigns" — so for the half-second before the fetch
+returned, the screen stated a falsehood and offered a Create button. **A loading state that
+asserts something false is worse than a spinner.** "Loaded" now means *we asked and heard back*,
+including hearing an error, so a failed fetch does not leave a skeleton spinning for ever above
+the real message. Every network request on that page was a 200 — the bug was entirely in what
+the UI chose to say while waiting.
+
+**The filter bar ran into the paragraph above it**, so the field labels read as the last line of
+the explanation. It is its own surface now, which is what it always was.
