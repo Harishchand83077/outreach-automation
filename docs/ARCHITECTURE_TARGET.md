@@ -644,3 +644,300 @@ Likely first paid items, in order: LLM headroom (OpenRouter $10 top-up or provid
 | Open/click tracking | Yes | **Skipped on purpose** (deliverability, privacy) | |
 | Sourcing leads / contact database | Core product | **Out of scope**: user supplies the sheet | |
 | Auto-send of AI replies | Not offered | Off. A later per-label autopilot (for example only "asks for pricing link") is an ADR, behind a feature flag and a confidence threshold | |
+
+---
+
+## 27. The system as built: how each failure is actually handled
+
+§21 is a table of intentions written before anything ran. This section is written **after** a
+deployment, three real sends, a real reply, and sixteen defects found in production. It describes
+what the code does today, names what it does *not* do, and separates the two, because the gap
+between them is where every one of those defects lived.
+
+Everything here is traceable to a file. Where a claim and the code disagree, the code wins and
+this section is wrong — say so.
+
+### 27.1 The pipeline, end to end
+
+```
+sheet ──► import (preview → commit, one transaction)
+            │
+            ├─ research mode: RESEARCH_LEAD ─► fetch pages ─► LLM extract ─► hooks
+            │                                       │
+            │                                       └─► DRAFT_LEAD ─► LLM draft ─► validate
+            └─ template mode: ─────────────────────────► DRAFT_LEAD ─► render ──► validate
+                                                                            │
+                                                     review queue ◄─────────┘
+                                                            │ a human approves
+                                                            ▼
+                                       SendLoop: cap → window → pacing → eligibility
+                                                            │  (one message per cycle)
+                                                            ▼
+                                       claim outbox row (`sending`) ─► SMTP ─► `sent`
+                                                            │
+                                     ImapLoop ◄─────────── their reply
+                                        │
+                                   classify ─► policy ─► draft a reply ─► review queue
+```
+
+Five asyncio tasks in one process: `JobRunner`, `SendLoop`, `ImapLoop`, `Scheduler`, `Heartbeat`.
+One Postgres. No broker, no Redis, no Celery — see §27.9 for why that is a decision rather than
+an omission.
+
+### 27.2 Crash safety: what happens if the process dies at the worst moment
+
+**The rule the whole design rests on: every job is queued in the same database transaction as
+the state change that justifies it.** The importer inserts leads and their jobs together; research
+writes its findings and queues drafting together; a rejection marks the draft rejected and queues
+the rewrite together. A crash between the two is impossible because there is no "between" — the
+transaction either commits both or neither. This is why the queue is in Postgres and not in a
+broker (§27.9).
+
+| Crash point | What happens | Where |
+|---|---|---|
+| Mid-upload, before commit | **Nothing is imported.** The whole commit is one transaction, so a partial sheet cannot exist. Re-uploading starts clean. | `imports.py` `commit_import` |
+| Mid-upload, after commit | Leads exist with their jobs. Re-uploading the same sheet adds only what is new — `UNIQUE(campaign_id, email_norm)` — and reports the rest as duplicates. | `uq_leads_campaign_email` |
+| Mid-job (research, drafting) | The lease expires, the reaper requeues it, up to `max_attempts` (5). Jobs are idempotent: research upserts, `save_draft` supersedes. | `queue.reap_expired` |
+| **Mid-send, before SMTP** | The outbox row is already `sending` with a pre-generated `Message-ID` and a UNIQUE `idempotency_key`. On restart the next claim is **refused** by that key. | `outbox.claim_send` |
+| **Mid-send, after SMTP, before the row is updated** | The dangerous one, and the one that happened. The row stays `sending`. After 10 minutes the `Scheduler` asks IMAP whether that exact `Message-ID` is in the Sent folder: found → `sent`; not found → `unknown` and a human decides. **It never auto-resends.** | ADR-002, `reply/recovery.py` |
+| Worker killed, Postgres fine | Containers are `unless-stopped`; the stack is back in ~60 seconds and stale leases are reaped. | `compose.prod.yml` |
+| Postgres unreachable | Sends halt — eligibility cannot be checked, and sending without checking is worse than not sending. | |
+
+**On "is a mail sent twice?" — no, and the guarantee is at-most-once, not exactly-once.** We
+choose to risk *not* sending over risking sending twice, deliberately: a cold email that arrives
+twice is worse for the recipient and for the sending reputation than one that needs a human to
+confirm. That is why `unknown` exists as a terminal for a human rather than a retry.
+
+**Verified about the provider, since the recovery depends on it:** Gmail does save SMTP-sent mail
+to `[Gmail]/Sent Mail`, and the recovery pass has found real messages there by `Message-ID` on the
+live system. So `BCC_SELF` is **not** required for Gmail and stays off (ADR-002 made it optional
+for exactly this reason). A provider that does not save SMTP-sent mail would need it turned on, and
+that is a go-live check in `DEPLOY.md`, not an assumption.
+
+### 27.3 Locking and deadlocks
+
+Three places take row locks, and they take them in one consistent order, which is what prevents
+a cycle:
+
+1. `jobs` — claimed with `FOR UPDATE SKIP LOCKED`. Two workers never contend: the second one
+   skips the locked row rather than waiting for it. This is also what makes a second worker a
+   safe thing to add later.
+2. `leads` — `transition()` locks the lead row, writes the state and the `events` row in the same
+   transaction. One writer, one lock, always taken *after* the job.
+3. `messages` — `claim_send` inserts the outbox row; the UNIQUE index does the arbitration rather
+   than a lock.
+
+A job's work therefore locks at most one lead, and only ever after the job row. There is no path
+that locks two leads at once, so there is no deadlock cycle to form. The one real contention risk
+is the retention sweep, which runs hourly and deletes in **batches** rather than in one statement,
+specifically so it cannot hold a long lock across the table.
+
+### 27.4 Throttling, at four levels
+
+| Level | Mechanism | Where |
+|---|---|---|
+| Per send | `pacing_gap` = remaining window ÷ remaining capacity, jittered. 100 emails in ten minutes is the signature of a compromised account. | `domain/scheduling.py` |
+| Per day, per mailbox | `daily_cap` (100), counted from `messages` and never from a stored counter — a counter drifts the first time a crash lands between the send and the increment. `sending` rows count too. | `send_loop.sent_today` |
+| Per new mailbox | Warm-up: 20/day, +10 every 2 business days. | `scheduling.warmup_cap` |
+| Per window | Mon–Fri 10:00–17:30 IST, per campaign, weekend and holiday roll-forward. | `in_window`, `next_window_open` |
+
+Across campaigns, the cap belongs to the **mailbox** — reputation attaches to the address, not to
+how the work was split — and campaigns round-robin under it (ADR in PR #67).
+
+Two more, further up: the LLM router has per-entry daily caps and cool-downs with `llm_usage`
+accounting, and Tavily is capped by `SearchBudget` against its 1,000/month free tier and is only
+called when research comes back *thin*.
+
+### 27.5 Replies: how a message is tied to a lead
+
+**The matching is threading-first, not sender-based.** The claim that it matches on sender address
+alone describes the *prototype* (issues B10 and B11) and has not been true since Phase 6.
+`match_lead` tries three strategies, strongest first:
+
+1. **`In-Reply-To` / `References` against our own stored `Message-ID`.** We generate the
+   `Message-ID` before sending and store it on the `messages` row, so this is an exact match:
+   this message claims to answer a specific email we sent.
+2. **A DSN's `Final-Recipient`**, for a bounce, which names the address that failed even when the
+   threading headers are lost inside the wrapper.
+3. **Sender plus normalised subject, within 30 days** — a fallback, used only when the first two
+   fail, and bounded because beyond a month a coincidence is likelier than a real match.
+
+Quoted text **is** stripped before classification (`strip_quoted`), so our own words in their
+reply cannot be classified as theirs. Threading headers are also set on what we send, so our reply
+lands in the same thread in their client.
+
+**Poll mechanics.** UID cursors per `(mailbox, folder)` with `UIDVALIDITY` handling, `BODY.PEEK[]`
+so nothing is ever marked read, a 200-message cap per poll, and both INBOX and the server's junk
+folder — discovered through `LIST` rather than hardcoded, because the first real reply this
+system received went to Spam.
+
+### 27.6 Bounces, opt-outs and the permanent record
+
+This is already a cross-campaign table and has been since Phase 6: `suppressions`, keyed by org,
+holding `email`, `domain` or `email_hash`. It is checked **at import** (so a suppressed address
+never becomes a lead) and **again before every send** (so one added since the approval still
+wins). An erased lead leaves a SHA-256 digest behind, so a privacy erasure cannot make someone
+contactable again.
+
+| Signal | What happens |
+|---|---|
+| Hard bounce (5.x) | Suppressed permanently, lead → `BOUNCED`, follow-ups cancelled in the same transaction. |
+| **Soft bounce (4.x, full mailbox)** | **Not** suppressed — deferred one day. A full mailbox is not a reason to give up on somebody for ever. |
+| Opt-out | Suppressed immediately, lead → `OPTED_OUT`, and **no acknowledgement is sent**, because that would itself be another unwanted email. |
+| Opt-out phrases | Matched deterministically before any model is consulted, including the Hinglish forms this audience uses. A model is never the thing that decides whether somebody opted out. |
+| Reply to an already-closed lead | Recorded — the message and classification are kept — but `OPTED_OUT` and `BOUNCED` never reopen. |
+
+### 27.7 Subjects, bulk approval, and regeneration counting
+
+**Subjects.** A first email is capped at six words and must not begin `Re:` or `Fwd:` — faking a
+reply to a conversation that never happened is a deception recipients recognise instantly. A reply
+*must* keep the thread's subject prefixed `Re:`, and the subject is overwritten with the thread's
+own after validation rather than before, so a model ignoring the instruction is visible in the
+stored report instead of silently papered over. A newline in a subject is refused everywhere: it is
+header injection.
+
+**Bulk approval does not bulk send.** `POST /review/bulk-approve` approves up to 200 drafts and
+**skips** any whose validation failed, whose research was thin, or whose confidence is below the
+threshold — the failure mode of a bulk button is somebody clearing a hundred without reading any,
+and the weak ones are exactly the ones worth reading. Approving makes a lead *eligible*; the send
+loop still sends **one message per cycle**, under the cap, inside the window, with a jittered gap.
+Approving 200 drafts at 14:00 does not send 200 emails at 14:00.
+
+**Counting attempts.** Two different numbers, which is worth stating because they are easy to
+confuse:
+
+- `drafts.validation["attempts"]` — the **generator's own** retries inside one job, bounded by
+  `MAX_ATTEMPTS`. This is the model being asked again after failing a deterministic check.
+- `drafts.version` — one per stored draft, incrementing for ever. A reviewer rejecting creates a
+  new version; the old one is superseded, never overwritten, so the history is intact.
+- `jobs.attempts` — queue retries, capped at `max_attempts` (5), after which the job is `dead` and
+  the `Scheduler` raises an alert.
+
+**A gap, recorded in §27.8: reviewer-driven regeneration is not capped.** A reviewer may reject the
+same lead indefinitely, and each rejection costs a model call. Nothing stops it and nothing warns.
+
+### 27.8 The issue register, as an architect reads it
+
+Severity is "what does this cost the operator", not "how hard is the fix".
+
+#### P0 — a locked product rule that has never worked
+
+**A-1. No follow-up draft is ever created.** The send loop looks for an approved
+`Draft(kind="followup")`. `domain/scheduling` computes when one is due. `SendLoop` sets
+`next_action_at` after a first send. The state machine has `SENT -> FOLLOWUP_SENT`.
+`CampaignSettings` has `followup_after_days` and `max_followups`. **Nothing anywhere writes that
+draft** — a grep across `app/` returns only the constant and its consumers. So "one follow-up
+three calendar days after the first email" has never once happened, and it is invisible because
+no lead has yet sat three days past a first send with anybody watching.
+
+**A-2. Nothing ever sets `NO_RESPONSE`.** `next_silent_close` computes the date; no code writes
+the state. A lead that never replies stays `SENT` for ever, so `final_wait_days` does nothing and
+the lifecycle has no end. Over months this is also a slow leak: those leads are never eligible for
+retention, because retention only removes *terminal* leads.
+
+Both are the same shape as every other defect this project has produced: a correct table and a
+correct consumer with nothing producing the thing in between. They are the next change.
+
+#### P1 — correctness or cost under load
+
+**B-1. The importer commits 5,000 leads and 5,000 jobs in one transaction.** At the current cap
+that is one long write holding locks, and a statement timeout loses the entire import rather than
+part of it. It also makes the failure mode all-or-nothing at exactly the size where partial
+progress would be worth keeping.
+*Fix:* chunk the insert, commit per chunk, and make the batch id (already added for undo) the
+unit of progress so a resumed import is a real concept.
+
+**B-2. An import fans out the whole sheet into the queue at once.** 1,000 leads means 1,000
+`RESEARCH_LEAD` jobs runnable immediately. Per-kind concurrency (3 research, 2 drafting) stops the
+*worker* melting, but nothing paces against the **daily** free-tier limits of the LLM chain or
+Tavily's 1,000-a-month. The chain's daily quota would be spent in minutes, every subsequent job
+would fail into a cool-down, and the operator would see a stalled pipeline with no obvious cause.
+*Fix:* `run_after` staggering at enqueue time, derived from the campaign's daily cap — there is no
+value in researching 1,000 leads today when at most 100 can be emailed. Research the next day's
+worth, slightly ahead.
+
+**B-3. Reviewer-driven regeneration is uncapped** (§27.7). Each rejection costs a model call, and
+nothing stops a loop.
+*Fix:* cap per lead per kind, and say so in the rejection response rather than silently refusing.
+
+**B-4. Template mode skips research entirely — including the suppression-adjacent signals.** It is
+correct that it skips *research*; what it also skips is the chance to notice a lead is unusable
+before a human reads the draft. A thousand template drafts land in the review queue together.
+*Fix:* none needed for correctness, but the review queue should be filterable by "has a complete
+render", which is a UI change rather than an architectural one.
+
+**B-5. No campaign scheduling.** A campaign is `running` or it is not. There is no "start Monday",
+no "stop after N sends", no end date. The owner asked for this directly.
+*Fix:* `starts_at` / `ends_at` on the campaign, checked in `find_candidates` beside the window.
+This is small and genuinely useful; it is the one feature in this list rather than a repair.
+
+#### P2 — operability
+
+**C-1. Dead jobs are alerted but not actionable from the dashboard.** The `Scheduler` raises
+`n job(s) exhausted their retries and are dead`, and the only way to retry one is SQL. Three such
+jobs were found during a deploy and requeued by hand.
+*Fix:* an admin route to requeue a dead job, which is what was done manually.
+
+**C-2. `/admin/needs-attention` does not surface `unknown` sends.** A message a human must confirm
+is the single most important thing in the system and it lives only in a tick report.
+
+**C-3. The IMAP loop ingests everything in the mailbox.** 1,400 unrelated messages were stored
+from a personal inbox. Harmless — matching happens before any model is called — but it is a
+privacy surface (someone's personal mail in our database) and an argument for a dedicated mailbox
+that has not been acted on.
+
+**C-4. One worker, no horizontal story.** `FOR UPDATE SKIP LOCKED` means a second worker would be
+*safe*, but the send loop assumes it is alone for pacing (`mailbox.next_send_at` is a row, so it
+would actually hold) and the IMAP loop would double-poll. Not needed at 100/day; worth knowing
+before anyone adds a second process.
+
+#### P3 — minor, recorded so they are not rediscovered
+
+- **D-1.** `ENRICH_LEAD` and `VALIDATE_DRAFT` are registered job kinds with concurrency limits and
+  no handler. Dead configuration that reads like a feature.
+- **D-2.** The retention sweep clears `evidence_text` but never deletes a `domain_research` row, so
+  the table grows for ever (measured: ~40 MB/year — deliberate, ADR-011, but it should be *said*
+  rather than being an accident of the sweep's scope).
+- **D-3.** No index on `messages(message_id_hdr)`, which the reply matcher queries on every
+  inbound message. Fine at thousands of rows; a sequential scan at a million.
+- **D-4.** `jobs.payload` has no schema. Two callers disagreeing about its shape is exactly how
+  reply drafting was broken for the system's whole life (#81).
+
+### 27.9 On adding a message queue: no, and this is the reason
+
+RabbitMQ was suggested. **It would make this system less reliable, not more**, and the reason is
+specific rather than a matter of taste.
+
+Our queue lives in Postgres, and every job is enqueued **in the same transaction as the state
+change that justifies it**. The importer inserts a lead and its research job together. Research
+stores findings and queues drafting together. A rejection marks the draft rejected and queues the
+rewrite together. There is no window in which one has happened and the other has not.
+
+Move the queue to a broker and that property is gone. `session.commit()` and `channel.publish()`
+are two systems with no shared transaction — the classic dual-write problem. The standard answer
+is the transactional outbox pattern: write the message to a table in the same transaction, then
+relay it to the broker. **That table is what we already have.** Adding RabbitMQ means building an
+outbox to feed it, so the broker is pure overhead on top of the thing that was providing the
+guarantee.
+
+The numbers say the same. At 100 emails a day the queue sees a few hundred jobs — roughly 0.005
+jobs per second. `FOR UPDATE SKIP LOCKED` on Postgres comfortably handles tens of thousands per
+second. We are five orders of magnitude from the technique's limit, and the ceiling we *are* near
+is the free-tier LLM quota, which a broker does nothing about.
+
+And the operational cost is real: another service to run, monitor, back up and restart on a 2 GB
+box that currently has one database and four containers, plus a second durability story to reason
+about during an incident.
+
+**What a broker would genuinely buy us** — fan-out to several independent consumers, and
+cross-language workers — we do not need with one Python worker. If this ever reaches tens of
+thousands of sends a day across many mailboxes, the first move is still not a broker: it is a
+second worker process, which `SKIP LOCKED` already supports.
+
+**So the recommendation is: add no infrastructure.** Every issue in §27.8 is a code gap, and
+installing a broker would fix none of them while adding a new way to lose a message. The one
+piece of infrastructure worth adding remains S3 for off-box backups, which is done.
+
+If a queueing need ever does appear, the cheapest honest upgrades in order are: a second worker
+process (free, already safe); `LISTEN`/`NOTIFY` to cut polling latency (free, Postgres built-in);
+then — and only then — a broker.

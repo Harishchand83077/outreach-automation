@@ -40,6 +40,7 @@ from app.domain.state import LeadState
 from app.domain.template import CampaignTemplates
 from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
+from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
 from app.services.research.fetcher import Fetcher
 from app.services.research.service import research_lead
@@ -273,6 +274,87 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
         )
 
 
+async def handle_draft_followup(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
+    """Write the follow-up for a lead whose follow-up has come due.
+
+    The same split as a first email: `template` mode renders the operator's own follow-up text,
+    `research` mode asks a model, reusing the hooks the research step already verified so the
+    follow-up can refer to the same specific thing the first email did.
+
+    **The lead stays `SENT`.** A follow-up is sent *from* `SENT` -- `outbox._VALID_FROM` says so
+    -- and approving the draft is what makes it eligible, not a state change.
+    """
+    lead, campaign = await _lead_and_campaign(session, job)
+    persona = _persona(campaign)
+    ctx_org = OrgContext(org_id=job.org_id)
+    number = await followup_number(session, lead_id=lead.id)
+
+    if campaign.mode == "template":
+        result = _render_followup_for(campaign, lead, persona, number=number)
+    else:
+        if undraftable := persona.missing_for_drafting():
+            raise ValueError(
+                f"campaign {campaign.id} drafts with a model and its persona does not say "
+                "enough for that: " + ", ".join(field for field, _ in undraftable)
+            )
+        result = await generate_draft(
+            router=ctx.router_for(session, job.org_id),
+            persona=persona,
+            hooks=await _hooks_for(session, job.org_id, lead.id),
+            lead_id=lead.id,
+            lead_name=lead.full_name,
+            lead_company=lead.company_name,
+            job_title=lead.job_title,
+            kind="followup",
+            reviewer_feedback=await draft_store.latest_rejection_feedback(
+                session, ctx_org, lead_id=lead.id, kind="followup"
+            ),
+        )
+
+    await draft_store.save_draft(session, ctx_org, lead=lead, kind="followup", result=result)
+
+
+def _render_followup_for(
+    campaign: Campaign, lead: Lead, persona: Persona, *, number: int
+) -> DraftResult:
+    """Render a template campaign's follow-up number `number` (one-based).
+
+    A campaign may allow more follow-ups than it has written templates for -- `max_followups`
+    and the template list are set in two different places -- and the smaller has to win, or the
+    campaign tries to send an email nobody wrote.
+    """
+    try:
+        templates = CampaignTemplates.model_validate(campaign.templates or {})
+    except ValidationError as exc:
+        fields = sorted({".".join(str(part) for part in err["loc"]) for err in exc.errors()})
+        raise ValueError(
+            f"campaign {campaign.id} is in template mode and its templates are not readable "
+            f"({', '.join(fields)}); no follow-up can be rendered"
+        ) from exc
+
+    template = templates.for_followup(number - 1)
+    if template is None:
+        raise PermanentFailure(
+            f"campaign {campaign.id} has no template for follow-up {number}; "
+            "nothing to send, so this is not retryable"
+        )
+
+    return draft_from_template(
+        template=template,
+        persona=persona,
+        lead_id=lead.id,
+        full_name=lead.full_name,
+        email=lead.email_norm,
+        company_name=lead.company_name,
+        company_url=lead.company_url,
+        domain=lead.domain,
+        job_title=lead.job_title,
+        notes=lead.notes,
+        extra=lead.extra,
+        kind="followup",
+    )
+
+
 async def handle_draft_reply(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
     """Propose an answer to an inbound reply. Never sends; produces a draft for review.
 
@@ -391,5 +473,6 @@ def campaign_settings(campaign: Campaign) -> CampaignSettings:
 HANDLERS: dict[str, Handler] = {
     JobKind.RESEARCH_LEAD: handle_research_lead,
     JobKind.DRAFT_LEAD: handle_draft_lead,
+    JobKind.DRAFT_FOLLOWUP: handle_draft_followup,
     JobKind.DRAFT_REPLY: handle_draft_reply,
 }

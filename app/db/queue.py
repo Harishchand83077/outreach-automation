@@ -33,6 +33,9 @@ class JobKind:
     ENRICH_LEAD = "enrich_lead"
     RESEARCH_LEAD = "research_lead"
     DRAFT_LEAD = "draft_lead"
+    #: The follow-up nobody used to write. Separate from DRAFT_LEAD so the two have their own
+    #: concurrency and so a backlog of one cannot starve the other.
+    DRAFT_FOLLOWUP = "draft_followup"
     VALIDATE_DRAFT = "validate_draft"
     CLASSIFY_REPLY = "classify_reply"
     DRAFT_REPLY = "draft_reply"

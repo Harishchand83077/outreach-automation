@@ -40,6 +40,7 @@ CONCURRENCY: dict[str, int] = {
     JobKind.ENRICH_LEAD: 3,
     JobKind.RESEARCH_LEAD: 3,
     JobKind.DRAFT_LEAD: 2,
+    JobKind.DRAFT_FOLLOWUP: 2,
     JobKind.VALIDATE_DRAFT: 2,
     JobKind.CLASSIFY_REPLY: 2,
     JobKind.DRAFT_REPLY: 2,
