@@ -600,3 +600,79 @@ the floor is the same.
 
 **Proved by** `tests/unit/test_persona.py::TestWhatModelWrittenDraftingNeeds` and
 `tests/integration/test_api_operations.py::TestWhatEachModeAsksOfThePersona`.
+
+## ADR-014 — The queue stays in Postgres; no broker
+
+**Context.** RabbitMQ was proposed, to make the pipeline more robust under crashes and load.
+
+**Decision.** No broker. The queue stays a `jobs` table claimed with `FOR UPDATE SKIP LOCKED`.
+
+**The reason is specific, not a preference.** Every job in this system is enqueued **in the same
+transaction as the state change that justifies it**. The importer inserts a lead and its research
+job together; research stores its findings and queues drafting together; a rejection marks the
+draft rejected and queues the rewrite together. There is no window in which one has happened and
+the other has not, which is why a crash anywhere in the pipeline loses no work and duplicates
+none.
+
+A broker destroys that property. `session.commit()` and `channel.publish()` are two systems with
+no shared transaction — the dual-write problem. The standard remedy is the transactional outbox:
+write the message to a table inside the transaction, then relay it. **That table is what we
+already have.** Adding RabbitMQ means building an outbox to feed it, so the broker becomes pure
+overhead on top of the component that was providing the guarantee.
+
+The load numbers agree. At 100 emails a day the queue sees a few hundred jobs — about 0.005 jobs
+per second. `SKIP LOCKED` handles tens of thousands per second. We are five orders of magnitude
+from the technique's limit, and the ceiling we are actually near is the free-tier LLM quota,
+which no broker affects.
+
+Operationally it would be a fifth container to run, monitor, back up and reason about during an
+incident, on a 2 GB instance, for a system whose entire durability story is currently "it is in
+Postgres".
+
+**What a broker would genuinely buy** — fan-out to several independent consumers, and
+cross-language workers — we do not need with one Python worker.
+
+**Consequences.** If throughput ever becomes the constraint, the upgrade path is, in order: a
+second worker process (free, and already safe because of `SKIP LOCKED`); `LISTEN`/`NOTIFY` to cut
+polling latency (free, built in); and only then a broker, at which point this ADR should be
+revisited with measurements rather than estimates.
+
+## ADR-015 — The lifecycle has a producer: follow-ups are queued, and silence ends a lead
+
+**Context.** Two locked product rules had every component except the one that starts them.
+`SendLoop` set `leads.next_action_at`, `followup_due_at` computed the due date, the state machine
+had `SENT -> FOLLOWUP_SENT`, `CampaignSettings` had `followup_after_days` and `max_followups`, and
+`find_candidates` looked for an approved `Draft(kind="followup")` — **and nothing ever wrote one**.
+`no_response_at` computed when a silent lead could be closed and no code wrote `NO_RESPONSE`.
+
+So "one follow-up three calendar days after the first email" had never happened, and a lead that
+never replied stayed `SENT` for ever — which also kept it out of retention, since retention only
+removes terminal leads.
+
+**Decision.** `app/services/lifecycle.py` is the missing producer, run by the `Scheduler` each
+cycle in its own transaction, never fatal to the rest of the cycle.
+
+- **Follow-ups** are queued as `DRAFT_FOLLOWUP` jobs for leads in `SENT` whose `next_action_at`
+  has passed and which have not had every follow-up their campaign allows. Idempotent three ways:
+  a `dedupe_key` per lead per follow-up number, a check for a live follow-up draft already
+  waiting, and `followups_sent` read from the lead rather than the payload — so a job that waited
+  in the queue while something else sent cannot write the wrong number.
+- **Silence closes a lead** only after it has had everything we were going to send:
+  `followups_sent >= max_followups` and `no_response_at` passed. A lead with an inbound message
+  newer than our last send is skipped, because closing one whose reply is still being classified
+  would throw the reply away.
+
+**The follow-up is drafted, never auto-sent.** `approval_mode = review_all` applies to it exactly
+as to a first email, and the draft travels the same path: review queue, human approval, send loop,
+cap, window, suppression. Template mode renders the operator's own follow-up text; research mode
+asks a model, reusing the hooks the research step already verified so the follow-up can refer to
+the same specific thing.
+
+**A campaign may allow more follow-ups than it has templates**, since the two are set in different
+places. The smaller wins and the job fails permanently rather than retrying, because a missing
+template is not a transient condition.
+
+**Consequences.** The lifecycle terminates. `final_wait_days` means something. Retention can
+eventually reach leads that went quiet. The daily cap now covers real follow-up volume, which at
+steady state roughly doubles sends per new lead — which is what the cap was always sized for
+(§9.2: "at steady state each lead costs two sends").

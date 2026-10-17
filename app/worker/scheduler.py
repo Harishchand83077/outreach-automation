@@ -10,7 +10,10 @@
    that needs confirming.
 3. **Report what is stuck.** Jobs `running` far past their lease and messages sitting in
    `unknown` are surfaced in the tick report, which the heartbeat logs.
-4. **Retention (§17).** Once an hour rather than once a minute: clear old evidence text and
+4. **Follow-ups and the end of a lead.** Queue the follow-up drafts that have come due, and
+   close as `NO_RESPONSE` the leads that have had everything we were going to send and said
+   nothing. Both halves are idempotent, so running twice in a minute changes nothing.
+5. **Retention (§17).** Once an hour rather than once a minute: clear old evidence text and
    erase leads that finished longer ago than `LEAD_RETENTION_MONTHS`. Erasure goes through the
    same path a data-subject request takes, so the hashed suppression survives — a lead that
    opted out must not become contactable again because the system tidied up.
@@ -26,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.db import queue
+from app.services.lifecycle import run_lifecycle
 from app.services.privacy import run_retention
 from app.services.reply.recovery import recover_stuck_sends
 from app.worker.base import WorkerTask
@@ -47,6 +51,8 @@ _DAYS_PER_MONTH = 30
 @dataclass
 class SchedulerReport:
     requeued: int = 0
+    followups_queued: int = 0
+    closed_silent: int = 0
     dead: int = 0
     recovered_sent: int = 0
     needs_human: int = 0
@@ -98,6 +104,25 @@ class Scheduler(WorkerTask):
                 "person to confirm whether they left"
             )
             logger.error("sends need human confirmation", extra={"count": recovery.needs_human})
+
+        # **The lifecycle pass: the follow-up nobody asked for, and the end nobody wrote.**
+        # Everything either half needs has existed since Phase 5 -- the due date, the state
+        # machine edge, the settings, the send loop looking for an approved follow-up draft --
+        # and nothing produced the thing in the middle. So "one follow-up three days later"
+        # never once happened, and a lead that never replied stayed `SENT` for ever.
+        #
+        # In its own transaction, and never fatal: this is housekeeping, and a failure here
+        # must not stop the lease reaping or the send recovery above it.
+        try:
+            async with self.ctx.session_factory() as session, session.begin():
+                lifecycle = await run_lifecycle(session, now=now)
+            report.followups_queued = lifecycle.followups_queued
+            report.closed_silent = lifecycle.closed_silent
+            if lifecycle.followups_queued:
+                logger.info("follow-ups queued", extra={"count": lifecycle.followups_queued})
+        except Exception as exc:
+            logger.exception("lifecycle pass failed")
+            report.alerts.append(f"the follow-up and close pass failed: {type(exc).__name__}")
 
         await self._maybe_retain(report, now)
 

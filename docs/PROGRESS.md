@@ -1091,3 +1091,36 @@ which deliberately proposes no draft. Five labels do that. Nothing recorded it, 
 in `REPLIED` with no draft, no job and no explanation an operator could see — indistinguishable
 from drafting being broken, which it also was at the time, so the two could not be told apart. A
 `reply.no_draft_by_policy` event now names the label, the action and the reason.
+
+**The architecture review, and the two P0s it named are fixed (§27 of `ARCHITECTURE_TARGET.md`,
+ADR-014, ADR-015).** §21's failure table was written before anything ran; §27 is written after a
+deployment, three real sends, a real reply and sixteen production defects, and it says what the
+code does rather than what it was meant to do.
+
+**The two gaps that mattered are closed.** `app/services/lifecycle.py` is the producer that was
+missing at both ends of a lead's life: it queues the follow-up drafts that have come due, and it
+closes as `NO_RESPONSE` the leads that have had everything we were going to send and said
+nothing. Neither had ever run. The follow-up is drafted and reviewed like any other email — it is
+not auto-sent — and a template campaign renders the operator's own follow-up text.
+
+**On adding RabbitMQ: no, and the reason is structural rather than a preference (ADR-014).**
+Every job here is enqueued *in the same transaction as the state change that justifies it*, which
+is why a crash anywhere loses no work and duplicates none. A broker destroys that property —
+`commit()` and `publish()` are two systems with no shared transaction — and the standard remedy,
+a transactional outbox, is the table we already have. At 0.005 jobs per second we are five orders
+of magnitude from `SKIP LOCKED`'s limit, and the ceiling we are actually near is the free-tier LLM
+quota, which a broker does nothing about. **No new infrastructure.**
+
+**Corrections to assumptions that were raised.** Reply matching is **threading-first** — our own
+stored `Message-ID` against `In-Reply-To`/`References`, then a DSN's `Final-Recipient`, then
+sender-plus-subject within 30 days as a bounded fallback — and quoted text *is* stripped before
+classification. "Sender address only, no threading, no stored Message-ID" describes the
+prototype (issues B10, B11) and has not been true since Phase 6. Soft bounces are already
+distinguished from hard ones and deferred a day rather than suppressed. Bulk approval already
+does not bulk send: it makes leads eligible, and the send loop still sends one message per cycle
+under the cap with a jittered gap.
+
+The rest of §27.8 is recorded rather than fixed: the importer's single-transaction commit, the
+unstaggered fan-out of a large import against daily LLM limits, uncapped reviewer-driven
+regeneration, no campaign scheduling, no dashboard route to requeue a dead job, and four minor
+items. Each has a named fix.
