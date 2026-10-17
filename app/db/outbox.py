@@ -31,7 +31,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Campaign, Mailbox, Message, Suppression
+from app.db.models import Campaign, Lead, Mailbox, Message, Suppression
 from app.db.state import lock_lead, record_event, transition
 from app.domain.state import LeadState
 
@@ -91,6 +91,90 @@ async def _next_sequence(session: AsyncSession, lead_id: uuid.UUID, kind: str) -
         .where(Message.lead_id == lead_id, Message.kind == kind, Message.direction == "out")
     )
     return int(count or 0) + 1
+
+
+#: How recently we must have written to somebody for a *second* cold approach to be refused.
+#: Not a suppression: the person said nothing wrong, we simply already have a conversation open
+#: with them. Ninety days is long enough that a second pitch reads as a fresh one rather than as
+#: the same agency forgetting it already wrote.
+CONTACT_COOLDOWN_DAYS = 90
+
+#: Lead states that mean a conversation with this person is live somewhere. A second campaign
+#: must not cold-open while one of these is in progress, whatever the cool-down says.
+_IN_CONVERSATION: frozenset[str] = frozenset(
+    {
+        LeadState.REPLIED.value,
+        LeadState.IN_CONVERSATION.value,
+        LeadState.MEETING_BOOKED.value,
+        LeadState.SENT.value,
+        LeadState.FOLLOWUP_SENT.value,
+    }
+)
+
+
+async def _already_in_touch(
+    session: AsyncSession, org_id: uuid.UUID, lead: Lead, now: datetime | None = None
+) -> str | None:
+    """Refuse a first email to somebody this org is already talking to, as a different lead.
+
+    **`UNIQUE(campaign_id, email_norm)` is per campaign, on purpose** -- the same person may
+    legitimately appear in a later campaign, and that was a deliberate fix for the prototype's
+    global unique key, which made re-importing a corrected sheet silently do nothing. The cost
+    of that choice is this: two campaigns can hold the same person, and if both run, both send.
+    The recipient gets two cold emails from the same agency, and if they reply to one, the other
+    campaign sends anyway because it is looking at its own lead row and that row knows nothing.
+
+    So the check is **per person per org**, not per lead:
+
+    - somebody we emailed within `CONTACT_COOLDOWN_DAYS` is not cold-approached again;
+    - somebody with a live conversation anywhere in the org is never cold-approached, whatever
+      the date says -- that is the case where a reply arrives mid-switch, and answering a reply
+      in one campaign while opening a pitch in another is the worst version of this.
+
+    Only first emails are checked. A follow-up or a reply belongs to a thread that is already
+    open with that person, and blocking those would break the conversation this exists to
+    protect.
+    """
+    now = now or datetime.now(tz=UTC)
+
+    sibling = (
+        await session.execute(
+            select(Lead.id, Lead.state, Lead.campaign_id)
+            .where(
+                Lead.org_id == org_id,
+                Lead.email_norm == lead.email_norm,
+                Lead.id != lead.id,
+                Lead.state.in_(_IN_CONVERSATION),
+            )
+            .limit(1)
+        )
+    ).first()
+    if sibling is not None:
+        return (
+            f"another campaign is already in touch with this person (lead is {sibling.state} there)"
+        )
+
+    recent = await session.scalar(
+        select(Message.sent_at)
+        .join(Lead, Lead.id == Message.lead_id)
+        .where(
+            Message.org_id == org_id,
+            Message.direction == "out",
+            Message.status.in_(("sent", "sending")),
+            Lead.email_norm == lead.email_norm,
+            Lead.id != lead.id,
+            Message.sent_at.is_not(None),
+            Message.sent_at > now - timedelta(days=CONTACT_COOLDOWN_DAYS),
+        )
+        .order_by(Message.sent_at.desc())
+        .limit(1)
+    )
+    if recent is not None:
+        return (
+            f"we emailed this person on {recent.date().isoformat()} from another campaign; "
+            f"a second approach waits {CONTACT_COOLDOWN_DAYS} days"
+        )
+    return None
 
 
 async def is_suppressed(session: AsyncSession, *, org_id: uuid.UUID, email: str) -> bool:
@@ -176,6 +260,9 @@ async def claim_send(
     if await is_suppressed(session, org_id=org_id, email=lead.email_norm):
         return ClaimResult(None, "recipient is suppressed")
 
+    if kind == KIND_INITIAL and (clash := await _already_in_touch(session, org_id, lead)):
+        return ClaimResult(None, clash)
+
     # Refuse while an earlier send of this kind is still unresolved.
     #
     # This is load-bearing, and the unique key alone does not cover it. Two concurrent claims are
@@ -226,11 +313,16 @@ async def claim_send(
 
     try:
         await session.flush()
-    except IntegrityError:
-        # Another worker claimed this exact send first. Not an error — the unique index did its
-        # job, and this is the duplicate it was there to stop.
+    except IntegrityError as exc:
         await session.rollback()
-        return ClaimResult(None, "already claimed by another worker")
+        # **Only the idempotency key means "somebody else got there first".** Catching every
+        # integrity error and calling it that sends whoever reads the reason looking for a
+        # concurrent worker that does not exist -- a foreign key violation on `draft_id`
+        # reported as "already claimed by another worker" is a wrong answer, not a vague one.
+        if "idempotency" in str(getattr(exc, "orig", exc)).lower():
+            # The unique index did its job, and this is the duplicate it was there to stop.
+            return ClaimResult(None, "already claimed by another worker")
+        raise
 
     await record_event(
         session,

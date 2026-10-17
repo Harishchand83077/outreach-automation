@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import timedelta
 
 import jwt
 import pytest
@@ -32,6 +33,7 @@ from app.api.routers.imports import MAX_UPLOAD_BYTES
 from app.api.security import TokenVerifier
 from app.core.settings import Settings
 from app.db.models import Job, Lead, Mailbox, Member, Message, Org, Suppression
+from app.db.queue import JobKind
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -730,6 +732,154 @@ class TestWhatEachModeAsksOfThePersona:
 
         blocker = next(b for b in detail["blockers"] if b["code"] == "persona_incomplete")
         assert "offer" in blocker["message"]
+
+
+class TestAnImportDoesNotRaceTheFreeTier:
+    """A thousand leads used to mean a thousand jobs runnable at once. Per-kind concurrency
+    stops the *worker* melting; nothing paced against the free tier's **daily** limits, so the
+    chain's quota would go in minutes and every later job would fail into a cool-down -- a
+    stalled pipeline with no visible cause."""
+
+    def _sheet(self, rows: int):
+        lines = ["email,full name,company,website"]
+        for n in range(rows):
+            lines.append(f"load{n}@example.com,Lead {n},Co {n},https://co{n}.example")
+        return {"file": ("leads.csv", ("\n".join(lines) + "\n").encode(), "text/csv")}
+
+    async def test_a_research_import_spreads_its_jobs_over_days(self, api, owner, db):
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Big", "persona": PERSONA}
+        ).json()
+        campaign_id = uuid.UUID(created["id"])
+        campaign = await db.get(C, campaign_id)
+        campaign.settings = {"daily_cap": 5}
+        await db.commit()
+
+        api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet(20),
+        )
+
+        runs = (
+            (
+                await db.execute(
+                    select(Job.run_after)
+                    .join(__import__("app.db.models", fromlist=["Lead"]).Lead)
+                    .where(Job.kind == JobKind.RESEARCH_LEAD)
+                    .order_by(Job.run_after)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert runs, "the import has to queue research"
+        assert max(runs) > min(runs), "at a cap of 5 a sheet of 20 cannot all be researched today"
+
+    async def test_a_template_import_is_all_runnable_now(self, api, owner, db):
+        """Rendering is local and instant and costs no quota. A thousand drafts in seconds is
+        the point of template mode, so staggering it would be removing the feature."""
+        from app.db.models import Lead
+
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={
+                "name": "Template big",
+                "mode": "template",
+                "persona": {"sender_name": "Asha Rao"},
+                "templates": {"initial": {"subject": "Hi", "body": "Hello {{first_name|there}}"}},
+            },
+        ).json()
+        api.post(
+            f"/api/v1/campaigns/{created['id']}/imports/commit",
+            headers=owner,
+            files=self._sheet(12),
+        )
+
+        campaign_id = uuid.UUID(created["id"])
+        lead_ids = (
+            (await db.execute(select(Lead.id).where(Lead.campaign_id == campaign_id)))
+            .scalars()
+            .all()
+        )
+        runs = (
+            (
+                await db.execute(
+                    select(Job.run_after).where(
+                        Job.lead_id.in_(lead_ids), Job.kind == JobKind.DRAFT_LEAD
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(runs) == 12
+        assert max(runs) - min(runs) < timedelta(minutes=1), "all runnable now"
+
+
+class TestADeadJobCanBeRequeued:
+    """Three dead reply-drafting jobs were recovered with SQL against production after a
+    deploy. The cause of a dead job is usually a defect, so the useful action after shipping
+    the fix is "run it again", and that should not need a shell."""
+
+    async def _dead_job(self, db, org):
+        from app.db import queue
+
+        job = await queue.enqueue(
+            db, org_id=org.id, kind=JobKind.DRAFT_LEAD, payload={"lead_id": str(uuid.uuid4())}
+        )
+        assert job is not None
+        job.status = "dead"
+        job.attempts = 5
+        job.last_error = "job payload has no lead_id"
+        await db.commit()
+        return job
+
+    async def test_it_is_listed_with_its_error(self, api, owner, db, org):
+        job = await self._dead_job(db, org)
+
+        body = api.get("/api/v1/admin/dead-jobs", headers=owner).json()
+
+        row = next(item for item in body["jobs"] if item["id"] == str(job.id))
+        assert row["last_error"] == "job payload has no lead_id"
+        assert row["attempts"] == 5
+
+    async def test_requeueing_resets_the_attempts(self, api, owner, db, org):
+        job = await self._dead_job(db, org)
+
+        response = api.post(f"/api/v1/admin/jobs/{job.id}/requeue", headers=owner)
+
+        assert response.status_code == 200, response.text
+        await db.refresh(job)
+        assert job.status == "queued"
+        assert job.attempts == 0, "the retries were spent on a different version of the code"
+        assert job.last_error, "what it failed with is the most useful thing on the row"
+
+    async def test_a_live_job_is_not_requeueable(self, api, owner, db, org):
+        """Requeueing a running job duplicates work a worker holds a lease on; requeueing a
+        succeeded one repeats an effect that already happened -- for a send, a second email."""
+        from app.db import queue
+
+        job = await queue.enqueue(
+            db, org_id=org.id, kind=JobKind.DRAFT_LEAD, payload={"lead_id": str(uuid.uuid4())}
+        )
+        assert job is not None
+        job.status = "succeeded"
+        await db.commit()
+
+        response = api.post(f"/api/v1/admin/jobs/{job.id}/requeue", headers=owner)
+
+        assert response.status_code == 409
+
+    async def test_another_orgs_job_is_not_found(self, api, stranger, db, org):
+        job = await self._dead_job(db, org)
+
+        response = api.post(f"/api/v1/admin/jobs/{job.id}/requeue", headers=stranger)
+
+        assert response.status_code == 404
 
 
 class TestWhyNothingSends:

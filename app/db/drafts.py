@@ -46,6 +46,10 @@ LIVE_STATUSES = ("generated", "validated", "pending_review")
 #: screen is stale.
 JUDGEABLE_STATUSES = (*LIVE_STATUSES, "validation_failed")
 
+#: How many times one draft may be sent back before the reviewer has to do something else.
+#: Each rejection is a model call, and a loop would spend a day's free-tier quota on one lead.
+MAX_REJECTIONS = 5
+
 
 @dataclass
 class ReviewItem:
@@ -317,6 +321,27 @@ async def reject(
 
     if draft.status not in JUDGEABLE_STATUSES:
         raise ValueError(f"draft {draft_id} is {draft.status}, so it cannot be rejected")
+
+    # **A reviewer may not reject for ever.** Each rejection costs a model call, and a loop --
+    # a lead the model simply cannot draft well, or a reviewer looking for a sentence that is
+    # not in the evidence -- would spend the day's free-tier quota on one lead while every
+    # other lead waits behind it. Saying so is the point: silently refusing would look like the
+    # rejection button being broken again, which it has been.
+    rejections = await session.scalar(
+        select(func.count())
+        .select_from(Draft)
+        .where(
+            Draft.lead_id == draft.lead_id,
+            Draft.kind == draft.kind,
+            Draft.status == "rejected",
+        )
+    )
+    if int(rejections or 0) >= MAX_REJECTIONS:
+        raise ValueError(
+            f"this {draft.kind} has already been rejected {MAX_REJECTIONS} times. Edit the text "
+            "and approve it, skip the lead, or fix the campaign's persona or template -- asking "
+            "for another draft is unlikely to produce a different one."
+        )
 
     draft.status = "rejected"
     draft.feedback = feedback.strip()[:2000]

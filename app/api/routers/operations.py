@@ -234,6 +234,92 @@ async def jobs(
     }
 
 
+@router.post("/admin/jobs/{job_id}/requeue")
+async def requeue_dead_job(
+    job_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+) -> dict[str, Any]:
+    """Put a dead job back in the queue after its cause has been fixed.
+
+    A job goes `dead` after spending `max_attempts`, and `/admin/needs-attention` counts them --
+    but until now the only way to retry one was SQL against production, which is how three
+    reply-drafting jobs were recovered by hand after a deploy. The cause of a dead job is
+    usually a code defect, so the useful action after shipping the fix is "run it again", and
+    that should not require a shell.
+
+    **Only dead jobs.** Requeuing a `running` job would duplicate work a worker is holding a
+    lease on, and requeuing a `succeeded` one would repeat an effect that already happened --
+    for a send that means a second email.
+
+    The attempt counter is reset, because the retries were spent on a different version of the
+    code. `last_error` is kept: what it failed with last time is the most useful thing on the
+    row.
+    """
+    job = await session.get(Job, job_id)
+    if job is None or job.org_id != user.org_id:
+        # 404 for another org's job, as everywhere: confirming an id is real elsewhere is a leak.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found.")
+    if job.status != "dead":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This job is {job.status}, and only a dead job can be requeued.",
+        )
+
+    job.status = "queued"
+    job.attempts = 0
+    job.locked_by = None
+    job.locked_until = None
+    job.finished_at = None
+    job.run_after = datetime.now(tz=UTC)
+    await session.commit()
+
+    logger.warning(
+        "dead job requeued",
+        extra={"job": str(job.id), "kind": job.kind, "by": user.user_id},
+    )
+    return {"job_id": str(job.id), "kind": job.kind, "status": job.status}
+
+
+@router.get("/admin/dead-jobs")
+async def list_dead_jobs(
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> dict[str, Any]:
+    """The dead-letter list, so a count on a dashboard can become an action.
+
+    `last_error` is returned because it is the entire diagnostic value of the row, and these are
+    our own error strings rather than stored lead content -- the send loop's reasons name fields
+    and never values, for exactly this reason.
+    """
+    rows = (
+        (
+            await session.execute(
+                select(Job)
+                .where(Job.org_id == user.org_id, Job.status == "dead")
+                .order_by(Job.created_at.desc())
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "jobs": [
+            {
+                "id": str(job.id),
+                "kind": job.kind,
+                "lead_id": str(job.lead_id) if job.lead_id else None,
+                "attempts": job.attempts,
+                "last_error": (job.last_error or "")[:300],
+                "created_at": job.created_at.isoformat(),
+            }
+            for job in rows
+        ]
+    }
+
+
 @router.get("/admin/needs-attention")
 async def needs_attention(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
     """The three counts worth a daily look, in one call so the UI need not poll three.

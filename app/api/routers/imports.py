@@ -17,13 +17,16 @@ parser. The prototype wrote the client-supplied filename to disk (issue C2), whi
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import Campaign
 from app.db.queue import JobKind, enqueue
+from app.domain.campaign import CampaignSettings
 from app.services.importer import service as importer
 from app.services.importer.service import ImportPreview
 from app.services.importer.sheet import SheetError
@@ -118,6 +121,33 @@ async def preview_import(
     return _serialise(result)
 
 
+#: One day of work queued ahead of what can be sent, so there is always a drafted queue to
+#: approve from without a thousand leads racing the free tier on day one.
+HEAD_START_DAYS = 1
+
+
+def _due_at(offset: int, campaign: Campaign, *, template_mode: bool) -> datetime | None:
+    """When the nth lead's first job becomes runnable.
+
+    `None` -- runnable now -- for a template campaign: rendering is local and instant, costs no
+    quota, and a thousand drafts in seconds is the point of that mode.
+
+    For a research campaign the pace is the campaign's own daily cap, because that is the real
+    ceiling on how many of these leads can ever be emailed.
+    """
+    if template_mode:
+        return None
+    try:
+        settings = CampaignSettings.model_validate(campaign.settings or {})
+    except ValidationError:
+        settings = CampaignSettings()
+    per_day = max(settings.daily_cap, 1)
+    day = max(offset // per_day - HEAD_START_DAYS, 0)
+    if day == 0:
+        return None
+    return datetime.now(tz=UTC) + timedelta(days=day)
+
+
 @router.post("/campaigns/{campaign_id}/imports/commit")
 async def commit_import(
     campaign_id: uuid.UUID,
@@ -145,10 +175,20 @@ async def commit_import(
         )
         # Queued in the same transaction as the insert, so a lead never exists without the work
         # that moves it forward, and a rollback takes both.
+        #
+        # **Staggered rather than all runnable at once.** A thousand leads used to mean a
+        # thousand jobs due immediately. Per-kind concurrency stops the *worker* melting, but
+        # nothing paced against the free tier's **daily** limits -- the chain's quota would go in
+        # minutes, every later job would fail into a cool-down, and the dashboard would show a
+        # stalled pipeline with no visible cause.
+        #
+        # There is no value in researching a thousand leads today when at most `daily_cap` can
+        # be emailed. `run_after` spreads them over the days they could actually be sent, with
+        # one day of head start so there is always a drafted queue to approve from.
         template_mode = campaign.mode == "template"
         kind = JobKind.DRAFT_LEAD if template_mode else JobKind.RESEARCH_LEAD
         prefix = "draft" if template_mode else "research"
-        for lead in leads:
+        for offset, lead in enumerate(leads):
             await enqueue(
                 session,
                 org_id=user.org_id,
@@ -156,6 +196,7 @@ async def commit_import(
                 lead_id=lead.id,
                 payload={"lead_id": str(lead.id)},
                 dedupe_key=f"{prefix}:{lead.id}",
+                run_after=_due_at(offset, campaign, template_mode=template_mode),
             )
         await session.commit()
     except SheetError as exc:

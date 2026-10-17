@@ -1124,3 +1124,53 @@ The rest of §27.8 is recorded rather than fixed: the importer's single-transact
 unstaggered fan-out of a large import against daily LLM limits, uncapped reviewer-driven
 regeneration, no campaign scheduling, no dashboard route to requeue a dead job, and four minor
 items. Each has a named fix.
+
+**The §27.8 gaps are closed, and one of them was a correctness bug rather than a load concern.**
+
+**The same person in two campaigns was sending two cold emails.** `UNIQUE(campaign_id,
+email_norm)` is per campaign on purpose — the prototype's *global* unique key made re-importing a
+corrected sheet silently do nothing (B16) — and the cost of that choice is that two campaigns can
+hold the same person and both send. Worse, if they reply to one, the other sends anyway, because
+it is looking at its own lead row and that row knows nothing about the conversation beside it.
+
+The guard is now **per person per org**, in `claim_send` beside the suppression check, and it
+covers exactly the scenario described: campaign A sends, A is paused, B runs with the same person
+— pausing a campaign does not unsend its email. A live conversation anywhere in the org blocks a
+cold approach whatever the date says, which is the reply-mid-switch case. Follow-ups and replies
+are deliberately not checked: they belong to a thread already open with that person. It is a
+**cool-down, not a suppression** — ninety days, after which a second approach reads as a fresh one.
+
+Writing that test exposed something smaller and worth keeping: **`claim_send` caught every
+`IntegrityError` and called it "already claimed by another worker"**, so a foreign-key violation
+on `draft_id` reported a concurrent worker that did not exist. Only the idempotency key means
+that now; anything else raises.
+
+**The load gaps.** An import no longer makes every job runnable at once: `run_after` spreads
+research over the days the leads could actually be emailed, derived from the campaign's own daily
+cap with one day of head start. There is no value in researching a thousand leads today when at
+most a hundred can be sent. Template imports are untouched — rendering is local, instant and
+free, and a thousand drafts in seconds is the point of that mode.
+
+**Orphaned inbound mail is no longer kept for ever.** Unmatched mail is stored on purpose so a
+reply we failed to match is not lost, and `match_lead`'s fallback only looks back 30 days — so
+after 45 an orphan is not a reply we might still place, it is somebody else's correspondence in
+our database. That is a privacy surface before it is a storage one; the hourly sweep now deletes
+them.
+
+**Rejecting now has a limit (5 per lead per kind).** Each rejection is a model call, and a loop
+would spend the day's free-tier quota on one lead while every other lead waits behind it. The
+refusal says what to do instead rather than silently declining, which would look like the
+rejection button being broken — again.
+
+**A dead job can be requeued from the API.** `/admin/dead-jobs` lists them with `last_error`, and
+`POST /admin/jobs/{id}/requeue` resets the attempts, because the retries were spent on a
+different version of the code. Three dead reply-drafting jobs were recovered by hand with SQL
+after a deploy, which is what prompted this.
+
+**`docs/OPERATIONS_QA.md` is new** and answers every question raised, by area, with file
+references — crashes and at-most-once, deadlocks and lock ordering, LLM rate limiting and
+exhaustion, throttling at four levels, reply threading, bounces and opt-outs, WAL and MVCC and
+the connection pool, dead letters, roles, worker liveness, the backup trade, and where the real
+throughput ceiling is (human review, as §20 predicted). It marks what is **not** implemented as a
+gap rather than describing it as if it worked, which is how most of this project's defects got
+written down as features.
