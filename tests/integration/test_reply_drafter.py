@@ -316,9 +316,18 @@ class TestRefusals:
         assert outcome.draft_id is None
         assert "terminal" in (outcome.skipped_reason or "")
 
-    async def test_a_campaign_with_no_persona_is_refused(self, db, ctx, lead_factory):
-        """With no proof points there is nothing the drafter is allowed to assert."""
+    async def test_a_campaign_with_no_persona_is_refused(self, db, ctx, lead_factory, campaign):
+        """With no proof points there is nothing the drafter is allowed to assert.
+
+        The persona is cleared here rather than relied upon to be absent. This test used to pass
+        because the shared fixture built a campaign with `persona={}` -- which `POST /campaigns`
+        would refuse to create, so the fixture described a row that cannot exist. That is also
+        why the suite could not see that the send loop crashed on an unreadable persona: the
+        production path reads the row, and no test ever gave the row anything to read.
+        """
         lead = await lead_factory(state=LeadState.REPLIED.value)
+        campaign.persona = {}
+        await db.commit()
         message = await inbound(db, ctx, lead, body="Tell me more.")
 
         outcome = await draft_reply(

@@ -18,15 +18,17 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from pydantic import ValidationError
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
-from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Research
+from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Org, Research
 from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
+from app.services.mail.smtp import effective_send_mode
 from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
@@ -63,6 +65,18 @@ def _contains(term: str) -> str:
     return f"%{escaped}%"
 
 
+def _settings_or_defaults(campaign: Campaign) -> CampaignSettings:
+    """This campaign's sending rules, or the product defaults if the row cannot be read.
+
+    Never silently *used* for sending: `SendLoop` validates the same row itself and skips the
+    campaign, and `blockers` names the offending fields. This is only so a screen can render.
+    """
+    try:
+        return CampaignSettings.model_validate(campaign.settings or {})
+    except ValidationError:
+        return CampaignSettings()
+
+
 def campaign_summary(campaign: Campaign) -> dict[str, Any]:
     persona = campaign.persona or {}
     return {
@@ -81,9 +95,12 @@ def campaign_summary(campaign: Campaign) -> dict[str, Any]:
         # Rendered through `CampaignSettings` rather than returned raw, so the client is shown
         # the values the worker will actually use -- defaults included -- instead of whatever
         # subset happens to be stored. A row written before a field existed reads correctly.
-        "settings": CampaignSettings.model_validate(campaign.settings or {}).model_dump(
-            mode="json"
-        ),
+        #
+        # **Falling back to the defaults rather than raising.** An unreadable row made this
+        # function raise, which made `GET /campaigns/{id}` a 500 -- so the one campaign an
+        # operator most needs to open, the broken one, was the only one they could not. The
+        # fault is reported properly by `blockers`; this is a screen, and it has to render.
+        "settings": _settings_or_defaults(campaign).model_dump(mode="json"),
         "created_at": campaign.created_at.isoformat(),
     }
 
@@ -124,6 +141,110 @@ async def list_campaigns(
     return build_page(rows, size, campaign_summary).body("campaigns")
 
 
+async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str, str]]:
+    """Every reason this campaign cannot send, in the order an operator should fix them.
+
+    This exists because "I approved a draft and no email arrived" was unanswerable from the
+    dashboard. The reasons lived in the worker's tick report, which reaches the log and nothing
+    else, so the screen showed a running campaign with approved drafts and no explanation --
+    while the actual cause was a persona the send loop could not read.
+
+    **Computed from the same Pydantic models the worker validates with**, not from a parallel
+    set of rules. A second implementation of "is this sendable" would answer differently the
+    first time either side changed, and then the screen would be confidently wrong, which is
+    worse than silent.
+
+    Field names only, never stored values: this travels to a browser and into screenshots.
+    """
+    found: list[dict[str, str]] = []
+
+    if campaign.mailbox_id is None:
+        found.append(
+            {
+                "code": "no_mailbox",
+                "message": "No mailbox is attached, so there is no address to send from.",
+            }
+        )
+
+    if campaign.status != "running":
+        found.append(
+            {
+                "code": "not_running",
+                "message": (
+                    f"The campaign is {campaign.status}, and only a running campaign sends."
+                ),
+            }
+        )
+    if campaign.paused:
+        found.append({"code": "paused", "message": "The campaign is paused."})
+
+    try:
+        Persona.model_validate(campaign.persona or {})
+    except ValidationError as exc:
+        fields = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+        found.append(
+            {
+                "code": "persona_unreadable",
+                "message": (
+                    "The sender persona cannot be read, so nothing can be signed: "
+                    + ", ".join(fields[:6])
+                ),
+            }
+        )
+
+    try:
+        CampaignSettings.model_validate(campaign.settings or {})
+    except ValidationError as exc:
+        fields = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+        found.append(
+            {
+                "code": "settings_unreadable",
+                "message": (
+                    "The sending rules cannot be read, so this campaign is skipped: "
+                    + ", ".join(fields[:6])
+                ),
+            }
+        )
+
+    if campaign.mode == "template":
+        try:
+            CampaignTemplates.model_validate(campaign.templates or {})
+        except ValidationError as exc:
+            fields = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+            found.append(
+                {
+                    "code": "templates_unreadable",
+                    "message": (
+                        "This campaign writes from a fixed template and the template cannot be "
+                        "read: " + ", ".join(fields[:6])
+                    ),
+                }
+            )
+
+    org = await session.get(Org, campaign.org_id)
+    if org is not None and org.paused:
+        found.append(
+            {
+                "code": "org_paused",
+                "message": "The whole organisation is paused. Nothing sends until that is off.",
+            }
+        )
+
+    mode = effective_send_mode(override=org.send_mode if org else None)
+    if mode == "disabled":
+        found.append(
+            {
+                "code": "send_mode_disabled",
+                "message": (
+                    "Sending is switched off, so approved drafts are logged and never sent. "
+                    "The owner changes this under Settings."
+                ),
+            }
+        )
+
+    return found
+
+
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign(
     campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
@@ -136,6 +257,9 @@ async def get_campaign(
         "settings": campaign.settings,
         "templates": campaign.templates,
         "lead_counts": counts,
+        # Empty means nothing is in the way. Anything here is a reason an approved draft will
+        # sit still, which the dashboard previously had no way to show.
+        "blockers": await _blockers(session, campaign),
     }
 
 

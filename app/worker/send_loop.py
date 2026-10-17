@@ -77,18 +77,19 @@ class Candidate:
     #: the recipient sees. Sending a campaign B lead signed by campaign A is the kind of mistake
     #: nobody notices until somebody replies to the wrong person.
     campaign: Campaign
+    #: **Resolved once, where the failure can be contained.** These were properties that called
+    #: `model_validate` lazily, which meant an unreadable persona raised deep inside `send_one`
+    #: -- after the candidate had been chosen, out through `tick()`, into `WorkerTask.run`,
+    #: which recorded a failure and backed off. One campaign with a persona missing a field
+    #: therefore stopped **every** mailbox from sending anything, and said so only as a
+    #: traceback in the worker log. That is the identical shape as the `send_days` incident
+    #: that produced the per-mailbox reporting in the first place; a lazy property put it back.
+    persona: Persona
+    settings: CampaignSettings
 
     @property
     def priority(self) -> int:
         return KIND_PRIORITY.get(self.kind, 9)
-
-    @property
-    def persona(self) -> Persona:
-        return Persona.model_validate(self.campaign.persona)
-
-    @property
-    def settings(self) -> CampaignSettings:
-        return CampaignSettings.model_validate(self.campaign.settings or {})
 
 
 async def sent_today(
@@ -192,16 +193,37 @@ async def find_candidates(
                 continue  # not due yet
         if kind == outbox.KIND_REPLY and lead.state != "REPLIED":
             continue
+        # Everything that can refuse this campaign is resolved here, in one guarded place,
+        # because this is the only point at which "skip this campaign" is still an option.
+        #
+        # **A campaign with no readable persona cannot send, and must not borrow one.** The
+        # persona is the name, agency and footer the recipient sees. The previous code fell back
+        # to the mailbox's first campaign's persona, which signed one campaign's email with
+        # another campaign's identity -- the same defect this file was changed to fix, surviving
+        # in the one branch that was meant to handle its absence.
+        try:
+            settings = CampaignSettings.model_validate(campaign.settings or {})
+            persona = Persona.model_validate(campaign.persona or {})
+        except ValidationError:
+            # One unreadable campaign is that campaign's problem. `SendLoop` reports it by name;
+            # here we simply do not send for it, and the other campaigns have their turn.
+            continue
+
         # A campaign whose window is shut right now contributes nothing, and it must not block
         # a campaign whose window is open. The window is per campaign; the cap is per mailbox.
-        try:
-            if not in_window(now, CampaignSettings.model_validate(campaign.settings or {})):
-                continue
-        except ValidationError:
-            # Unreadable settings are one campaign's problem. `SendLoop` reports them; here we
-            # simply do not send for it, rather than letting it stop the mailbox.
+        if not in_window(now, settings):
             continue
-        candidates.append(Candidate(lead=lead, draft=draft, kind=kind, campaign=campaign))
+
+        candidates.append(
+            Candidate(
+                lead=lead,
+                draft=draft,
+                kind=kind,
+                campaign=campaign,
+                persona=persona,
+                settings=settings,
+            )
+        )
 
     # Replies first, then due follow-ups, then new leads (§9.2) — and within a kind, one from
     # each campaign in turn.
@@ -246,7 +268,6 @@ async def send_one(
     *,
     org_id: uuid.UUID,
     mailbox: Mailbox,
-    persona: Persona,
     settings: CampaignSettings,
     sender: SmtpSender,
     now: datetime | None = None,
@@ -256,6 +277,12 @@ async def send_one(
 
     One per call so the caller controls pacing, and so a single send is the unit that either
     completes or is recoverable — never half a batch.
+
+    `settings` are the **mailbox-level** defaults, and are used only for what belongs to the
+    mailbox: the day boundary for the cap, and how long to wait when nothing is ready. There is
+    deliberately no `persona` parameter. A message is signed by the persona of the campaign the
+    lead belongs to and by nothing else, so the only correct source is the chosen candidate --
+    passing one in is what allowed a lead to go out under another campaign's name.
     """
     now = now or datetime.now(tz=UTC)
 
@@ -300,10 +327,9 @@ async def send_one(
         return SendDecision(reason="nothing is ready to send", wait=timedelta(minutes=2))
 
     chosen = candidates[0]
-    # From here on, the lead's own campaign decides — its persona signs the message and its
-    # settings schedule the follow-up. `persona` and `settings` remain the mailbox-level
-    # defaults, used for the checks above and as a fallback for a campaign with no persona.
-    persona = chosen.persona if chosen.campaign.persona else persona
+    # From here on the lead's own campaign decides: its persona signs the message and its
+    # settings schedule the follow-up. Both were validated when the candidate was built.
+    persona = chosen.persona
     settings = chosen.settings
 
     # Step 1 and 2: re-check everything against the database, then claim the outbox row. The

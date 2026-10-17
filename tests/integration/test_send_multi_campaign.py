@@ -181,12 +181,13 @@ async def approved_lead_in(db, org, campaign_id, email, *, approved_at):
     return lead
 
 
-async def send_once(db, org, mailbox, smtp_server, *, allow, persona=ACME):
+async def send_once(db, org, mailbox, smtp_server, *, allow):
+    # No persona is passed: `send_one` takes the signature from the chosen candidate's own
+    # campaign, which is the whole point of this file.
     return await send_loop.send_one(
         db,
         org_id=org.id,
         mailbox=mailbox,
-        persona=persona,
         settings=CampaignSettings(),
         sender=sender_for(smtp_server, allow),
         now=INSIDE,
@@ -312,6 +313,108 @@ class TestTheCampaignsShareOneCapFairly:
 
         assert not decision.sent
         assert "cap" in decision.reason
+
+
+class TestACampaignThatCannotSignItsMailDoesNotSend:
+    """The regression that reached production, and the one this file was supposed to prevent.
+
+    PR #67 gave each candidate its own campaign so a lead could not go out signed by another
+    campaign. It did that with two lazy properties -- `Candidate.persona` and
+    `Candidate.settings` -- that called `model_validate` when read, which is *after* the
+    candidate has been chosen, inside `send_one`, with no `try` between there and
+    `WorkerTask.run`. So a campaign whose persona was missing a field raised, the error escaped
+    `tick()`, the task recorded a failure and backed off, and **no mailbox sent anything at
+    all** -- visible only as a traceback in the worker log.
+
+    That is the identical shape as the `send_days` incident that produced per-mailbox reporting
+    in the first place. A lazy property put it straight back, which is worth stating plainly:
+    validation that happens where the failure cannot be contained is the bug, not the invalid
+    data.
+
+    The fallback was the other half. `send_one` resolved
+    `chosen.persona if chosen.campaign.persona else persona`, so a campaign with an *empty*
+    persona borrowed the mailbox's first campaign's identity instead -- the very thing the
+    change was made to stop.
+    """
+
+    async def test_an_unreadable_persona_does_not_stop_the_other_campaign(
+        self, db, org, shared_mailbox, smtp_server
+    ):
+        mailbox, first, second = shared_mailbox
+        # A persona that is missing required fields: exactly what a hand-edited row looks like.
+        second.persona = {"sender_name": "Vik Menon"}
+        await approved_lead_in(db, org, second.id, "broken@example.com", approved_at=INSIDE)
+        await approved_lead_in(db, org, first.id, "fine@example.com", approved_at=INSIDE)
+        await db.commit()
+
+        decision = await send_once(db, org, mailbox, smtp_server, allow="fine@example.com")
+
+        assert decision.sent, decision.reason
+        raw = smtp_server.messages[-1]["raw"]
+        assert "fine@example.com" in raw
+        assert "Acme Software" in raw
+
+    async def test_the_broken_campaigns_lead_is_not_sent_under_another_name(
+        self, db, org, shared_mailbox, smtp_server
+    ):
+        """It must not send at all rather than send wearing the wrong identity. A recipient
+        replying to the wrong person is how this is discovered otherwise."""
+        mailbox, first, second = shared_mailbox
+        second.persona = {}
+        first.status = "paused"  # so the only candidate available is the broken campaign's
+        await approved_lead_in(db, org, second.id, "orphan@example.com", approved_at=INSIDE)
+        await db.commit()
+
+        before = len(smtp_server.messages)
+        decision = await send_once(db, org, mailbox, smtp_server, allow="orphan@example.com")
+
+        assert not decision.sent
+        assert len(smtp_server.messages) == before, "nothing may reach the wire"
+
+    async def test_unreadable_settings_also_skip_only_that_campaign(
+        self, db, org, shared_mailbox, smtp_server
+    ):
+        """`send_days` as weekday *names* is the original incident, in its per-campaign form."""
+        mailbox, first, second = shared_mailbox
+        second.settings = {"send_days": ["mon", "tue"]}
+        await approved_lead_in(db, org, second.id, "badsettings@example.com", approved_at=INSIDE)
+        await approved_lead_in(db, org, first.id, "good@example.com", approved_at=INSIDE)
+        await db.commit()
+
+        candidates = await send_loop.find_candidates(
+            db, org_id=org.id, mailbox_id=mailbox.id, now=INSIDE
+        )
+
+        assert {str(c.lead.campaign_id) for c in candidates} == {str(first.id)}
+
+    async def test_the_whole_tick_survives_an_unreadable_campaign(
+        self, db, org, shared_mailbox, smtp_server, session_factory
+    ):
+        """Through `SendLoop.send_pass`, not `send_one`: the crash-loop happened in the layers
+        between them, so a test that calls `send_one` directly cannot see it. This is the same
+        lesson as PR #54 -- exercise the method the worker actually calls."""
+        from app.core.settings import config
+        from app.worker.context import WorkerContext
+        from app.worker.send_task import SendLoop
+
+        _mailbox, _first, second = shared_mailbox
+        second.persona = {"sender_name": "Vik"}
+        await approved_lead_in(db, org, second.id, "broken2@example.com", approved_at=INSIDE)
+        await db.commit()
+
+        ctx = WorkerContext(
+            session_factory=session_factory,
+            settings=config,
+            poller=object(),  # type: ignore[arg-type]
+            sender=sender_for(smtp_server, "nobody@example.com"),
+        )
+        loop = SendLoop(ctx)
+
+        # No exception: that is the assertion. An exception here is the production failure.
+        report = await loop.send_pass(now=INSIDE)
+
+        assert report.sent == 0
+        assert report.mailboxes >= 1
 
 
 class TestAPausedCampaignStopsOnlyItself:

@@ -629,6 +629,122 @@ class TestCampaignMode:
         )
 
 
+class TestWhyNothingSends:
+    """`blockers` answers the one question the dashboard could not: I approved a draft and no
+    email arrived -- why?
+
+    The reasons lived in the worker's tick report, which reaches the log and nothing else. So a
+    campaign whose persona the send loop could not read showed a running status, a mailbox and
+    approved drafts, and gave the operator nothing to act on.
+    """
+
+    async def test_a_fresh_campaign_says_what_is_missing(self, api, owner):
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Fresh", "persona": PERSONA}
+        ).json()
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+
+        codes = {b["code"] for b in detail["blockers"]}
+        assert "no_mailbox" in codes
+        assert "not_running" in codes, "a draft campaign sends nothing, and should say so"
+
+    async def test_an_unreadable_persona_is_named_by_field(self, api, owner, db):
+        """A hand-edited row is the only way this happens, and it is how it happened."""
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Broken", "persona": PERSONA}
+        ).json()
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        campaign.persona = {"sender_name": "Asha"}
+        await db.commit()
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+
+        blocker = next(b for b in detail["blockers"] if b["code"] == "persona_unreadable")
+        assert "offer" in blocker["message"], blocker
+
+    async def test_the_message_never_echoes_what_is_stored(self, api, owner, db):
+        """Field names travel to a browser and into screenshots; values do not."""
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Quiet", "persona": PERSONA}
+        ).json()
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        campaign.settings = {"send_days": ["monday-is-not-an-integer"]}
+        await db.commit()
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+
+        blocker = next(b for b in detail["blockers"] if b["code"] == "settings_unreadable")
+        assert "send_days" in blocker["message"]
+        assert "monday-is-not-an-integer" not in blocker["message"]
+
+    async def test_a_broken_campaign_is_still_openable(self, api, owner, db):
+        """`campaign_summary` rendered the settings through `CampaignSettings`, so an unreadable
+        row made the detail route a 500 -- and the one campaign an operator most needs to open,
+        the broken one, was the only one they could not. Found by the test above failing with a
+        `KeyError` rather than an assertion."""
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Openable", "persona": PERSONA}
+        ).json()
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        campaign.settings = {"window_start": "half past ten"}
+        await db.commit()
+
+        response = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        # The detail route returns the row as stored, on purpose: the settings form edits what
+        # is actually there, and showing a default where a bad value sits would hide it. What
+        # matters is that the screen renders at all, and says what is wrong.
+        assert body["settings"]["window_start"] == "half past ten"
+        assert any(b["code"] == "settings_unreadable" for b in body["blockers"])
+
+    async def test_the_list_of_campaigns_survives_a_broken_one(self, api, owner, db):
+        """The same function builds every row of the list, so one bad campaign took out the
+        whole screen -- including every healthy campaign beside it."""
+        from app.db.models import Campaign as C
+
+        created = api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Bad row", "persona": PERSONA}
+        ).json()
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        campaign.settings = {"daily_cap": "lots"}
+        await db.commit()
+
+        response = api.get("/api/v1/campaigns", headers=owner)
+
+        assert response.status_code == 200, response.text
+        assert any(row["name"] == "Bad row" for row in response.json()["campaigns"])
+
+    async def test_a_ready_campaign_has_no_blockers(self, api, owner, db):
+
+        mailbox = api.post(
+            "/api/v1/mailboxes",
+            headers=owner,
+            json={"from_name": "Asha", "from_email": "asha@example.com"},
+        ).json()
+        created = api.post(
+            "/api/v1/campaigns",
+            headers=owner,
+            json={"name": "Ready", "persona": PERSONA, "mailbox_id": mailbox["id"]},
+        ).json()
+        api.patch(f"/api/v1/campaigns/{created['id']}", headers=owner, json={"status": "running"})
+
+        detail = api.get(f"/api/v1/campaigns/{created['id']}", headers=owner).json()
+
+        codes = {b["code"] for b in detail["blockers"]}
+        # The send mode is whatever the test settings say, and that is itself a blocker worth
+        # reporting -- so assert only that no *campaign* fault is claimed.
+        assert codes <= {"send_mode_disabled"}, detail["blockers"]
+
+
 class TestImportRoutesByMode:
     """A campaign in `template` mode has nothing to research, so importing must not queue it.
 

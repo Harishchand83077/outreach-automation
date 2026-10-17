@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Mailbox
 from app.domain.campaign import CampaignSettings
-from app.domain.persona import Persona
 from app.worker.base import WorkerTask
 from app.worker.context import WorkerContext
 from app.worker.send_loop import send_one
@@ -98,19 +97,20 @@ class SendLoop(WorkerTask):
                 report.reasons.append(f"{mailbox.from_email}: no campaign uses this mailbox")
                 return MAX_WAIT
 
-            persona_data = campaign.persona
-            if not persona_data:
-                # Without proof points there is nothing the sender is allowed to assert, and a
-                # draft built from an empty persona should never have existed.
-                report.reasons.append(f"{mailbox.from_email}: campaign has no persona")
-                return MAX_WAIT
-
             live = await session.get(Mailbox, mailbox.id)
             if live is None:
                 return MAX_WAIT
 
+            # **Only the mailbox-level defaults are read here, and a failure is not fatal.**
+            # This used to resolve a persona and return early if it was missing or unreadable,
+            # which stopped the whole mailbox on account of one campaign -- while a *different*
+            # campaign on the same mailbox might have had perfectly good drafts waiting.
+            # `find_candidates` now validates each campaign's own persona and settings and skips
+            # only that campaign, so what is wanted here is a day boundary and a window to
+            # report, and the product defaults are the honest answer when there is no readable
+            # campaign to take them from.
+            settings = CampaignSettings()
             try:
-                persona = Persona.model_validate(persona_data)
                 settings = CampaignSettings.model_validate(campaign.settings or {})
             except ValidationError as exc:
                 # `campaigns.persona` and `campaigns.settings` are JSONB and nothing in the API
@@ -125,15 +125,14 @@ class SendLoop(WorkerTask):
                 # reason and let the others have their turn.
                 report.reasons.append(
                     f"{mailbox.from_email}: campaign {campaign.name!r} has settings that cannot "
-                    f"be read ({_field_summary(exc)})"
+                    f"be read ({_field_summary(exc)}); using the product defaults for this "
+                    f"mailbox's cap and window"
                 )
-                return MAX_WAIT
 
             decision = await send_one(
                 session,
                 org_id=mailbox.org_id,
                 mailbox=live,
-                persona=persona,
                 settings=settings,
                 sender=self.ctx.sender,
                 now=now,

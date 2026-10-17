@@ -288,7 +288,6 @@ async def send_once(
         db,
         org_id=org.id,
         mailbox=mailbox,
-        persona=PERSONA,
         settings=settings or CampaignSettings(),
         sender=SmtpSender(
             sending_settings(smtp_server.host, smtp_server.port, allow=allow, mode=mode)
