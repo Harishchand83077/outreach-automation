@@ -1570,8 +1570,15 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       {/* The totals are snapshots: "1 reply" says nothing about whether this is working,
           only that it once did. The shape answers what they cannot — is it accelerating, did
           it stall on Tuesday, is the follow-up doing anything at all. */}
-      <h2 className="section-title">Activity</h2>
-      <ActivityChart series={activity?.series} loading={!activity} />
+      {/* Heading and chart together, or neither. A chart that declines to draw -- no data
+          yet, or an older API without the endpoint -- used to leave its title sitting over
+          empty space, which reads as something broken rather than something absent. */}
+      {!activity || activity.series?.length ? (
+        <>
+          <h2 className="section-title">Activity</h2>
+          <ActivityChart series={activity?.series} loading={!activity} />
+        </>
+      ) : null}
 
       <h2 className="section-title">Outcomes</h2>
       <dl className="stat-grid">

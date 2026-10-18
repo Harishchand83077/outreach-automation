@@ -1256,3 +1256,14 @@ Drawn by hand in SVG: a charting library is ~50 KB and a styling argument for tw
 thirty points, and this inherits the theme toggle for free. Replies stack *on* sends rather than
 sitting beside them — the question is how much of what went out came back, and two adjacent bars
 make that a comparison the eye has to perform.
+
+**A dangling section heading, found by looking at it.** The campaign screen rendered "Activity"
+above the chart unconditionally, so when the chart declined to draw — no data yet, or a backend
+that does not have the endpoint — a title sat over empty space, which reads as something broken
+rather than something absent. Heading and chart together now, or neither.
+
+**And the screen that found it confirmed something bigger: the follow-up has been sent.** Three
+leads of `test_campaign` are in `FOLLOWUP_SENT` with the message in their timeline — *"quick
+follow up"*, sent 17 October. The chain ran end to end for the first time: the lifecycle pass
+queued it, the handler drafted it, a human approved it, the send loop sent it, and the lead
+moved on. That product rule was written in Phase 5 and had never once executed.
