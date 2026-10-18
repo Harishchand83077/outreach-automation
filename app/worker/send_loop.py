@@ -334,6 +334,13 @@ async def send_one(
 
     # Step 1 and 2: re-check everything against the database, then claim the outbox row. The
     # approval may be hours old, and a reply or opt-out may have arrived since.
+    # The thread this message belongs to. Without these a follow-up arrives as a new
+    # conversation, which is both confusing for the recipient and worse for deliverability:
+    # three unrelated-looking emails from one sender read as three cold emails.
+    in_reply_to, references = await outbox.thread_headers(
+        session, lead_id=chosen.lead.id, kind=chosen.kind
+    )
+
     claim = await outbox.claim_send(
         session,
         org_id=org_id,
@@ -343,6 +350,8 @@ async def send_one(
         draft_id=chosen.draft.id,
         subject=chosen.draft.subject,
         body_text=chosen.draft.body,
+        in_reply_to=in_reply_to,
+        references=references,
         now=now,
     )
     if not claim.claimed or claim.message is None:

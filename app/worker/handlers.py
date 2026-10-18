@@ -40,6 +40,7 @@ from app.domain.state import LeadState
 from app.domain.template import CampaignTemplates
 from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
+from app.services.drafting.prompts import reply_subject
 from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
 from app.services.research.fetcher import Fetcher
@@ -310,6 +311,25 @@ async def handle_draft_followup(ctx: WorkerContext, session: AsyncSession, job: 
                 session, ctx_org, lead_id=lead.id, kind="followup"
             ),
         )
+
+    # **The subject is the thread's, not a new one.** Clients group on `References` first but
+    # fall back to the subject, and a reviewer must see the subject that will actually be sent
+    # -- so this happens at drafting time rather than being swapped in at send time behind
+    # their back. Replies have worked this way since Phase 6; follow-ups did not, which is half
+    # of why they arrived as separate conversations.
+    parent = await session.scalar(
+        select(Message)
+        .where(Message.lead_id == lead.id, Message.direction == "out")
+        .order_by(Message.created_at)
+        .limit(1)
+    )
+    if parent is not None and parent.subject:
+        thread_subject = reply_subject(parent.subject)
+        for attempt in result.attempts:
+            if attempt.draft is not None:
+                attempt.draft.subject = thread_subject
+        if result.draft is not None:
+            result.draft.subject = thread_subject
 
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="followup", result=result)
 

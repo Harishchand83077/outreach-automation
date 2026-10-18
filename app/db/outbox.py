@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import Campaign, Lead, Mailbox, Message, Suppression
 from app.db.state import lock_lead, record_event, transition
 from app.domain.state import LeadState
+from app.services.mail.message import build_references
 
 #: Outbound message kinds. Each maps to the lead states it may legitimately be sent from.
 KIND_INITIAL = "initial"
@@ -175,6 +176,51 @@ async def _already_in_touch(
             f"a second approach waits {CONTACT_COOLDOWN_DAYS} days"
         )
     return None
+
+
+async def thread_headers(
+    session: AsyncSession, *, lead_id: uuid.UUID, kind: str
+) -> tuple[str | None, str | None]:
+    """`In-Reply-To` and `References` for the message about to be claimed.
+
+    **Every outbound message went out with neither**, so a follow-up arrived as a brand new
+    conversation rather than under the email it was following up, and our answer to somebody's
+    reply did the same. `build_message` has always accepted both headers and `build_references`
+    has always known how to extend a chain; the send loop simply never passed anything. A
+    correct producer and a correct consumer with nothing connecting them -- the same shape as
+    every other defect this project has produced.
+
+    What each kind threads onto:
+
+    - a **follow-up** continues our own last message to this lead, which is the first email or
+      the previous follow-up;
+    - a **reply** answers their last inbound message;
+    - a **first email** starts the thread and threads onto nothing.
+
+    `References` extends the parent's chain rather than restarting it, so the third message in a
+    conversation still names the first -- which is what clients use to group a thread when an
+    intermediate message is missing from somebody's mailbox.
+    """
+    if kind == KIND_INITIAL:
+        return None, None
+
+    direction = "in" if kind == KIND_REPLY else "out"
+    parent = await session.scalar(
+        select(Message)
+        .where(
+            Message.lead_id == lead_id,
+            Message.direction == direction,
+            Message.message_id_hdr.is_not(None),
+        )
+        .order_by(Message.created_at.desc())
+        .limit(1)
+    )
+    if parent is None or not parent.message_id_hdr:
+        # Nothing to thread onto. Sending anyway is right -- a follow-up with no visible parent
+        # is still a useful email -- and it is what happened before this existed.
+        return None, None
+
+    return parent.message_id_hdr, build_references(parent.references_hdr, parent.message_id_hdr)
 
 
 async def is_suppressed(session: AsyncSession, *, org_id: uuid.UUID, email: str) -> bool:
