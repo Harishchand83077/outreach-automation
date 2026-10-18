@@ -33,7 +33,17 @@ import {
   uploadFile,
 } from './api'
 import { signOut } from './supabase'
-import { Empty, Icons, SkeletonList, ThemeToggle, useTheme } from './ui'
+import {
+  ActivityChart,
+  CommandPalette,
+  Drawer,
+  Empty,
+  Icons,
+  SkeletonList,
+  ThemeToggle,
+  usePaletteShortcut,
+  useTheme,
+} from './ui'
 import './app.css'
 
 const STATES = [
@@ -80,6 +90,7 @@ export default function App() {
 
 function Dashboard({ session }) {
   const [theme, toggleTheme] = useTheme()
+  const [paletteOpen, setPaletteOpen] = usePaletteShortcut()
   const [me, setMe] = useState(null)
   const [error, setError] = useState(null)
   const [toasts, setToasts] = useState([])
@@ -205,6 +216,43 @@ function Dashboard({ session }) {
 
   const who = me.email || session.user?.email || ''
 
+  // Every screen and every campaign, two keystrokes away. Built from the same `nav` list the
+  // sidebar draws, so a screen added later appears here without anybody remembering to add it.
+  const commands = [
+    ...nav.map((item) => ({
+      id: `view:${item.id}`,
+      group: 'Go to',
+      label: item.label,
+      icon: item.icon,
+      run: () => setView(item.id),
+    })),
+    ...campaigns.map((row) => ({
+      id: `campaign:${row.id}`,
+      group: 'Switch campaign',
+      label: row.name,
+      icon: Icons.campaign,
+      hint: row.paused ? 'paused' : row.status,
+      run: () => {
+        setCampaignId(row.id)
+        setView('campaign')
+      },
+    })),
+    {
+      id: 'action:new',
+      group: 'Actions',
+      label: 'New campaign',
+      icon: Icons.plus,
+      run: () => setView('new'),
+    },
+    {
+      id: 'action:theme',
+      group: 'Actions',
+      label: 'Toggle light and dark',
+      icon: Icons.sun,
+      run: toggleTheme,
+    },
+  ]
+
   return (
     <div className="shell">
       <nav className="sidebar" aria-label="Sections">
@@ -289,6 +337,17 @@ function Dashboard({ session }) {
             </>
           ) : null}
           <span className="spacer" />
+          <button
+            type="button"
+            className="btn"
+            data-size="sm"
+            data-variant="quiet"
+            onClick={() => setPaletteOpen(true)}
+            title="Search (Ctrl K)"
+          >
+            <Icons.search size={15} />
+            <span className="kbd">⌘K</span>
+          </button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <button
             type="button"
@@ -380,6 +439,12 @@ function Dashboard({ session }) {
           ) : null}
         </div>
       </div>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        commands={commands}
+      />
 
       <div className="toast-host">
         {toasts.map((item) => (
@@ -1021,25 +1086,31 @@ function LeadDetail({ leadId, onClose, onError, onToast, onChanged }) {
     }
   }
 
-  if (!lead) return <p className="muted">Loading…</p>
+  if (!lead) {
+    return (
+      <Drawer title="Loading…" onClose={onClose}>
+        <SkeletonList count={2} rows={4} />
+      </Drawer>
+    )
+  }
 
   return (
-    <section className="card" style={{ marginTop: 20 }}>
-      <div className="card-head">
-        <strong>{lead.full_name || lead.email}</strong>
-        <span className="badge" data-tone={stateTone(lead.state)}>
-          {lead.state}
-        </span>
-        {lead.paused ? (
-          <span className="badge" data-tone="warn">
-            paused
+    <Drawer
+      title={lead.full_name || lead.email}
+      onClose={onClose}
+      badges={
+        <>
+          <span className="badge" data-tone={stateTone(lead.state)}>
+            {lead.state}
           </span>
-        ) : null}
-        <span className="spacer" />
-        <button type="button" className="btn" data-variant="quiet" onClick={onClose}>
-          Close
-        </button>
-      </div>
+          {lead.paused ? (
+            <span className="badge" data-tone="warn">
+              paused
+            </span>
+          ) : null}
+        </>
+      }
+    >
 
       <table className="kv">
         <tbody>
@@ -1126,7 +1197,7 @@ function LeadDetail({ leadId, onClose, onError, onToast, onChanged }) {
           </table>
         </div>
       )}
-    </section>
+    </Drawer>
   )
 }
 
@@ -1140,10 +1211,10 @@ function Import({ campaignId, onError, onToast }) {
   //: undo offered for ever would eventually be pressed long after the leads were worked on, and
   //: the API refuses to remove anything already emailed regardless.
   const [lastImport, setLastImport] = useState(null)
+  const [dragging, setDragging] = useState(false)
 
-  const choose = async (event) => {
-    const chosen = event.target.files?.[0]
-    event.target.value = ''
+  // One path for a file however it arrives: picked, or dropped.
+  const loadPreview = async (chosen) => {
     if (!chosen) return
     setFile(chosen)
     setBusy(true)
@@ -1155,6 +1226,22 @@ function Import({ campaignId, onError, onToast }) {
     } finally {
       setBusy(false)
     }
+  }
+
+  const choose = (event) => {
+    const chosen = event.target.files?.[0]
+    // Cleared so that picking the *same* file again fires a change event. Without it, a
+    // cancelled import cannot be restarted with the file it was cancelled on.
+    event.target.value = ''
+    loadPreview(chosen)
+  }
+
+  // Dropping a sheet on the page is how anybody who has used a spreadsheet expects to start.
+  // The file input stays: a drop target on its own is unreachable from a keyboard.
+  const onDrop = (event) => {
+    event.preventDefault()
+    setDragging(false)
+    loadPreview(event.dataTransfer?.files?.[0])
   }
 
   const commit = async () => {
@@ -1210,14 +1297,38 @@ function Import({ campaignId, onError, onToast }) {
       </p>
 
       <div className="card">
-        <div className="field">
-          <label htmlFor="sheet">Spreadsheet (.csv or .xlsx)</label>
-          <input id="sheet" type="file" accept=".csv,.xlsx" onChange={choose} disabled={busy} />
-          <p className="hint">
-            Needs an email column. Name, company and website columns are used for research and
-            for the draft; a missing website means the draft has less to stand on.
-          </p>
-        </div>
+        {/* The drop target is a label wrapping the real input, so clicking it opens the picker
+            and a keyboard reaches it through the input's own focus — a div with an onDrop is
+            invisible to anybody not using a mouse. */}
+        <label
+          className="dropzone"
+          htmlFor="sheet"
+          data-over={dragging}
+          onDragOver={(event) => {
+            event.preventDefault()
+            setDragging(true)
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+        >
+          <span className="empty-icon">
+            <Icons.import size={20} />
+          </span>
+          <strong>{dragging ? 'Drop it here' : 'Drop a sheet, or choose a file'}</strong>
+          <span className="muted">.csv or .xlsx, up to 5 MB and 5,000 rows</span>
+          <input
+            id="sheet"
+            type="file"
+            accept=".csv,.xlsx"
+            onChange={choose}
+            disabled={busy}
+            style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }}
+          />
+        </label>
+        <p className="hint">
+          Needs an email column. Name, company and website columns are used for research and for
+          the draft; a missing website means the draft has less to stand on.
+        </p>
       </div>
 
       {lastImport && !preview ? (
@@ -1325,12 +1436,19 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
   const [stats, setStats] = useState(null)
+  const [activity, setActivity] = useState(null)
 
   useEffect(() => {
     setDetail(null)
     setStats(null)
+    setActivity(null)
     getJson(`/campaigns/${campaign.id}`).then(setDetail).catch(onError)
     getJson(`/campaigns/${campaign.id}/stats`).then(setStats).catch(onError)
+    // A chart is a nicety, so a failure to load one must not put a red banner over a screen
+    // whose numbers are all fine. It simply does not draw.
+    getJson(`/campaigns/${campaign.id}/activity`)
+      .then(setActivity)
+      .catch(() => setActivity({ series: [] }))
   }, [campaign.id, onError])
 
   const setStatus = async (status) => {
@@ -1448,6 +1566,12 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           <dd className="num">{stats ? stats.leads_emailed : '—'}</dd>
         </div>
       </dl>
+
+      {/* The totals are snapshots: "1 reply" says nothing about whether this is working,
+          only that it once did. The shape answers what they cannot — is it accelerating, did
+          it stall on Tuesday, is the follow-up doing anything at all. */}
+      <h2 className="section-title">Activity</h2>
+      <ActivityChart series={activity?.series} loading={!activity} />
 
       <h2 className="section-title">Outcomes</h2>
       <dl className="stat-grid">

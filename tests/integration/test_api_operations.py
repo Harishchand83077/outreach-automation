@@ -882,6 +882,87 @@ class TestADeadJobCanBeRequeued:
         assert response.status_code == 404
 
 
+class TestCampaignActivity:
+    """Every number on the campaign screen is a snapshot: "1 reply" says nothing about whether
+    the campaign is working, only that it once did. A shape answers what the totals cannot."""
+
+    async def _campaign(self, api, owner):
+        return api.post(
+            "/api/v1/campaigns", headers=owner, json={"name": "Charted", "persona": PERSONA}
+        ).json()
+
+    async def test_every_day_is_present_even_when_empty(self, api, owner):
+        """A sparse series is a chart with invisible gaps. A quiet week should *look* quiet."""
+        created = await self._campaign(api, owner)
+
+        body = api.get(f"/api/v1/campaigns/{created['id']}/activity?days=14", headers=owner).json()
+
+        assert len(body["series"]) == 14
+        assert all(point["sent"] == 0 and point["replies"] == 0 for point in body["series"])
+        assert body["series"] == sorted(body["series"], key=lambda point: point["day"])
+
+    async def test_a_send_and_a_reply_land_on_their_days(self, api, owner, db, org):
+        from app.db.models import Campaign as C
+        from app.db.models import Lead, Mailbox, Message
+
+        created = await self._campaign(api, owner)
+        campaign = await db.get(C, uuid.UUID(created["id"]))
+        mailbox = Mailbox(
+            org_id=org.id,
+            from_name="Asha",
+            from_email="asha@outreach.example",
+            reply_to="asha@outreach.example",
+        )
+        db.add(mailbox)
+        await db.flush()
+        lead = Lead(
+            org_id=org.id,
+            campaign_id=campaign.id,
+            email_norm="charted@example.com",
+            email_raw="charted@example.com",
+            state="SENT",
+        )
+        db.add(lead)
+        await db.flush()
+        for direction, status_value in (("out", "sent"), ("in", "received")):
+            db.add(
+                Message(
+                    org_id=org.id,
+                    lead_id=lead.id,
+                    mailbox_id=mailbox.id,
+                    direction=direction,
+                    status=status_value,
+                    kind="initial" if direction == "out" else "reply",
+                    subject="Hello",
+                    body_text="Hi",
+                    message_id_hdr=f"<{uuid.uuid4()}@example.com>",
+                    idempotency_key=str(uuid.uuid4()) if direction == "out" else None,
+                )
+            )
+        await db.commit()
+
+        body = api.get(f"/api/v1/campaigns/{created['id']}/activity", headers=owner).json()
+
+        assert sum(point["sent"] for point in body["series"]) == 1
+        assert sum(point["replies"] for point in body["series"]) == 1
+
+    async def test_it_is_bucketed_in_the_campaigns_timezone(self, api, owner):
+        """A send at 23:40 IST belongs to that operator's day. Bucketing by UTC would move a
+        sixth of India's working hours into the previous day's bar, invisibly."""
+        created = await self._campaign(api, owner)
+
+        body = api.get(f"/api/v1/campaigns/{created['id']}/activity", headers=owner).json()
+
+        assert body["timezone"] == "Asia/Kolkata"
+
+    async def test_another_orgs_campaign_is_not_found(self, api, stranger, owner):
+        created = await self._campaign(api, owner)
+
+        response = api.get(f"/api/v1/campaigns/{created['id']}/activity", headers=stranger)
+
+        assert response.status_code == 404
+
+
 class TestWhyNothingSends:
     """`blockers` answers the one question the dashboard could not: I approved a draft and no
     email arrived -- why?

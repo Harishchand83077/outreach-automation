@@ -1226,3 +1226,33 @@ the UI chose to say while waiting.
 
 **The filter bar ran into the paragraph above it**, so the field labels read as the last line of
 the explanation. It is its own surface now, which is what it always was.
+
+**Four interactions that make the dashboard feel like a tool rather than a form.**
+
+**A command palette (⌘K / Ctrl+K).** Every screen and every campaign, two keystrokes away. Built
+from the same `nav` list the sidebar draws, so a screen added later appears in it without
+anybody remembering to. Matching is a plain substring: fuzzy matching looks clever and ranks
+badly on short lists — with eight commands and a handful of campaigns, typing "cam" should show
+the campaigns, not a scored permutation of the whole app.
+
+**Lead detail is a drawer, not a page.** It used to replace the list, so comparing two leads
+meant navigating twice and losing the scroll position both times. The list stays where it was,
+Escape closes, the body scroll locks behind it, and focus moves into the panel so a keyboard
+user is not left on the page underneath.
+
+**A real drop target for the sheet.** Dropping a spreadsheet is how anybody who has used one
+expects to start. It is a `<label>` wrapping the real input rather than a `div` with an
+`onDrop`, so clicking opens the picker and the keyboard still reaches it — a drop target alone
+is invisible to anybody not using a mouse. One path handles the file however it arrives.
+
+**A chart, because every number on the campaign screen was a snapshot.** "1 reply" says nothing
+about whether a campaign is working, only that it once did. `GET /campaigns/{id}/activity`
+returns sends and replies per day, **bucketed in the campaign's own timezone** — a send at 23:40
+IST belongs to that operator's day, and bucketing by UTC would quietly move a sixth of India's
+working hours into the previous bar. Empty days are returned as zeros rather than omitted,
+because a sparse series is a chart with invisible gaps and a quiet week should look like one.
+
+Drawn by hand in SVG: a charting library is ~50 KB and a styling argument for two series of
+thirty points, and this inherits the theme toggle for free. Replies stack *on* sends rather than
+sitting beside them — the question is how much of what went out came back, and two adjacent bars
+make that a comparison the eye has to perform.
