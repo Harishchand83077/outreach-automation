@@ -8,7 +8,7 @@
  * update and explain for as long as the project lives.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 /* ------------------------------------------------------------------ icons */
 
@@ -218,6 +218,304 @@ export function Empty({ icon: IconComponent = Icons.inbox, title, children, acti
       <strong>{title}</strong>
       {children ? <span>{children}</span> : null}
       {action}
+    </div>
+  )
+}
+
+/* ------------------------------------------------------------------ drawer */
+
+/** A panel beside the page rather than instead of it.
+ *
+ * Lead detail used to replace the list, so comparing two leads meant navigating twice and
+ * losing the scroll position both times. Escape closes, the backdrop closes, and focus moves
+ * into the panel on open so a keyboard user is not left behind on the page underneath.
+ */
+export function Drawer({ title, badges, onClose, children }) {
+  const panel = useRef(null)
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    // Scrolling the list under an open panel is disorienting, and on a phone it is the whole
+    // page moving behind a sheet.
+    const previous = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    panel.current?.focus()
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previous
+    }
+  }, [onClose])
+
+  return (
+    <>
+      <div className="drawer-backdrop" onClick={onClose} aria-hidden="true" />
+      <aside
+        className="drawer"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        tabIndex={-1}
+        ref={panel}
+      >
+        <header className="drawer-head">
+          <strong>{title}</strong>
+          {badges}
+          <span className="spacer" />
+          <button
+            type="button"
+            className="btn"
+            data-variant="quiet"
+            data-size="icon"
+            onClick={onClose}
+            aria-label="Close"
+            title="Close (Esc)"
+          >
+            ✕
+          </button>
+        </header>
+        <div className="drawer-body">{children}</div>
+      </aside>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------ command palette */
+
+/** Jump anywhere with the keyboard. Cmd/Ctrl+K, type, Enter.
+ *
+ * The single control that makes a tool feel fast rather than merely complete: every screen and
+ * every campaign is two keystrokes away, and nobody has to learn where anything lives.
+ *
+ * Matching is a plain substring over a lowercase haystack. Fuzzy matching looks clever and
+ * ranks badly on short lists — with eight commands and a handful of campaigns, typing "cam"
+ * should show the campaigns, not a scored permutation of every item in the app.
+ */
+export function CommandPalette({ open, onClose, commands }) {
+  const [query, setQuery] = useState('')
+  const [active, setActive] = useState(0)
+  const input = useRef(null)
+
+  useEffect(() => {
+    if (open) {
+      setQuery('')
+      setActive(0)
+      // The frame delay matters: focusing before the element is painted silently does nothing.
+      requestAnimationFrame(() => input.current?.focus())
+    }
+  }, [open])
+
+  const matches = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return commands
+    return commands.filter((command) =>
+      `${command.group} ${command.label} ${command.hint || ''}`.toLowerCase().includes(needle)
+    )
+  }, [commands, query])
+
+  useEffect(() => {
+    setActive((current) => Math.min(current, Math.max(matches.length - 1, 0)))
+  }, [matches.length])
+
+  if (!open) return null
+
+  const run = (command) => {
+    onClose()
+    command.run()
+  }
+
+  const onKeyDown = (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      setActive((current) => (current + 1) % Math.max(matches.length, 1))
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      setActive((current) => (current - 1 + matches.length) % Math.max(matches.length, 1))
+    } else if (event.key === 'Enter' && matches[active]) {
+      event.preventDefault()
+      run(matches[active])
+    } else if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+    }
+  }
+
+  let lastGroup = null
+
+  return (
+    <div className="palette-backdrop" onClick={onClose} role="presentation">
+      <div
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="palette-input">
+          <Icons.search size={17} />
+          <input
+            ref={input}
+            type="text"
+            value={query}
+            placeholder="Jump to a screen or a campaign…"
+            aria-label="Search commands"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onKeyDown}
+          />
+        </div>
+
+        <div className="palette-list">
+          {matches.length === 0 ? (
+            <p className="muted" style={{ padding: '14px 8px' }}>
+              Nothing matches “{query}”.
+            </p>
+          ) : (
+            matches.map((command, index) => {
+              const heading = command.group !== lastGroup ? command.group : null
+              lastGroup = command.group
+              return (
+                <div key={command.id}>
+                  {heading ? <div className="palette-group">{heading}</div> : null}
+                  <button
+                    type="button"
+                    className="palette-item"
+                    data-active={index === active}
+                    onMouseEnter={() => setActive(index)}
+                    onClick={() => run(command)}
+                  >
+                    {command.icon ? <command.icon size={16} /> : null}
+                    <span>{command.label}</span>
+                    {command.hint ? (
+                      <>
+                        <span className="spacer" />
+                        <span className="badge">{command.hint}</span>
+                      </>
+                    ) : null}
+                  </button>
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        <div className="palette-foot">
+          <span className="kbd">↑</span>
+          <span className="kbd">↓</span>
+          to move
+          <span className="kbd">↵</span>
+          to open
+          <span className="kbd">esc</span>
+          to close
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** True while Cmd/Ctrl+K should have the palette open. */
+export function usePaletteShortcut() {
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setOpen((current) => !current)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  return [open, setOpen]
+}
+
+/* ------------------------------------------------------------------ chart */
+
+/** Sends and replies per day, drawn by hand.
+ *
+ * A charting library is ~50 KB and a styling argument, for two series of thirty points. This is
+ * one `<rect>` per bar, themed by the same tokens as everything else, so it follows the theme
+ * toggle for free.
+ *
+ * Replies are stacked *on* sends rather than drawn beside them: the question is "how much of
+ * what went out came back", and two adjacent bars make that a comparison the eye has to do.
+ */
+export function ActivityChart({ series, loading }) {
+  if (loading) return <div className="skeleton" style={{ height: 150, borderRadius: 10 }} />
+  if (!series?.length) return null
+
+  const peak = Math.max(1, ...series.map((point) => point.sent + point.replies))
+  const width = 100
+  const height = 34
+  const gap = 0.6
+  const barWidth = width / series.length - gap
+  const totalSent = series.reduce((sum, point) => sum + point.sent, 0)
+  const totalReplies = series.reduce((sum, point) => sum + point.replies, 0)
+
+  const label = (iso) =>
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+
+  return (
+    <div className="chart">
+      <div className="chart-head">
+        <span className="chart-key" style={{ color: 'var(--accent)' }}>
+          <i />
+          <span style={{ color: 'var(--text-muted)' }}>{totalSent} sent</span>
+        </span>
+        <span className="chart-key" style={{ color: 'var(--success)' }}>
+          <i />
+          <span style={{ color: 'var(--text-muted)' }}>{totalReplies} replied</span>
+        </span>
+        <span className="spacer" />
+        <span>last {series.length} days</span>
+      </div>
+
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        role="img"
+        aria-label={`${totalSent} sent and ${totalReplies} replies over ${series.length} days`}
+      >
+        {series.map((point, index) => {
+          const x = index * (barWidth + gap)
+          const sentHeight = (point.sent / peak) * height
+          const replyHeight = (point.replies / peak) * height
+          return (
+            <g key={point.day} className="bar">
+              <title>
+                {label(point.day)} — {point.sent} sent, {point.replies} replied
+              </title>
+              {/* A full-height invisible target, so hovering a quiet day still shows its
+                  tooltip rather than needing a two-pixel bar hit exactly. */}
+              <rect x={x} y={0} width={barWidth} height={height} fill="transparent" />
+              <rect
+                x={x}
+                y={height - sentHeight - replyHeight}
+                width={barWidth}
+                height={Math.max(sentHeight, point.sent ? 0.7 : 0)}
+                fill="var(--accent)"
+                rx="0.4"
+              />
+              <rect
+                x={x}
+                y={height - replyHeight}
+                width={barWidth}
+                height={Math.max(replyHeight, point.replies ? 0.7 : 0)}
+                fill="var(--success)"
+                rx="0.4"
+              />
+            </g>
+          )
+        })}
+      </svg>
+
+      <div className="chart-axis">
+        <span>{label(series[0].day)}</span>
+        <span>{label(series[series.length - 1].day)}</span>
+      </div>
     </div>
   )
 }

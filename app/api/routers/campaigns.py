@@ -13,6 +13,7 @@ therefore one lead's worth of exposure.
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
@@ -474,6 +475,72 @@ async def _set_lead_paused(
     )
     await session.commit()
     return {"lead_id": str(lead.id), "paused": lead.paused, "state": lead.state}
+
+
+@router.get("/campaigns/{campaign_id}/activity")
+async def campaign_activity(
+    campaign_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    days: Annotated[int, Query(ge=7, le=90)] = 30,
+) -> dict[str, Any]:
+    """Sends and replies per day, for the campaign screen's chart.
+
+    Every number on that screen is a snapshot: 1 reply tells you nothing about whether this
+    campaign is working, only that it once did. A shape answers the question the totals cannot
+    -- is this accelerating, did it stall last Tuesday, is the follow-up doing anything.
+
+    **Bucketed in the campaign's own timezone**, not UTC. A send at 23:40 IST belongs to that
+    operator's day; bucketing by UTC would move a sixth of India's working hours into the
+    previous day's bar and nobody would ever notice it was wrong.
+
+    Days with nothing in them are returned as zeros rather than omitted. A sparse series is a
+    chart with invisible gaps -- a quiet week should *look* like a quiet week.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+    settings = _settings_or_defaults(campaign)
+    zone = settings.zone
+
+    now = datetime.now(tz=UTC)
+    start_local = (now.astimezone(zone) - timedelta(days=days - 1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    start = start_local.astimezone(UTC)
+
+    # `date_trunc` with a timezone argument does the conversion in the database, so the bucket
+    # boundaries are the operator's midnights rather than the server's.
+    bucket = func.date_trunc("day", func.timezone(str(settings.timezone), Message.created_at))
+
+    rows = (
+        await session.execute(
+            select(
+                bucket.label("day"),
+                Message.direction,
+                func.count().label("total"),
+            )
+            .join(Lead, Lead.id == Message.lead_id)
+            .where(
+                Message.org_id == user.org_id,
+                Lead.campaign_id == campaign_id,
+                Message.created_at >= start,
+                Message.status.in_(("sent", "sending", "received")),
+            )
+            .group_by(bucket, Message.direction)
+        )
+    ).all()
+
+    sent: dict[str, int] = {}
+    received: dict[str, int] = {}
+    for day, direction, total in rows:
+        key = day.date().isoformat()
+        (sent if direction == "out" else received)[key] = int(total)
+
+    series = []
+    for offset in range(days):
+        key = (start_local + timedelta(days=offset)).date().isoformat()
+        series.append({"day": key, "sent": sent.get(key, 0), "replies": received.get(key, 0)})
+
+    return {"days": days, "timezone": str(settings.timezone), "series": series}
 
 
 @router.get("/campaigns/{campaign_id}/stats")
