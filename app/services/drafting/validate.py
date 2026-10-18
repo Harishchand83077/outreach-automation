@@ -234,9 +234,10 @@ def validate_rendered(
 
 def _check_subject(draft: DraftOutput, report: ValidationReport, *, kind: str) -> None:
     words = draft.subject_word_count
-    # A reply keeps the thread's subject, so its length is whatever they chose and is not ours
-    # to shorten. Rewriting it would break threading in some clients and looks evasive in all.
-    if words > 6 and kind != "reply":
+    # A reply *and a follow-up* keep the thread's subject, so the length is whatever was chosen
+    # when the thread started and is not ours to shorten. Rewriting it would break threading in
+    # some clients and looks evasive in all.
+    if words > 6 and kind not in ("reply", "followup"):
         # Long subjects read as marketing and get truncated on a phone anyway.
         report.fail(f"the subject is {words} words; keep it to 6 or fewer")
     if not draft.subject.strip():
@@ -245,6 +246,10 @@ def _check_subject(draft: DraftOutput, report: ValidationReport, *, kind: str) -
     lowered = draft.subject.lower()
     if kind == "reply" and not lowered.startswith("re:"):
         report.fail("a reply must keep the thread's subject, prefixed with 'Re:'")
+    if kind == "followup" and not lowered.startswith("re:"):
+        # A follow-up that does not continue the thread's subject will be filed as a new
+        # conversation by any client that falls back to subject matching.
+        report.fail("a follow-up must keep the thread's subject, prefixed with 'Re:'")
     if kind == "initial" and lowered.startswith(("re:", "fwd:", "fw:")):
         # Faking a reply to a conversation that never happened is a deception, and recipients
         # recognise it instantly.

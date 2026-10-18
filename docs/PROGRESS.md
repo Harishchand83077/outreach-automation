@@ -1267,3 +1267,34 @@ leads of `test_campaign` are in `FOLLOWUP_SENT` with the message in their timeli
 follow up"*, sent 17 October. The chain ran end to end for the first time: the lifecycle pass
 queued it, the handler drafted it, a human approved it, the send loop sent it, and the lead
 moved on. That product rule was written in Phase 5 and had never once executed.
+
+**Follow-ups arrived as new conversations, not under the email they were chasing.** Reported
+from a real mailbox, and it was two bugs wearing one coat.
+
+**Every outbound message went out with no `In-Reply-To` and no `References`.** `build_message`
+has always accepted both headers and `build_references` has always known how to extend a chain —
+`SendLoop` simply never passed anything to `claim_send`. The signature defect of this project,
+one more time: a correct producer and a correct consumer with nothing connecting them.
+
+`outbox.thread_headers` now says what each kind threads onto. A **follow-up** continues our own
+last message to that lead — the first email, or the previous follow-up. A **reply** answers
+*their* last inbound message, not our own. A **first email** threads onto nothing. `References`
+extends the parent's chain rather than restarting it, so the third message in a conversation
+still names the first, which is how a client groups a thread when an intermediate message is
+missing from somebody's mailbox. Nothing to thread onto is not an error: a follow-up with no
+visible parent is still a useful email, and refusing to send it would be the worse outcome.
+
+**The subject was the other half.** Clients group on `References` first but fall back to the
+subject, and the follow-up drafter was inventing a fresh one — so even with headers, anything
+falling back would still file it separately. A follow-up now inherits the thread's subject
+prefixed `Re:`, decided at **drafting** time rather than swapped in at send time, because a
+reviewer has to see the subject that will actually be sent. Replies have worked this way since
+Phase 6; follow-ups did not. The validator was updated to match: a follow-up must now keep the
+thread's subject, and is exempt from the six-word limit for the same reason a reply is — the
+length was chosen when the thread started and is not ours to shorten. A *first* email still may
+not begin `Re:`, because faking a reply to a conversation that never happened is a deception
+recipients recognise instantly.
+
+**`docs/DEPLOY_CHEATSHEET.md` is new** — the three commands that deploy the backend, how to get
+a shell without SSH, how to tell what is actually running, what to do when it fails, and the
+reminder that the dashboard needs no deploy at all because Cloudflare builds it on every merge.
