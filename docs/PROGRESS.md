@@ -1298,3 +1298,9 @@ recipients recognise instantly.
 **`docs/DEPLOY_CHEATSHEET.md` is new** — the three commands that deploy the backend, how to get
 a shell without SSH, how to tell what is actually running, what to do when it fails, and the
 reminder that the dashboard needs no deploy at all because Cloudflare builds it on every merge.
+
+**The chart deployed and was three times too tall.** `preserveAspectRatio="none"` means the
+viewBox stretches to whatever box it is given — so `height: auto` derived the height from the
+100×34 viewBox and produced a chart about 370px tall on a desktop, for two bars. A fixed 120px
+is what that attribute was always implying. Caught by looking at it after the backend deploy
+made it draw for the first time.

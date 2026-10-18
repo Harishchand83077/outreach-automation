@@ -1297,10 +1297,13 @@ tbody tr:hover {
   background: currentColor;
 }
 
+/* A fixed height, not one derived from the viewBox. With `preserveAspectRatio="none"` the
+   viewBox stretches to whatever box it is given, so `height: auto` made the chart a third as
+   tall as the content column is wide — about 370px on a desktop, for two bars. */
 .chart svg {
   display: block;
   width: 100%;
-  height: auto;
+  height: 120px;
   overflow: visible;
 }
 
