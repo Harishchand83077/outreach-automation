@@ -599,6 +599,79 @@ approval first inside each. Round-robin rather than strict first-approved-first-
 with one cap a campaign holding five hundred approved drafts would starve one holding five for
 a working week.
 
+
+**It is a product now: ten people can sign up, connect their own Gmail, and run their own
+campaigns (PRs #96, #97, deployed as `outreach:436f8fa`).**
+
+**Tenancy needed no work, and that is ADR-004 paying for itself three phases later.** `org_id`
+went on every table in the first migration and `deps.py` has never taken an org from a request.
+The two things that were genuinely single-tenant were *who may sign in* (one `members` row
+inserted by hand with SQL) and *which mailbox sends* (`SMTP_EMAIL` from the environment). Those
+are what changed; the campaigns, leads, drafts, research, suppressions and the send loop's
+candidate query were already scoped and already tested for it.
+
+- **A sign-up creates its own org, owned by that person** (ADR-017), provisioned on the first
+  authenticated request rather than at a `POST /signup` — a separate endpoint is a second door
+  into the same room, and anything that forgets to knock on it sees a 403 it cannot explain.
+  `SIGNUP_MODE` defaults to **`closed`**, which is exactly the old behaviour. The reasoning is
+  ADR-010's: a migration that quietly opened public sign-up on a system that sends email would
+  be the worst default this project could ship.
+- **Connect Gmail is an OAuth click** (ADR-018). Scope `https://mail.google.com/` over SMTP and
+  IMAP with **XOAUTH2, not the Gmail API** — that scope authorises the two protocols we already
+  speak, so the send loop, outbox, IMAP poller, reply matcher and ADR-002 recovery all keep
+  working. The Gmail API cannot read the Sent folder, which is the thing ADR-002 depends on.
+  One function changed: how the clients authenticate.
+- **The scope costs something, and it is written down rather than discovered.** Google calls
+  reading a mailbox a *restricted* scope — publishing needs an annual paid security assessment,
+  and hard rule 5 says no. An **unpublished** client needs none: 100 test users, any scope, free.
+  The price is refresh tokens that **expire every 7 days**. Handled as a product state: the
+  mailbox pauses with a reason, the dashboard says Reconnect, and the copy says it is expected.
+  `MULTI_TENANT_PLAN.md` §4 has both exits past ten users and neither is a rewrite.
+- **Credentials are Fernet-encrypted**, key in the environment, in their own table — `mailboxes`
+  is read every send-loop cycle and a secret should not ride along. No route returns one, no log
+  line holds one, and `Sealed` and `MailLogin` both override `__repr__` so a traceback cannot
+  print one. **A mailbox with no credential falls back to the environment**, which is what kept
+  the live deployment sending through all of this and what keeps every existing test meaningful.
+- **Campaign schedules** (ADR-019): `starts_at`/`ends_at`, with the `Scheduler` moving `status`
+  rather than three separate queries learning to check a clock. `paused` is never overridden, and
+  the end is checked before the start so a backdated window completes instead of briefly sending.
+
+**"Why is this lead not sending?" is answerable now, and the story is the whole lesson of this
+project in one defect.** A lead sat `APPROVED` for **eight days** on the live system showing
+"next action: —", which reads exactly like "waiting its turn". The real reason was that another
+campaign in the same org was already in conversation with that person — the per-person cooldown
+working correctly — and `claim_send` had been computing that precise sentence once a minute and
+writing it to a log nobody reads.
+
+`outbox.why_not_sendable` is that answer, and **`claim_send` calls it**. The first version I
+wrote was a second copy of the same rules for the dashboard to use, which would have been the
+seventh instance of this project's signature defect; it was replaced before it was committed.
+`tests/integration/test_send_blockers.py` parametrises every refusal and asserts both paths
+return the same sentence, so a refusal added to one without the other fails CI.
+
+**And the answer to "why did test campaign 2 send no follow-ups" was: nothing is broken.** Its
+two leads are the same two people as `test_campaign`. One replied (a reply cancels follow-ups);
+the other has never had a *first* email because the org is already in conversation with them. A
+campaign with nobody new to email, and no screen that could say so.
+
+**An attachment per campaign** (ADR-016, PR #96): one file, on every first email, unticked per
+draft in the review queue. Bytes in Postgres in their own table; the extension allowlist is the
+only control and the UI says so, because nothing here scans file contents.
+
+**Still outstanding, and all of it needs a Google account signed in — `docs/OWNER_SETUP.md`:**
+1. **A Google Cloud OAuth client**, then five values in `.env` (`CREDENTIAL_KEY`,
+   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, `DASHBOARD_URL`) plus
+   `SIGNUP_MODE`. **Until those exist, Connect Gmail is drawn as unavailable and sign-up stays
+   closed** — the deploy that just landed changed nobody's behaviour.
+2. **Google Postmaster Tools.** A TXT record and a sign-in. There is still no way to see whether
+   mail is being filtered; the Spam discovery was luck.
+3. **`SMTP_EMAIL` must become an `@arkvane.in` Workspace address.** Unchanged and still the
+   biggest limit on deliverability.
+4. **A booking link that books something.** The persona's URL opens the *reader's own* calendar.
+
+1,586 tests, ruff and mypy strict clean, four CI jobs green, migration `b93d7e4a1c58` applied and
+verified on the live database, zero errors in the worker log.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
