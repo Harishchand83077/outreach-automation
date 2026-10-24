@@ -11,9 +11,10 @@ entitled to it, and every endpoint that accepted an org from its caller would be
 waiting for someone to try the obvious thing. It comes from the membership row or the request
 fails.
 
-A valid token with no membership row gets 403, not 404 or an empty list. Public sign-ups are
-disabled, so that case means somebody authenticated against the project and has no business
-here — worth saying plainly rather than quietly returning nothing.
+A valid token with no membership row gets 403, not 404 or an empty list — unless `SIGNUP_MODE`
+says otherwise, in which case that first request provisions a workspace and the person becomes
+its owner (ADR-017). The default is still `closed`, which is exactly the old behaviour: an
+authenticated stranger is still a stranger.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from app.core.settings import Settings, config
 from app.db.engine import get_sessionmaker
 from app.db.models import Member
 from app.db.repo import OrgContext
+from app.services.signup import SignupRefused, provision
 
 #: §14's roles, strongest first. Only `owner` is issued today.
 ROLE_ORDER = {"owner": 3, "admin": 2, "member": 1}
@@ -115,10 +117,16 @@ async def current_user(
     """Resolve the verified subject to a membership, or refuse."""
     member = await session.scalar(select(Member).where(Member.user_id == claims.subject))
     if member is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="This account is not a member of any organisation.",
-        )
+        # **Sign-up happens here, on the first authenticated request**, rather than at a
+        # dedicated endpoint. A separate `POST /signup` would be a second door into the same
+        # room: the dashboard would have to know to knock on it, and anything that forgot would
+        # see a 403 it could not explain. Here there is one path, and `SIGNUP_MODE` decides
+        # whether it ends in a workspace or a refusal.
+        try:
+            member = await provision(session, user_id=claims.subject, email=claims.email)
+            await session.commit()
+        except SignupRefused as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return CurrentUser(
         user_id=claims.subject,
         email=claims.email or member.email,

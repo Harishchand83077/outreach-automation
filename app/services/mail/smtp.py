@@ -11,12 +11,19 @@ of `0` silently suppressed everything while still marking leads as sent (issue B
 
 from __future__ import annotations
 
+import base64
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import TYPE_CHECKING, Any
 
 from app.core.settings import Settings, config
 from app.core.settings import config as default_config
+from app.services.mail.google_oauth import xoauth2_string
 from app.services.mail.message import BuiltMessage
+
+if TYPE_CHECKING:
+    from app.services.mail.connection import MailLogin
 
 
 class SmtpOutcome(StrEnum):
@@ -110,20 +117,42 @@ def allowlist_permits(
     return False
 
 
+logger = logging.getLogger(__name__)
+
+
 class SmtpSender:
     """Sends one message. Holds no eligibility logic beyond the `SEND_MODE` boundary check."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or default_config
 
+    @property
+    def settings(self) -> Settings:
+        """The configuration this sender was built with.
+
+        Read by the send loop to resolve a mailbox's credentials against the same
+        configuration the send itself will use -- a test that points the sender at a fake
+        SMTP server must not have the login resolved against the real one."""
+        return self._settings
+
     async def send(
-        self, built: BuiltMessage, *, to_email: str, send_mode: str | None = None
+        self,
+        built: BuiltMessage,
+        *,
+        to_email: str,
+        send_mode: str | None = None,
+        login: MailLogin | None = None,
     ) -> SendReport:
         """Deliver one message, or explain why it was not delivered.
 
         Never raises for an expected failure. The send loop needs an outcome it can record
         against the outbox row, and an exception escaping here would leave that row in
         `sending` with nothing to resolve it.
+
+        `login` says **as whom**. `None` means the environment's single account, which is what
+        every caller meant before mailboxes had their own credentials and is what a single-tenant
+        deployment still means. It does not affect **whether** we may send: that is
+        `allowlist_permits` below, unchanged, in the one place hard rule 1 allows it to be.
         """
         settings = self._settings
 
@@ -141,17 +170,22 @@ class SmtpSender:
         except ImportError as exc:  # pragma: no cover - dependency is pinned
             raise RuntimeError("aiosmtplib is not installed") from exc
 
+        login = login or MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
+
         try:
-            response = await aiosmtplib.send(
-                built.message,
-                hostname=settings.SMTP_HOST,
-                port=settings.SMTP_PORT,
-                username=settings.SMTP_EMAIL,
-                password=settings.SMTP_PASSWORD,
-                use_tls=settings.SMTP_USE_TLS,
-                start_tls=settings.SMTP_START_TLS if not settings.SMTP_USE_TLS else False,
-                timeout=settings.SMTP_TIMEOUT,
-            )
+            if login.uses_oauth:
+                response = await self._send_xoauth2(aiosmtplib, built, login, settings)
+            else:
+                response = await aiosmtplib.send(
+                    built.message,
+                    hostname=settings.SMTP_HOST,
+                    port=settings.SMTP_PORT,
+                    username=login.username,
+                    password=login.password or "",
+                    use_tls=settings.SMTP_USE_TLS,
+                    start_tls=settings.SMTP_START_TLS if not settings.SMTP_USE_TLS else False,
+                    timeout=settings.SMTP_TIMEOUT,
+                )
         except Exception as exc:
             return self._classify(exc)
 
@@ -169,6 +203,55 @@ class SmtpSender:
             outcome=SmtpOutcome.SENT,
             response=str(response[1] if isinstance(response, tuple) else response)[:1000],
         )
+
+    @staticmethod
+    async def _send_xoauth2(
+        aiosmtplib: Any, built: BuiltMessage, login: MailLogin, settings: Settings
+    ) -> Any:
+        """Send authenticating with an OAuth access token instead of a password.
+
+        `aiosmtplib.send` has no XOAUTH2 option, so the conversation is driven by hand: connect,
+        STARTTLS, `AUTH XOAUTH2 <base64>`, then hand the message to the same client. Everything
+        after authentication is identical to the password path, which is the point -- the
+        message, the envelope and the error handling are all unchanged.
+
+        A 334 reply to the AUTH command means Google is offering to explain the refusal rather
+        than accepting it; the client must send an empty line to get the real error. Without
+        that the connection hangs until the timeout and the failure reads as a network problem.
+        """
+        assert login.access_token is not None
+        client = aiosmtplib.SMTP(
+            hostname=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            use_tls=settings.SMTP_USE_TLS,
+            start_tls=False,
+            timeout=settings.SMTP_TIMEOUT,
+        )
+        await client.connect()
+        try:
+            if settings.SMTP_START_TLS and not settings.SMTP_USE_TLS:
+                await client.starttls()
+            encoded = base64.b64encode(
+                xoauth2_string(login.username, login.access_token).encode("utf-8")
+            ).decode("ascii")
+            code, message = await client.execute_command(
+                b"AUTH", b"XOAUTH2", encoded.encode("ascii")
+            )
+            if code == 334:
+                # Google wants an empty response before it will say what was wrong.
+                code, message = await client.execute_command(b"")
+            if code not in (235, 250):
+                raise aiosmtplib.SMTPAuthenticationError(code, message)
+            return await client.send_message(built.message)
+        finally:
+            # Always, including after an auth failure: a half-open SMTP session left behind on
+            # every cycle is how a provider starts refusing connections.
+            try:
+                await client.quit()
+            except Exception as exc:  # pragma: no cover - best effort teardown
+                # Debug, not warning: the send either worked or was already classified, and a
+                # noisy line about closing a socket would train people to ignore this logger.
+                logger.debug("closing the SMTP session failed", extra={"error": type(exc).__name__})
 
     @staticmethod
     def _classify(exc: Exception) -> SendReport:

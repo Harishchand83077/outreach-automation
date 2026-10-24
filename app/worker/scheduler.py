@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.db import queue
+from app.services.campaign_clock import run_campaign_clock
 from app.services.lifecycle import run_lifecycle
 from app.services.privacy import run_retention
 from app.services.reply.recovery import recover_stuck_sends
@@ -59,6 +60,8 @@ class SchedulerReport:
     stuck_jobs: int = 0
     leads_erased: int = 0
     evidence_cleared: int = 0
+    campaigns_started: int = 0
+    campaigns_completed: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -123,6 +126,21 @@ class Scheduler(WorkerTask):
         except Exception as exc:
             logger.exception("lifecycle pass failed")
             report.alerts.append(f"the follow-up and close pass failed: {type(exc).__name__}")
+
+        # **Campaigns that start or stop on their own.** Before this, "begin on Monday" meant
+        # somebody remembering on Monday, and "stop on Friday" meant a campaign running through
+        # the weekend because nobody was looking. Own transaction, never fatal: a campaign whose
+        # window will not parse must not stop the lease reaping above it.
+        try:
+            async with self.ctx.session_factory() as session, session.begin():
+                clock = await run_campaign_clock(session, now=now)
+            report.campaigns_started = clock.started
+            report.campaigns_completed = clock.completed
+            for moved in clock.names:
+                logger.info("campaign schedule moved", extra={"change": moved})
+        except Exception as exc:
+            logger.exception("campaign clock failed")
+            report.alerts.append(f"the campaign schedule pass failed: {type(exc).__name__}")
 
         await self._maybe_retain(report, now)
 

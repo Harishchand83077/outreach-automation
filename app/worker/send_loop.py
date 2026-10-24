@@ -44,6 +44,7 @@ from app.domain.scheduling import (
     remaining_capacity,
     warmup_cap,
 )
+from app.services.mail.connection import MailboxUnavailable, login_for, mark_unavailable
 from app.services.mail.message import Attachment as OutgoingAttachment
 from app.services.mail.message import FooterIdentity, build_message
 from app.services.mail.message import Mailbox as MailboxIdentity
@@ -336,6 +337,24 @@ async def send_one(
 
     # Step 1 and 2: re-check everything against the database, then claim the outbox row. The
     # approval may be hours old, and a reply or opt-out may have arrived since.
+    # **As whom.** Resolved before the claim, deliberately: a claim writes a `sending` row
+    # that ADR-002's recovery pass must afterwards resolve, and burning one on a mailbox we
+    # already know cannot authenticate would manufacture work for a human to confirm.
+    #
+    # A mailbox whose connection has lapsed is paused with a reason rather than retried. With an
+    # OAuth client in Testing status a refresh token expires every 7 days, so this is a weekly
+    # event by design -- and retrying a credential that will never work again is how a provider
+    # starts treating us as an attack.
+    try:
+        login = await login_for(session, mailbox=mailbox, settings=sender.settings, now=now)
+    except MailboxUnavailable as exc:
+        await mark_unavailable(session, mailbox=mailbox, reason=str(exc), now=now)
+        await session.commit()
+        return SendDecision(
+            reason=f"mailbox needs reconnecting: {exc}",
+            wait=timedelta(minutes=15),
+        )
+
     # The thread this message belongs to. Without these a follow-up arrives as a new
     # conversation, which is both confusing for the recipient and worse for deliverability:
     # three unrelated-looking emails from one sender read as three cold emails.
@@ -421,7 +440,9 @@ async def send_one(
     # Step 3: the one SMTP call. Nothing else in the system sends mail.
     # The org's chosen mode travels with the send. `org` was already loaded to check `paused`,
     # so this costs no query, and the decision stays inside the guard rather than here (ADR-010).
-    report = await sender.send(built, to_email=chosen.lead.email_norm, send_mode=org.send_mode)
+    report = await sender.send(
+        built, to_email=chosen.lead.email_norm, send_mode=org.send_mode, login=login
+    )
 
     # Step 4: record the outcome in its own transaction.
     if report.outcome is SmtpOutcome.SENT:

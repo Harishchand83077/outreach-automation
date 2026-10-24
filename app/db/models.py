@@ -168,14 +168,24 @@ class Campaign(Base):
     #: `CampaignTemplates` for a `template`-mode campaign; `{}` for a `research` one.
     templates: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: The window this campaign may send in, as calendar instants. Both nullable: a campaign
+    #: with neither behaves exactly as every campaign did before they existed. The `Scheduler`
+    #: moves `status` when either boundary passes, rather than every reader of `status` learning
+    #: to check the clock -- see `app/domain/campaign_schedule.py`.
+    starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
         CheckConstraint(
-            "status IN ('draft','running','paused','completed','archived')",
+            "status IN ('draft','scheduled','running','paused','completed','archived')",
             name="ck_campaigns_status",
         ),
         CheckConstraint("mode IN ('research','template')", name="ck_campaigns_mode"),
+        CheckConstraint(
+            "starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at",
+            name="ck_campaigns_schedule_order",
+        ),
     )
 
 
@@ -802,4 +812,78 @@ class Attachment(Base):
         UniqueConstraint("campaign_id", name="uq_attachments_campaign"),
         CheckConstraint("size_bytes > 0", name="ck_attachments_size_positive"),
         CheckConstraint("size_bytes <= 5242880", name="ck_attachments_size_within_limit"),
+    )
+
+
+class MailCredential(Base):
+    """How one mailbox authenticates, with the secret encrypted at rest.
+
+    Its own table rather than columns on `mailboxes`, because `mailboxes` is read on every
+    send-loop cycle and a secret should not be dragged through a query that does not need it --
+    the same reasoning that put attachment bytes in their own table. It also means the one table
+    holding secrets is a single obvious thing to reason about.
+
+    **`secret` is ciphertext** (`app/services/credentials.py`). No route returns it, no log line
+    contains it, no event payload carries it. The API answers whether a mailbox is connected, as
+    what address, and when it was last refreshed.
+    """
+
+    __tablename__ = "mail_credentials"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: google_oauth | app_password.
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    #: The address Google says this token belongs to, checked against the mailbox's `from_email`
+    #: when connecting -- authorising the wrong account is easy with several signed in, and
+    #: without this check it fails at send time instead.
+    account_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    secret: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    scopes: Mapped[str | None] = mapped_column(Text)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set when a refresh fails. An OAuth client in Testing status expires refresh tokens after
+    #: 7 days, so this is an expected state with a known fix, not an exception.
+    invalid_reason: Mapped[str | None] = mapped_column(Text)
+    connected_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("mailbox_id", name="uq_mail_credentials_mailbox"),
+        CheckConstraint("kind IN ('google_oauth','app_password')", name="ck_mail_cred_kind"),
+    )
+
+
+class OAuthState(Base):
+    """One in-flight OAuth round trip.
+
+    The `state` nonce is the whole point. Without it anybody could hand a signed-in user a
+    crafted callback URL and attach **their** mailbox to that user's org -- the user would then
+    send their campaign through an attacker's account, and every reply would go there too.
+    """
+
+    __tablename__ = "oauth_states"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    state: Mapped[str] = mapped_column(String(64), nullable=False)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    redirect_to: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    #: Single use. A replayed callback is refused rather than quietly re-running.
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint("state", name="uq_oauth_states_state"),
+        Index("ix_oauth_states_created", "created_at"),
     )

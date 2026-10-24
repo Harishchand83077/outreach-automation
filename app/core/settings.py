@@ -130,6 +130,35 @@ class Settings(BaseSettings):
     #: Comma-separated addresses that may receive mail when SEND_MODE=allowlist.
     SEND_ALLOWLIST: str = ""
 
+    # === Who may have an account (ADR-017) ===
+    #: closed = only members somebody inserted deliberately (today's behaviour, and the default
+    #: for the same reason `orgs.send_mode` is nullable: deploying this must change nothing).
+    #: allowlist = anyone at a domain in SIGNUP_ALLOWED_DOMAINS. open = anyone who can sign in.
+    #:
+    #: `open` deserves a clear head: anybody could then connect their own Gmail and send cold
+    #: email through software you host. They send as themselves, with their own quota and their
+    #: own reputation -- this is not an open relay -- but it is a decision, not a default.
+    SIGNUP_MODE: Literal["closed", "allowlist", "open"] = "closed"
+    #: Comma-separated email domains for SIGNUP_MODE=allowlist. Empty means nobody.
+    SIGNUP_ALLOWED_DOMAINS: str = ""
+    #: A ceiling on workspaces. One small instance and one shared free LLM quota: the failure
+    #: mode of open sign-up is not a breach, it is strangers quietly exhausting the free tier
+    #: until the people who actually use this get nothing.
+    MAX_ORGS: int = 25
+
+    #: Fernet key encrypting stored mailbox credentials (ADR-018). Generated with
+    #: `python -m app.scripts.make_key`. Without it, connecting a mailbox is refused -- storing
+    #: a refresh token in plain text in a database that is dumped nightly to S3 is not a thing
+    #: to do by accident.
+    CREDENTIAL_KEY: str = ""
+
+    # === Google OAuth, for "Connect Gmail" (ADR-018) ===
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    #: Where Google sends the user back. Must match the Cloud console exactly, including scheme
+    #: and trailing path -- a mismatch here is the commonest OAuth setup failure there is.
+    GOOGLE_REDIRECT_URI: str = ""
+
     # === Database (ADR-001: our own Postgres, not Supabase) ===
     #: Async SQLAlchemy URL. `docker compose -f deploy/compose.yml up -d` serves this default.
     #: Port 5433, never the default 5432, which another project's Postgres may already hold.
@@ -159,6 +188,10 @@ class Settings(BaseSettings):
     #: Comma-separated browser origins allowed to call the api. Replaces the prototype's
     #: `allow_origins=["*"]` with credentials enabled (issue C3).
     CORS_ALLOWED_ORIGINS: str = ""
+    #: Where to send a browser after an OAuth round trip. Its own setting rather than
+    #: "the first CORS origin", because a redirect target chosen by position in a list
+    #: is one somebody reorders by accident. Empty means the API's own root.
+    DASHBOARD_URL: str = ""
 
     # === LLM router (Phase 3) ===
     # Entries whose key is unset are skipped by the router, so adding a provider is just a
@@ -260,6 +293,27 @@ class Settings(BaseSettings):
         """Normalised recipient allowlist. Matching is case-insensitive."""
         return frozenset(
             part.strip().lower() for part in self.SEND_ALLOWLIST.split(",") if part.strip()
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def signup_allowed_domains(self) -> frozenset[str]:
+        """Normalised sign-up domains. Matching is case-insensitive."""
+        return frozenset(
+            part.strip().lower().lstrip("@")
+            for part in self.SIGNUP_ALLOWED_DOMAINS.split(",")
+            if part.strip()
+        )
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def google_oauth_configured(self) -> bool:
+        """Whether "Connect Gmail" can work at all. All three or none -- a client id with no
+        secret produces a failure at the callback, which is the least debuggable moment."""
+        return bool(
+            self.GOOGLE_CLIENT_ID.strip()
+            and self.GOOGLE_CLIENT_SECRET.strip()
+            and self.GOOGLE_REDIRECT_URI.strip()
         )
 
     @computed_field  # type: ignore[prop-decorator]

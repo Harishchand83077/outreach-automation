@@ -29,6 +29,7 @@ import {
   deleteJson,
   getJson,
   patchJson,
+  putJson,
   postJson,
   uploadFile,
 } from './api'
@@ -1164,6 +1165,20 @@ function LeadDetail({ leadId, onClose, onError, onToast, onChanged }) {
         </tbody>
       </table>
 
+      {/* **Only drawn when there is something wrong.** This lead had an approved draft sitting
+          for eight days showing "next action: —", which reads exactly like "waiting its turn".
+          The send loop knew the reason the whole time and wrote it to a log. A panel that is
+          usually absent is one people read when it appears. */}
+      {lead.send_block ? (
+        <div className="banner" data-tone="warn" style={{ marginTop: 14 }}>
+          <Icons.alert size={16} />
+          <span>
+            <strong>This {lead.send_block.kind} email is not going out.</strong>{' '}
+            {lead.send_block.reason}
+          </span>
+        </div>
+      ) : null}
+
       <div className="btn-row">
         <button
           type="button"
@@ -1459,6 +1474,20 @@ function Import({ campaignId, onError, onToast }) {
   )
 }
 
+/** An ISO instant as `datetime-local` wants it: the viewer's own clock, no timezone suffix.
+ *  Done by hand rather than with `toISOString`, which would render UTC and show somebody in
+ *  India a start time seven hours earlier than the one they chose. */
+function toLocalInput(iso) {
+  if (!iso) return ''
+  const when = new Date(iso)
+  if (Number.isNaN(when.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return (
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+    `T${pad(when.getHours())}:${pad(when.getMinutes())}`
+  )
+}
+
 /** Bytes as a person reads them. Sizes here are always between 1 KB and 5 MB, so two units
  *  and one decimal place covers every case the UI can actually show. */
 function formatBytes(bytes) {
@@ -1476,6 +1505,8 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const [attaching, setAttaching] = useState(false)
   const [file, setFile] = useState(null)
   const [fileBusy, setFileBusy] = useState(false)
+  const [conn, setConn] = useState(null)
+  const [schedule, setSchedule] = useState({ starts_at: '', ends_at: '' })
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
   const [stats, setStats] = useState(null)
@@ -1486,6 +1517,11 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     setStats(null)
     setActivity(null)
     setFile(null)
+    setConn(null)
+    setSchedule({
+      starts_at: toLocalInput(campaign.starts_at),
+      ends_at: toLocalInput(campaign.ends_at),
+    })
     getJson(`/campaigns/${campaign.id}`).then(setDetail).catch(onError)
     getJson(`/campaigns/${campaign.id}/stats`).then(setStats).catch(onError)
     // `null` means not loaded; `{ attachment: null }` means loaded and there is none. The
@@ -1494,6 +1530,11 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     getJson(`/campaigns/${campaign.id}/attachment`)
       .then(setFile)
       .catch(() => setFile({ attachment: null }))
+    // Degrades rather than erroring: an older server without this route should leave the panel
+    // out, not put a red banner over a screen whose numbers are all fine.
+    getJson('/connect/google/status')
+      .then(setConn)
+      .catch(() => setConn({ configured: false, connected: false }))
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
     // whose numbers are all fine. It simply does not draw.
     getJson(`/campaigns/${campaign.id}/activity`)
@@ -1511,6 +1552,52 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           : `Campaign is now ${status}. Nothing further will send.`
       )
       onChanged(false)
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const connectGmail = async () => {
+    setBusy(true)
+    try {
+      const { authorize_url } = await postJson('/connect/google/start', { json: {} })
+      // A full navigation, not a popup: Google blocks its consent screen inside an iframe, and
+      // a popup is the thing browsers and extensions are most likely to swallow silently.
+      window.location.href = authorize_url
+    } catch (err) {
+      onError(err)
+      setBusy(false)
+    }
+  }
+
+  const disconnectGmail = async () => {
+    setBusy(true)
+    try {
+      await deleteJson(`/connect/google/${conn.mailbox_id}`)
+      setConn({ ...conn, connected: false, needs_reconnect: false })
+      onToast('Disconnected. Revoke access at myaccount.google.com/permissions too.')
+      onChanged()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveSchedule = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      await putJson(`/campaigns/${campaign.id}/schedule`, {
+        json: {
+          starts_at: schedule.starts_at ? new Date(schedule.starts_at).toISOString() : null,
+          ends_at: schedule.ends_at ? new Date(schedule.ends_at).toISOString() : null,
+        },
+      })
+      onToast('Schedule saved.')
+      onChanged()
     } catch (err) {
       onError(err)
     } finally {
@@ -1757,6 +1844,112 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           <div className="btn-row">
             <button type="submit" className="btn" data-variant="primary" disabled={busy}>
               {busy ? 'Attaching…' : 'Attach mailbox'}
+            </button>
+          </div>
+        </form>
+      ) : null}
+
+      <h2 className="section-title">Sending account</h2>
+      <p className="muted">
+        The Gmail account this campaign sends from. Connecting it means approving us on Google's
+        own screen — no password is typed here, and you can revoke access at any time from your
+        Google account.
+      </p>
+      {conn === null ? (
+        <SkeletonList count={1} rows={2} />
+      ) : !conn.configured ? (
+        <p className="muted" style={{ marginTop: 12 }}>
+          This server has no Google credentials configured, so accounts cannot be connected yet.
+          It falls back to the mailbox set in the server environment.
+        </p>
+      ) : (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-head">
+            <Icons.inbox size={16} />
+            <strong>{conn.account_email || conn.from_email || 'No mailbox yet'}</strong>
+            {conn.connected ? (
+              <span className="badge" data-tone="ok">
+                connected
+              </span>
+            ) : conn.needs_reconnect ? (
+              <span className="badge" data-tone="warn">
+                needs reconnecting
+              </span>
+            ) : (
+              <span className="badge">not connected</span>
+            )}
+            <span className="spacer" />
+            {mayAdminister ? (
+              <>
+                <button
+                  type="button"
+                  className="btn"
+                  data-size="sm"
+                  data-variant={conn.connected ? undefined : 'primary'}
+                  disabled={busy}
+                  onClick={connectGmail}
+                >
+                  {conn.connected ? 'Reconnect' : 'Connect Gmail'}
+                </button>
+                {conn.connected || conn.needs_reconnect ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    data-size="sm"
+                    data-variant="danger"
+                    disabled={busy}
+                    onClick={disconnectGmail}
+                  >
+                    Disconnect
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+          {conn.needs_reconnect ? (
+            <p className="muted" style={{ marginTop: 10 }}>
+              {conn.reason} Google expires these connections about once a week while this app is
+              unverified, so reconnecting is expected rather than a sign something is broken.
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      <h2 className="section-title">Schedule</h2>
+      <p className="muted">
+        When this campaign may run at all, as whole dates. The daily send window inside those
+        days is in Settings. Leave both empty to start and stop it by hand.
+        {campaign.schedule_note ? ` ${campaign.schedule_note}` : ''}
+      </p>
+      {mayAdminister ? (
+        <form className="card" onSubmit={saveSchedule} style={{ marginTop: 12 }}>
+          <div className="field-row">
+            <Field
+              label="Starts"
+              type="datetime-local"
+              value={schedule.starts_at}
+              onChange={(event) =>
+                setSchedule({ ...schedule, starts_at: event.target.value })
+              }
+            />
+            <Field
+              label="Ends"
+              type="datetime-local"
+              value={schedule.ends_at}
+              onChange={(event) => setSchedule({ ...schedule, ends_at: event.target.value })}
+            />
+          </div>
+          <div className="btn-row">
+            <button type="submit" className="btn" data-variant="primary" disabled={busy}>
+              {busy ? 'Saving…' : 'Save schedule'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={busy}
+              onClick={() => setSchedule({ starts_at: '', ends_at: '' })}
+            >
+              Clear
             </button>
           </div>
         </form>
