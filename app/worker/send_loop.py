@@ -29,6 +29,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import attachments as attachment_store
 from app.db import outbox
 from app.db.models import Campaign, Draft, Lead, Mailbox, Message, Org
 from app.db.state import record_event
@@ -43,6 +44,7 @@ from app.domain.scheduling import (
     remaining_capacity,
     warmup_cap,
 )
+from app.services.mail.message import Attachment as OutgoingAttachment
 from app.services.mail.message import FooterIdentity, build_message
 from app.services.mail.message import Mailbox as MailboxIdentity
 from app.services.mail.smtp import SmtpOutcome, SmtpSender
@@ -362,6 +364,22 @@ async def send_one(
         )
 
     message_row = claim.message
+
+    # The campaign's file, if this email carries one. Resolved here rather than at approval, so
+    # that replacing the file updates every email not yet sent -- which is what an operator who
+    # has just corrected their deck expects -- while the ones already gone keep what they had.
+    #
+    # Read *after* the claim, deliberately: the claim is the cheap set of refusals (suppressed,
+    # capped, already in touch) and there is no reason to move several megabytes out of the
+    # database for a message that is not going to be sent.
+    carried = await attachment_store.load_for_send(
+        session,
+        org_id=org_id,
+        campaign=chosen.campaign,
+        draft=chosen.draft,
+        settings=settings,
+    )
+
     built = build_message(
         mailbox=MailboxIdentity(
             from_name=mailbox.from_name,
@@ -380,6 +398,17 @@ async def send_one(
         message_id=message_row.message_id_hdr,
         in_reply_to=message_row.in_reply_to,
         references=message_row.references_hdr,
+        attachments=(
+            [
+                OutgoingAttachment(
+                    filename=carried.filename,
+                    content_type=carried.content_type,
+                    content=carried.content,
+                )
+            ]
+            if carried is not None
+            else []
+        ),
         now=now,
     )
 

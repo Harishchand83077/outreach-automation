@@ -104,8 +104,10 @@ export function patchJson(path, { json } = {}) {
 export const deleteJson = (path) => request(path, { method: 'DELETE' })
 
 // Upload goes through the same path so it gets the same token and the same error handling.
-export function uploadFile(path, file) {
+export function uploadFile(path, file, { method = 'POST' } = {}) {
   const form = new FormData()
   form.append('file', file)
-  return postJson(path, { body: form })
+  // No Content-Type header: the browser has to set it itself so that it can add the multipart
+  // boundary, and setting it by hand produces a request the server cannot parse.
+  return request(path, { method, body: form })
 }

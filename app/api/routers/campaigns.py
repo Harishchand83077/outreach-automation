@@ -16,16 +16,29 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
+from app.db import attachments as attachment_store
 from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Org, Research
 from app.db.repo import OrgContext
 from app.db.state import record_event
+from app.domain.attachment import MAX_BYTES, AttachmentRejected
+from app.domain.attachment import check as check_attachment
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
@@ -1103,3 +1116,118 @@ async def delete_campaign(
     await session.delete(campaign)
     await session.commit()
     return {"deleted": True, "archived": False, "leads_erased": len(lead_ids)}
+
+
+# --------------------------------------------------------------------------------------
+# The campaign's attachment
+#
+# One file per campaign, carried by the emails that campaign sends. It is a campaign-level
+# thing rather than a per-email one because that is what it is for: the same deck, the same
+# one-pager, the same CV, going to everybody on the list. A reviewer can still untick it for
+# one draft -- `PATCH /review/drafts/{id}/attach` -- and that decision outlives a regeneration.
+#
+# **Admin-only to upload or remove.** Whatever is here goes out over the org's own domain to
+# every recipient of the campaign, which makes it closer to changing the sending rules than to
+# editing a draft. Reading the metadata is open to anyone who can see the campaign, because a
+# reviewer deciding whether to untick the box has to know what the box means.
+# --------------------------------------------------------------------------------------
+
+
+@router.get("/campaigns/{campaign_id}/attachment")
+async def get_attachment(
+    campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """What this campaign attaches, if anything. Never returns the bytes."""
+    await _owned_campaign(session, user, campaign_id)
+    info = await attachment_store.describe(session, user.ctx, campaign_id=campaign_id)
+    return {"attachment": info.as_json() if info else None, "max_bytes": MAX_BYTES}
+
+
+@router.put(
+    "/campaigns/{campaign_id}/attachment",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def put_attachment(
+    campaign_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    file: Annotated[UploadFile, File()],
+) -> dict[str, Any]:
+    """Upload or replace the campaign's attachment.
+
+    `PUT` rather than `POST` because there is exactly one, and uploading twice leaves one file
+    rather than two -- the method should say so.
+
+    The size is checked twice: once here against the bytes actually read, and once by
+    `check_attachment`. This one exists because a request body that is already in memory has
+    already cost us the memory, and the limit is small enough that reading it is cheap. The
+    check constraint on the table is the third, and is the one that cannot be bypassed by a
+    future caller that forgets the first two.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+    data = await file.read()
+    if len(data) > MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"The file is larger than {MAX_BYTES // (1024 * 1024)} MB.",
+        )
+
+    try:
+        checked = check_attachment(file.filename or "", data)
+    except AttachmentRejected as exc:
+        # The operator sees this verbatim, so `app/domain/attachment.py` writes these messages
+        # to be read by a person rather than parsed by a caller.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    info = await attachment_store.put(
+        session,
+        user.ctx,
+        campaign_id=campaign.id,
+        checked=checked,
+        uploaded_by=user.email or user.user_id,
+    )
+    await record_event(
+        session,
+        org_id=user.org_id,
+        campaign_id=campaign.id,
+        type="campaign.attachment_set",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={
+            "filename": info.filename,
+            "size_bytes": info.size_bytes,
+            # The digest, not the contents. Enough to prove later which file went out.
+            "sha256": info.sha256,
+        },
+    )
+    await session.commit()
+    return {"attachment": info.as_json()}
+
+
+@router.delete(
+    "/campaigns/{campaign_id}/attachment",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def delete_attachment(
+    campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Remove the campaign's attachment.
+
+    Emails already sent are untouched -- they carried the file and that is a fact about the
+    past. Drafts waiting for review simply go out without it; refusing to send them would be
+    the system breaking a campaign over an absent nicety.
+    """
+    removed = await attachment_store.remove(session, user.ctx, campaign_id=campaign_id)
+    if removed:
+        await record_event(
+            session,
+            org_id=user.org_id,
+            campaign_id=campaign_id,
+            type="campaign.attachment_cleared",
+            actor="user",
+            actor_id=user.email or user.user_id,
+        )
+    await session.commit()
+    return {"removed": removed}
