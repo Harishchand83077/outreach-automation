@@ -26,6 +26,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Text,
@@ -268,6 +269,10 @@ class Draft(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="generated")
     feedback: Mapped[str | None] = mapped_column(Text)
     prompt_version: Mapped[str | None] = mapped_column(String(50))
+    #: Whether this particular email carries the campaign's attachment. NULL means nobody has
+    #: expressed an opinion, so the campaign's setting decides; `False` is a reviewer who
+    #: unticked the box, and that has to survive. See `app/domain/attachment.should_attach`.
+    attach: Mapped[bool | None] = mapped_column(Boolean)
     created_by: Mapped[str | None] = mapped_column(String(200))
     approved_by: Mapped[str | None] = mapped_column(String(200))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -756,4 +761,45 @@ class Alert(Base):
         CheckConstraint("severity IN ('info','warning','critical')", name="ck_alerts_severity"),
         Index("ix_alerts_org_created", "org_id", "created_at"),
         Index("ix_alerts_org_kind_created", "org_id", "kind", "created_at"),
+    )
+
+
+class Attachment(Base):
+    """One optional file per campaign, attached to the emails that campaign sends.
+
+    **The bytes are here rather than on `campaigns`** because a campaign row is read to draw
+    every row of the campaigns list, and a `bytea` column would come with it every time. They
+    are here rather than in S3 because one capped file per campaign is a rounding error against
+    the free disk, it is already covered by the nightly dump, and an object store would add a
+    second place for the truth to live. ADR-016 records the trade and when to revisit it.
+
+    `content_type` is ours, looked up from the extension against an allowlist -- never the
+    `Content-Type` the browser claimed. See `app/domain/attachment.py`.
+    """
+
+    __tablename__ = "attachments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: So the UI can say which file this is, and an operator can confirm what went out, without
+    #: moving several megabytes to answer the question.
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    uploaded_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", name="uq_attachments_campaign"),
+        CheckConstraint("size_bytes > 0", name="ck_attachments_size_positive"),
+        CheckConstraint("size_bytes <= 5242880", name="ck_attachments_size_within_limit"),
     )

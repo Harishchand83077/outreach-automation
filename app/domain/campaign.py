@@ -61,6 +61,21 @@ class CampaignSettings(BaseModel):
     #: "just following up" is worse than silence.
     followup_max_delay_days: int = Field(default=3, ge=1, le=30)
 
+    # --- Attachment ---
+    #: Whether the campaign's uploaded file rides along, per kind of email. These do nothing
+    #: unless a file has actually been uploaded.
+    #:
+    #: **A first email carries it; a follow-up does not.** Re-sending the same several megabytes
+    #: inside a thread that already has a copy is noise for the recipient, and an attachment
+    #: repeated on every message in a thread is a pattern filters score badly. The follow-up's
+    #: job is to be short. Both are settings rather than rules, because "deck attached again for
+    #: convenience" is a reasonable thing for an operator to want and not something to refuse.
+    attach_initial: bool = True
+    attach_followups: bool = False
+    #: Replies are never given the attachment automatically and there is no setting for it. A
+    #: reply answers what somebody actually said, so whether a file belongs in it is a judgement
+    #: about that one message -- the reviewer ticks the box on the draft, or does not.
+
     # --- Review ---
     #: `auto_send_if_confidence` is designed for but deliberately never enabled; a campaign that
     #: asks for it is rejected below.

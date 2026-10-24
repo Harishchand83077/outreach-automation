@@ -16,6 +16,7 @@ newlines with `<br>` without escaping anything (B14).
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.headerregistry import Address
@@ -47,6 +48,20 @@ class Mailbox:
     from_name: str
     from_email: str
     reply_to: str | None = None
+
+
+@dataclass(frozen=True)
+class Attachment:
+    """A file to carry, already checked and typed by `app/domain/attachment.py`.
+
+    Declared here rather than imported from the database layer so that `build_message` stays a
+    pure function over plain values -- it is the most heavily tested thing in this package and
+    nothing it needs should require a session to construct.
+    """
+
+    filename: str
+    content_type: str
+    content: bytes
 
 
 @dataclass
@@ -117,13 +132,21 @@ def build_message(
     message_id: str | None = None,
     in_reply_to: str | None = None,
     references: str | None = None,
+    attachments: Sequence[Attachment] = (),
     now: datetime | None = None,
 ) -> BuiltMessage:
-    """Assemble one plain-text email.
+    """Assemble one plain-text email, optionally carrying files.
 
     `message_id` is passed in rather than generated here, because the outbox assigns it *before*
     the send so a crash can be resolved by searching the mailbox for that exact id (§9.5). The
     same identifier has to appear on the wire and in the database.
+
+    **An attachment changes the shape of the message and nothing else about it.** With no
+    attachment this is `text/plain`, byte for byte what it has always been; with one it becomes
+    `multipart/mixed` whose *first* part is that same `text/plain`. The locked product rule is
+    plain text only, no HTML body, and that still holds -- there is no `text/html` alternative
+    here, and a client that cannot read MIME still shows the text. What changes is only that
+    something is carried alongside it.
     """
     now = now or datetime.now(tz=UTC)
     clean_subject = sanitise_header(subject)
@@ -165,6 +188,21 @@ def build_message(
 
     full_body = f"{body.rstrip()}\n\n{build_footer(identity)}\n"
     message.set_content(full_body, subtype="plain", charset="utf-8")
+
+    for item in attachments:
+        maintype, _, subtype = item.content_type.partition("/")
+        if not maintype or not subtype:
+            raise ValueError(f"{item.content_type!r} is not a usable MIME type")
+        # `set_content` above made this a text/plain message; the first `add_attachment` turns
+        # it into multipart/mixed and keeps that text as part one. The filename is sanitised
+        # again here rather than trusted from the caller: it goes into a header and into the
+        # recipient's download dialog, and being sure costs one function call.
+        message.add_attachment(
+            item.content,
+            maintype=maintype,
+            subtype=subtype,
+            filename=sanitise_header(item.filename),
+        )
 
     return BuiltMessage(
         message=message,

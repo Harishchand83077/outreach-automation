@@ -86,6 +86,11 @@ async def review_queue(
                 "hooks": item.hooks,
                 "research_confidence": item.research_confidence,
                 "thin_research": item.thin_research,
+                # What this email carries, and whether it is on for this one. `None` for a
+                # campaign with no uploaded file, which is how the UI knows not to draw the
+                # control at all rather than drawing a disabled one.
+                "attachment_filename": item.attachment_filename,
+                "attached": item.attached,
                 "validation": item.draft.validation,
             }
             for item in items
@@ -239,3 +244,37 @@ def _text(value: Any) -> str | None:
         return None
     text = str(value)
     return text if text.strip() else None
+
+
+@router.post("/drafts/{draft_id}/attach")
+async def set_draft_attachment(
+    draft_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    attach: Annotated[bool, Body(embed=True)],
+) -> dict[str, Any]:
+    """Turn the campaign's attachment on or off for this one email.
+
+    The campaign decides by default -- the same file for everybody is the point of the feature
+    -- and this is the exception for the one lead where it does not fit: somebody who asked for
+    the deck already, or a reply where sending a pitch document would be tone-deaf.
+
+    **It is stored on the draft, not held in the browser**, because the send loop reads it
+    minutes or days later, and because a decision a reviewer made has to be auditable. It is
+    refused once the decision has been acted on: a draft that is `approved`, `sent` or
+    `superseded` is no longer the thing that will be sent, and a control that silently did
+    nothing would be worse than one that says no.
+    """
+    changed = await draft_store.set_attach(session, user.ctx, draft_id=draft_id, attach=attach)
+    if changed is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft not found.")
+    if changed is False:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This draft has already been judged, so what it carries is settled. "
+                "Reject it to make a new version."
+            ),
+        )
+    await session.commit()
+    return {"draft_id": str(draft_id), "attach": attach}

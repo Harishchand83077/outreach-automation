@@ -21,12 +21,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import func, literal, select, tuple_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Draft, Lead, Research
+from app.db.models import Attachment, Campaign, Draft, Lead, Research
 from app.db.repo import OrgContext, _page_size
 from app.db.state import record_event, transition
+from app.domain.attachment import should_attach
+from app.domain.campaign import CampaignSettings
 from app.domain.state import LeadState
 from app.services.drafting.generator import DraftResult
 
@@ -61,6 +64,14 @@ class ReviewItem:
     hooks: list[dict[str, Any]]
     research_confidence: float
     thin_research: bool
+    #: The file this email will carry, or `None`. Resolved here rather than left to the UI
+    #: because the rule -- campaign default unless this draft overrode it -- lives in
+    #: `app/domain/attachment.py` and a second copy of it in JavaScript would eventually
+    #: disagree with the one the send loop uses. A reviewer unticking a box has to be shown the
+    #: same answer the send loop will reach.
+    attachment_filename: str | None = None
+    #: Whether it is actually attached to *this* draft, after the override.
+    attached: bool = False
 
     @property
     def needs_individual_review(self) -> bool:
@@ -447,8 +458,13 @@ async def review_queue(
     statuses = list(LIVE_STATUSES) + (["validation_failed"] if include_failed else [])
 
     stmt = (
-        select(Draft, Lead, Research)
+        select(Draft, Lead, Research, Campaign, Attachment.filename)
         .join(Lead, Lead.id == Draft.lead_id)
+        .join(Campaign, Campaign.id == Lead.campaign_id)
+        # Outer, and only the name: whether a campaign has a file is part of the row, and the
+        # bytes never are. A review queue that loaded five megabytes per draft would be a
+        # review queue nobody opens twice.
+        .outerjoin(Attachment, Attachment.campaign_id == Campaign.id)
         .outerjoin(Research, Research.lead_id == Draft.lead_id)
         .where(Draft.org_id == ctx.org_id, Draft.status.in_(statuses))
         # `id` breaks the tie, or two drafts created in the same millisecond page unstably and
@@ -476,9 +492,30 @@ async def review_queue(
             hooks=list(research.hooks) if research else [],
             research_confidence=research.confidence if research else 0.0,
             thin_research=research.thin if research else True,
+            attachment_filename=filename,
+            attached=bool(filename) and _attached(draft, campaign),
         )
-        for draft, lead, research in rows
+        for draft, lead, research, campaign, filename in rows
     ]
+
+
+def _attached(draft: Draft, campaign: Campaign) -> bool:
+    """Whether this draft carries the campaign's file, by the same rule the send loop uses.
+
+    Unreadable settings mean the defaults, not an exception: this is one column of a review
+    screen, and a campaign whose settings cannot be parsed already has that reported properly
+    through `blockers`. Failing the whole queue here would hide every other draft behind it.
+    """
+    try:
+        settings = CampaignSettings.model_validate(campaign.settings or {})
+    except ValidationError:
+        settings = CampaignSettings()
+    default = {
+        "initial": settings.attach_initial,
+        "followup": settings.attach_followups,
+        "reply": False,
+    }.get(draft.kind, False)
+    return should_attach(draft_override=draft.attach, campaign_default=default)
 
 
 async def review_queue_size(
@@ -562,3 +599,40 @@ async def _locked_draft(session: AsyncSession, ctx: OrgContext, draft_id: uuid.U
     if draft is None:
         raise LookupError(f"draft {draft_id} not found in this org")
     return draft
+
+
+async def set_attach(
+    session: AsyncSession, ctx: OrgContext, *, draft_id: uuid.UUID, attach: bool
+) -> bool | None:
+    """Record whether this draft carries the campaign's attachment.
+
+    Returns `None` when there is no such draft in this org, `False` when the draft has already
+    been judged and may no longer change, and `True` when the value was written.
+
+    Three return values rather than raising, because the caller is an HTTP route that has to
+    answer 404, 409 and 200, and encoding that as exception types would put the API's status
+    codes inside the repository.
+
+    `JUDGEABLE_STATUSES` is the same gate `approve` and `reject` use. It is the right one: the
+    question "may a reviewer still change their mind about this draft?" is one question, and a
+    draft whose validation failed is still being decided -- which is exactly the draft somebody
+    is most likely to be editing when they decide the attachment is the problem.
+    """
+    draft = await session.get(Draft, draft_id)
+    if draft is None or draft.org_id != ctx.org_id:
+        return None
+    if draft.status not in JUDGEABLE_STATUSES:
+        return False
+
+    draft.attach = attach
+    await session.flush()
+    await record_event(
+        session,
+        org_id=ctx.org_id,
+        lead_id=draft.lead_id,
+        type="draft.attachment_toggled",
+        actor="user",
+        actor_id=ctx.actor_id,
+        data={"draft_id": str(draft.id), "kind": draft.kind, "attach": attach},
+    )
+    return True

@@ -676,3 +676,76 @@ template is not a transient condition.
 eventually reach leads that went quiet. The daily cap now covers real follow-up volume, which at
 steady state roughly doubles sends per new lead — which is what the cap was always sized for
 (§9.2: "at steady state each lead costs two sends").
+
+
+## ADR-016 — A campaign may attach one file, stored in Postgres, off by default on follow-ups
+
+**Status.** Accepted. **Date.** 2026-10-25.
+
+**Context.** The owner asked to upload a document when creating a campaign, send it with that
+campaign's emails, and be able to untick it for an individual email. Two of the three use cases
+this system now serves want it: a funding outreach campaign wants to attach a deck, and the
+job-hunting use that ADR-013 opened up wants to attach a CV.
+
+**Decision.**
+
+**One file per campaign, in its own table, as `bytea`.**
+
+- *Its own table, not a column on `campaigns`.* `campaign_summary` reads a campaign row to draw
+  every row of the campaigns list; a blob column would be dragged along by all of it, several
+  megabytes at a time, for a screen that wants a name and a status. In its own table the bytes
+  are read exactly once per send and never otherwise — `describe()` answers the UI's questions
+  from the columns beside the blob.
+- *Postgres, not S3.* One capped file per campaign is a rounding error against 23 GB free; it is
+  already covered by the nightly `pg_dump`; and an object store adds a bucket, an IAM policy and
+  a second place for the truth to live, where the database can say a campaign has an attachment
+  and the store disagree. Hard rule 5 applies too — no new cloud resources without asking. The
+  thing that would change this is attachments becoming large or numerous, and the 5 MB cap is
+  what keeps that from creeping up unnoticed.
+- *Replacing, not versioning.* A second row means deciding which one a send uses, and the honest
+  answer — "the newest" — is what one row already says.
+
+**The type allowlist is the only real control, and it is stated as such.** Nothing here scans
+file contents; there is no scanner on this box and adding one is new infrastructure. So the
+extension decides, against an allowlist of documents and images, and the `Content-Type` we state
+is **ours** rather than the one the browser claimed — telling a recipient's client
+`application/pdf` about something that is not one is a thing we should not do. Executables,
+scripts, macro-enabled Office formats, the pre-2007 binary Office formats and archives are
+refused *by name*, so the error says why rather than "unsupported", which reads like a gap
+instead of a decision.
+
+**Who carries it: first emails yes, follow-ups no, replies only on request.**
+
+- A **follow-up** does not re-send several megabytes into a thread that already has a copy. It is
+  noise for the recipient, and an attachment repeated on every message of a thread is a pattern
+  filters score badly. A campaign may turn it on (`attach_followups`), because "deck attached
+  again for convenience" is a reasonable thing to want and not something to refuse.
+- A **reply** never carries it automatically and there is no campaign setting for it. Whether a
+  document belongs in an answer is a judgement about that one message, so the reviewer ticks the
+  box — which is exactly the case where somebody has *asked* for the deck.
+
+**The per-draft override is a stored nullable column, not a UI state.** `drafts.attach` is NULL
+until somebody expresses an opinion, and `should_attach()` holds the "NULL means the campaign
+decides" rule in one place, read by the send loop and by the review queue alike. Stored, because
+the send loop reads it minutes or days later and because a decision a reviewer made has to be
+auditable. It is refused once a draft is approved, sent or superseded: a control that silently
+did nothing would be worse than one that says no.
+
+**Resolved at send time, not at approval.** Replacing the file changes every email not yet sent,
+which is what an operator who has just fixed their deck expects; the ones already gone keep what
+they carried, because that is what happened. Deleting the attachment does not block a campaign —
+those emails go without it, and refusing to send them would be the system breaking a campaign
+over an absent nicety.
+
+**What this does not change.** The message is `text/plain` byte for byte when there is no
+attachment, and `multipart/mixed` whose *first part* is that same `text/plain` when there is. The
+locked rule "plain text only, no HTML body" holds: there is no `text/html` alternative anywhere,
+the footer and `List-Unsubscribe` are untouched, and a client that cannot read MIME still shows
+the text. `tests/unit/test_message_attachments.py` asserts each of those.
+
+**Consequences, and the one worth saying out loud.** **An attachment makes a cold email
+materially more likely to be filtered as spam**, and this system is still sending from an address
+whose domain it is not authenticated for (`GO_LIVE.md` §1) — the reply that went to Spam was
+already the symptom. So the UI says, where somebody is about to upload, that a link is usually
+the better opening. The feature is built because it was asked for and both use cases are real;
+the deliverability advice belongs next to the button, not in place of the button.

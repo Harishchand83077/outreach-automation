@@ -556,6 +556,23 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
     .filter((item) => item.status !== 'validation_failed')
     .map((item) => item.draft_id)
 
+  // The reviewer's attachment choices, keyed by draft, applied over whatever the server last
+  // said. Without this the box would snap back for the moment between the click and the
+  // refetch, which reads as the click not having worked.
+  const [attachOverrides, setAttachOverrides] = useState({})
+
+  const toggleAttach = async (item, next) => {
+    setAttachOverrides((current) => ({ ...current, [item.draft_id]: next }))
+    try {
+      await postJson(`/drafts/${item.draft_id}/attach`, { json: { attach: next } })
+    } catch (err) {
+      // Put it back. A control that stays where the operator left it after the server refused
+      // is a control that lies about what will be sent.
+      setAttachOverrides((current) => ({ ...current, [item.draft_id]: !next }))
+      onError(err)
+    }
+  }
+
   const bulkApprove = async () => {
     setBusy('bulk')
     try {
@@ -761,6 +778,22 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
                 placeholder="Too long; lead with the pipeline rebuild"
               />
             </div>
+
+            {/* Only drawn when the campaign actually has a file. A permanently disabled
+                checkbox would raise a question the screen then refuses to answer. */}
+            {item.attachment_filename ? (
+              <label className="check-row">
+                <input
+                  type="checkbox"
+                  checked={attachOverrides[item.draft_id] ?? item.attached}
+                  onChange={(event) => toggleAttach(item, event.target.checked)}
+                />
+                <Icons.paperclip size={14} />
+                <span>
+                  Attach <strong>{item.attachment_filename}</strong> to this email
+                </span>
+              </label>
+            ) : null}
 
             <div className="btn-row">
               <button
@@ -1426,6 +1459,14 @@ function Import({ campaignId, onError, onToast }) {
   )
 }
 
+/** Bytes as a person reads them. Sizes here are always between 1 KB and 5 MB, so two units
+ *  and one decimal place covers every case the UI can actually show. */
+function formatBytes(bytes) {
+  if (!bytes) return '0 KB'
+  const mb = bytes / (1024 * 1024)
+  return mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
 /* ---------------------------------------------------------------- campaign */
 
 function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }) {
@@ -1433,6 +1474,8 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const [detail, setDetail] = useState(null)
   const [showPersona, setShowPersona] = useState(false)
   const [attaching, setAttaching] = useState(false)
+  const [file, setFile] = useState(null)
+  const [fileBusy, setFileBusy] = useState(false)
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
   const [stats, setStats] = useState(null)
@@ -1442,8 +1485,15 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     setDetail(null)
     setStats(null)
     setActivity(null)
+    setFile(null)
     getJson(`/campaigns/${campaign.id}`).then(setDetail).catch(onError)
     getJson(`/campaigns/${campaign.id}/stats`).then(setStats).catch(onError)
+    // `null` means not loaded; `{ attachment: null }` means loaded and there is none. The
+    // difference matters: a screen that says "no file attached" before it has asked is a screen
+    // stating something it does not know.
+    getJson(`/campaigns/${campaign.id}/attachment`)
+      .then(setFile)
+      .catch(() => setFile({ attachment: null }))
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
     // whose numbers are all fine. It simply does not draw.
     getJson(`/campaigns/${campaign.id}/activity`)
@@ -1465,6 +1515,41 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       onError(err)
     } finally {
       setBusy(false)
+    }
+  }
+
+  const chooseFile = async (event) => {
+    const chosen = event.target.files?.[0]
+    // Cleared so that picking the *same* file again fires a change event — otherwise a failed
+    // upload cannot be retried with the file it failed on.
+    event.target.value = ''
+    if (!chosen) return
+    setFileBusy(true)
+    try {
+      const result = await uploadFile(
+        `/campaigns/${campaign.id}/attachment`,
+        chosen,
+        { method: 'PUT' },
+      )
+      setFile(result)
+      onToast(`${result.attachment.filename} will be attached to this campaign's emails.`)
+    } catch (err) {
+      onError(err)
+    } finally {
+      setFileBusy(false)
+    }
+  }
+
+  const removeFile = async () => {
+    setFileBusy(true)
+    try {
+      await deleteJson(`/campaigns/${campaign.id}/attachment`)
+      setFile({ attachment: null })
+      onToast('Attachment removed. Emails already sent are unchanged.')
+    } catch (err) {
+      onError(err)
+    } finally {
+      setFileBusy(false)
     }
   }
 
@@ -1676,6 +1761,68 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           </div>
         </form>
       ) : null}
+
+      <h2 className="section-title">Attachment</h2>
+      <p className="muted">
+        One file, carried by every first email this campaign sends. A reviewer can untick it for
+        an individual email in the review queue, and follow-ups leave it off unless Settings says
+        otherwise — the same document twice in one thread is noise.
+      </p>
+      {file === null ? (
+        <SkeletonList count={1} rows={2} />
+      ) : file.attachment ? (
+        <div className="card" style={{ marginTop: 12 }}>
+          <div className="card-head">
+            <Icons.file size={16} />
+            <strong>{file.attachment.filename}</strong>
+            <span className="badge">{formatBytes(file.attachment.size_bytes)}</span>
+            <span className="spacer" />
+            {mayAdminister ? (
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                data-variant="danger"
+                disabled={fileBusy}
+                onClick={removeFile}
+              >
+                Remove
+              </button>
+            ) : null}
+          </div>
+          <p className="muted" style={{ marginTop: 10 }}>
+            Uploaded by {file.attachment.uploaded_by || 'somebody'} on{' '}
+            {new Date(file.attachment.created_at).toLocaleDateString()}. Replacing it changes
+            every email not yet sent; the ones already gone keep what they carried.
+          </p>
+        </div>
+      ) : (
+        <p className="muted" style={{ marginTop: 12 }}>
+          No file attached. Emails go as plain text on their own.
+        </p>
+      )}
+      {mayAdminister ? (
+        <div className="btn-row">
+          <label className="btn" data-variant={file?.attachment ? undefined : 'primary'}>
+            {fileBusy ? 'Uploading…' : file?.attachment ? 'Replace file' : 'Attach a file'}
+            {/* A real file input inside a label: clicking the label opens the picker and the
+                keyboard still reaches the control. A styled div with an onClick does neither. */}
+            <input
+              type="file"
+              hidden
+              disabled={fileBusy}
+              onChange={chooseFile}
+              accept=".pdf,.docx,.pptx,.xlsx,.csv,.txt,.png,.jpg,.jpeg,.webp"
+            />
+          </label>
+        </div>
+      ) : null}
+      <p className="muted" style={{ marginTop: 8 }}>
+        Up to 5 MB. Documents and images only — executables, macro-enabled Office files and
+        archives are refused, because nothing here inspects what is inside a file.{' '}
+        <strong>An attachment makes a cold email more likely to be filtered as spam</strong>, so a
+        link to the document is usually the better opening.
+      </p>
 
       <h2 className="section-title">Sender persona</h2>
       <p className="muted">
