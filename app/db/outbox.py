@@ -251,6 +251,84 @@ async def is_suppressed(session: AsyncSession, *, org_id: uuid.UUID, email: str)
     return found is not None
 
 
+async def why_not_sendable(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    lead: Lead,
+    kind: str,
+    mailbox_id: uuid.UUID | None = None,
+    now: datetime | None = None,
+) -> str | None:
+    """Why this lead cannot be sent a `kind` email right now, or `None` if it can.
+
+    **This exists because the answer was invisible.** Every refusal here was already being
+    computed, once per cycle, inside `claim_send` -- and the reason went into a `ClaimResult`
+    that the send loop logged and nobody ever read. A lead sat `APPROVED` for eight days showing
+    "next action: —", which looks exactly like "waiting its turn", while the real answer was that
+    another campaign in the same org was already in conversation with that person. No screen
+    anywhere could have said so.
+
+    **`claim_send` calls this**; it is not a second copy of the same rules. A separate
+    implementation for the dashboard would be one that drifts, and this project's dominant defect
+    -- six times over -- is two individually correct pieces of code with nothing checking that
+    they agree. The send loop's refusal and the "why is this stuck?" panel are now the same
+    sentence by construction.
+
+    Read-only: no lock, no writes. A dashboard asking about fifty leads cannot interfere with the
+    loop actually sending one. Scheduling -- the window, the cap, warm-up, pacing -- is **not**
+    here, because it belongs to the send loop which owns the clock; `send_loop.blocking_reason`
+    covers that half.
+    """
+    now = now or datetime.now(tz=UTC)
+
+    if kind not in _VALID_FROM:
+        raise ValueError(f"unknown message kind {kind!r}")
+
+    if lead.paused:
+        return "this lead is paused"
+
+    state = LeadState(lead.state)
+    if state not in _VALID_FROM[kind]:
+        return f"the lead is {state.value}, and a {kind} email is not sent from that state"
+
+    campaign = await session.get(Campaign, lead.campaign_id)
+    if campaign is None:
+        return "the campaign is missing"
+    if campaign.paused:
+        return "the campaign is paused"
+
+    mailbox_id = mailbox_id or campaign.mailbox_id
+    if mailbox_id is None:
+        return "the campaign has no mailbox attached"
+    mailbox = await session.get(Mailbox, mailbox_id)
+    if mailbox is None:
+        return "the campaign's mailbox is missing"
+    if mailbox.paused:
+        return f"the mailbox is paused ({mailbox.pause_reason or 'no reason given'})"
+
+    if await is_suppressed(session, org_id=org_id, email=lead.email_norm):
+        return "this address is on the suppression list"
+
+    if kind == KIND_INITIAL and (clash := await _already_in_touch(session, org_id, lead, now)):
+        return clash
+
+    unresolved = await session.scalar(
+        select(Message.id)
+        .where(
+            Message.lead_id == lead.id,
+            Message.kind == kind,
+            Message.direction == "out",
+            Message.status == "sending",
+        )
+        .limit(1)
+    )
+    if unresolved is not None:
+        return f"a {kind} send is already in flight for this lead"
+
+    return None
+
+
 async def claim_send(
     session: AsyncSession,
     *,
@@ -278,60 +356,34 @@ async def claim_send(
         raise ValueError(f"unknown message kind {kind!r}")
 
     now = now or datetime.now(tz=UTC)
+    # The lock first, so the checks below run against state nobody else can change underneath
+    # them. `why_not_sendable` deliberately does not lock -- it is also called by the dashboard,
+    # which must not be able to interfere with a send in progress.
     lead = await lock_lead(session, org_id, lead_id)
 
-    if lead.paused:
-        return ClaimResult(None, "lead is paused")
-
-    state = LeadState(lead.state)
-    if state not in _VALID_FROM[kind]:
-        # The common real case: a reply landed while this send was queued.
-        return ClaimResult(None, f"lead is {state.value}, not valid for a {kind} send")
+    # **Every stored-state refusal lives in one function**, which the dashboard asks too. The
+    # list it walks is: lead paused, lead in the wrong state for this kind (the common real case
+    # being a reply that landed while this send was queued), campaign missing or paused, no
+    # mailbox, mailbox missing or paused, recipient suppressed, somebody else in the org already
+    # in conversation with this person, and -- load-bearing, and not covered by the unique key --
+    # an earlier send of this kind still unresolved.
+    #
+    # That last one matters because two concurrent claims are serialised by the lead lock, so the
+    # second runs *after* the first has committed its `sending` row; it would then count that
+    # row, compute the next sequence number, get a perfectly valid distinct key, and send a
+    # second copy. The lead's own state does not help, because a claim deliberately does not move
+    # it. Repeat sends over time are bounded by the state machine instead: after `mark_sent` an
+    # initial leaves APPROVED, a follow-up leaves SENT and a reply leaves REPLIED.
+    if refusal := await why_not_sendable(
+        session, org_id=org_id, lead=lead, kind=kind, mailbox_id=mailbox_id, now=now
+    ):
+        return ClaimResult(None, refusal)
 
     campaign = await session.get(Campaign, lead.campaign_id)
-    if campaign is None:
-        return ClaimResult(None, "campaign is missing")
-    if campaign.paused:
-        return ClaimResult(None, "campaign is paused")
-
+    assert campaign is not None, "why_not_sendable returned None, so the campaign exists"
     mailbox_id = mailbox_id or campaign.mailbox_id
-    if mailbox_id is None:
-        return ClaimResult(None, "campaign has no mailbox")
     mailbox = await session.get(Mailbox, mailbox_id)
-    if mailbox is None:
-        return ClaimResult(None, "mailbox is missing")
-    if mailbox.paused:
-        return ClaimResult(None, f"mailbox is paused ({mailbox.pause_reason or 'no reason'})")
-
-    if await is_suppressed(session, org_id=org_id, email=lead.email_norm):
-        return ClaimResult(None, "recipient is suppressed")
-
-    if kind == KIND_INITIAL and (clash := await _already_in_touch(session, org_id, lead)):
-        return ClaimResult(None, clash)
-
-    # Refuse while an earlier send of this kind is still unresolved.
-    #
-    # This is load-bearing, and the unique key alone does not cover it. Two concurrent claims are
-    # serialised by the lead lock, so the second one runs *after* the first has committed its
-    # `sending` row — it then counts that row, computes the next sequence number, and gets a
-    # perfectly valid distinct key. Both sends would go out. The lead's own state does not help
-    # either, because a claim deliberately does not move it.
-    #
-    # Repeat sends of the same kind over time are still possible, and are bounded by the state
-    # machine: after `mark_sent` an initial leaves APPROVED, a follow-up leaves SENT and a reply
-    # leaves REPLIED, so none of them is claimable again from the same state.
-    unresolved = await session.scalar(
-        select(Message.id)
-        .where(
-            Message.lead_id == lead_id,
-            Message.kind == kind,
-            Message.direction == "out",
-            Message.status == "sending",
-        )
-        .limit(1)
-    )
-    if unresolved is not None:
-        return ClaimResult(None, f"a {kind} send is already in flight for this lead")
+    assert mailbox is not None, "why_not_sendable returned None, so the mailbox exists"
 
     sequence = await _next_sequence(session, lead_id, kind)
     message = Message(

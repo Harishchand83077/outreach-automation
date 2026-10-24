@@ -88,7 +88,7 @@ class TestClaim:
         lead = await lead_factory(state=state)
         result = await outbox.claim_send(db, org_id=org.id, lead_id=lead.id, kind=kind)
         assert not result.claimed
-        assert "not valid" in (result.reason or "")
+        assert "is not sent from that state" in (result.reason or "")
 
     async def test_a_reply_that_arrived_while_queued_cancels_the_followup(
         self, db, org, lead_factory, mailbox
@@ -107,7 +107,7 @@ class TestClaim:
 
         result = await outbox.claim_send(db, org_id=org.id, lead_id=lead.id, kind=KIND_INITIAL)
         assert not result.claimed
-        assert result.reason == "recipient is suppressed"
+        assert result.reason == "this address is on the suppression list"
 
     async def test_a_suppressed_domain_is_refused(self, db, org, lead_factory, mailbox):
         lead = await lead_factory(state="APPROVED", email="someone@blocked.example")
@@ -117,13 +117,13 @@ class TestClaim:
 
         result = await outbox.claim_send(db, org_id=org.id, lead_id=lead.id, kind=KIND_INITIAL)
         assert not result.claimed
-        assert result.reason == "recipient is suppressed"
+        assert result.reason == "this address is on the suppression list"
 
     async def test_a_paused_lead_is_refused(self, db, org, lead_factory, mailbox):
         lead = await lead_factory(state="APPROVED", paused=True)
         result = await outbox.claim_send(db, org_id=org.id, lead_id=lead.id, kind=KIND_INITIAL)
         assert not result.claimed
-        assert result.reason == "lead is paused"
+        assert result.reason == "this lead is paused"
 
     async def test_a_paused_campaign_is_refused(self, db, org, campaign, lead_factory, mailbox):
         lead = await lead_factory(state="APPROVED")
@@ -132,7 +132,7 @@ class TestClaim:
 
         result = await outbox.claim_send(db, org_id=org.id, lead_id=lead.id, kind=KIND_INITIAL)
         assert not result.claimed
-        assert result.reason == "campaign is paused"
+        assert result.reason == "the campaign is paused"
 
     async def test_a_paused_mailbox_is_refused(self, db, org, lead_factory, mailbox):
         """Auto-pause on repeated SMTP auth failure must actually stop sending."""

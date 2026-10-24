@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db import attachments as attachment_store
+from app.db import outbox
 from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Org, Research
 from app.db.repo import OrgContext
 from app.db.state import record_event
@@ -350,6 +351,75 @@ async def list_leads(
     return build_page(rows, size, lead_summary).body("leads")
 
 
+
+
+#: Which kind of email a lead is waiting for, by the state it is in. Mirrors `outbox._VALID_FROM`
+#: from the other side: that says which states a kind may be sent from, this says which kind a
+#: state is waiting for. Only the states where something is actually pending appear.
+_AWAITING_KIND = {
+    "APPROVED": "initial",
+    "SENT": "followup",
+    "FOLLOWUP_SENT": "followup",
+    "REPLIED": "reply",
+    "IN_CONVERSATION": "reply",
+}
+
+
+async def _send_block(
+    session: AsyncSession, user: CurrentUser, lead: Lead
+) -> dict[str, Any] | None:
+    """Why this lead is not moving, in the send loop's own words — or `None` if it is fine.
+
+    **The question this answers used to be unanswerable.** A lead sat `APPROVED` for eight days
+    with "next action: —" on screen, which is indistinguishable from "waiting its turn"; the real
+    reason was that another campaign in the same org was already in conversation with that
+    person, and the send loop had been computing exactly that sentence once a minute and writing
+    it to a log nobody reads.
+
+    Two halves, because two different things can hold a lead up:
+
+    - **stored state** — `outbox.why_not_sendable`, the same function `claim_send` calls, so the
+      screen and the send loop cannot drift apart;
+    - **the clock** — an approved draft whose follow-up is simply not due yet is not blocked, it
+      is waiting, and saying "blocked" about it would send somebody looking for a fault that is
+      not there.
+
+    Returns `None` when nothing is wrong, so the UI draws nothing. A panel that appears only when
+    there is something to say is one people read.
+    """
+    kind = _AWAITING_KIND.get(lead.state)
+    if kind is None:
+        # A terminal lead, or one still being researched or drafted. Neither is stuck in a way
+        # the send loop could explain, and the state itself already says so.
+        return None
+
+    # A draft has to exist and be approved before any of this is the lead's problem.
+    approved = await session.scalar(
+        select(Draft.id)
+        .where(
+            Draft.org_id == user.org_id,
+            Draft.lead_id == lead.id,
+            Draft.kind == kind,
+            Draft.status == "approved",
+        )
+        .limit(1)
+    )
+    if approved is None:
+        return None
+
+    now = datetime.now(tz=UTC)
+    if kind == "followup" and (lead.next_action_at is None or lead.next_action_at > now):
+        # Due later. Waiting is not blocked.
+        return None
+
+    reason = await outbox.why_not_sendable(
+        session, org_id=user.org_id, lead=lead, kind=kind, now=now
+    )
+    if reason is None:
+        return None
+    return {"kind": kind, "reason": reason}
+
+
 @router.get("/leads/{lead_id}")
 async def get_lead(lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
     """One lead, with its bodies and its timeline. One lead's worth of exposure at a time."""
@@ -397,6 +467,9 @@ async def get_lead(lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
 
     return {
         **lead_summary(lead),
+        # `None` when nothing is wrong. The screen draws this only when there is something to
+        # say, because a panel that is usually empty is a panel nobody reads.
+        "send_block": await _send_block(session, user, lead),
         "notes": lead.notes,
         "linkedin_url": lead.linkedin_url,
         "company_url": lead.company_url,

@@ -324,7 +324,7 @@ class TestRefusals:
         decision = await run_once(db, org, mailbox, smtp_server)
 
         assert not decision.sent
-        assert "suppressed" in decision.reason
+        assert "suppression" in decision.reason
         assert smtp_server.messages == []
 
     async def test_a_paused_org_stops_everything(
