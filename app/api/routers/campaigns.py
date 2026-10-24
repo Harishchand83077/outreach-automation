@@ -41,6 +41,7 @@ from app.db.state import record_event
 from app.domain.attachment import MAX_BYTES, AttachmentRejected
 from app.domain.attachment import check as check_attachment
 from app.domain.campaign import CampaignSettings
+from app.domain.campaign_schedule import schedule_note, scheduled_status
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
 from app.services.mail.smtp import effective_send_mode
@@ -116,6 +117,13 @@ def campaign_summary(campaign: Campaign) -> dict[str, Any]:
         # operator most needs to open, the broken one, was the only one they could not. The
         # fault is reported properly by `blockers`; this is a screen, and it has to render.
         "settings": _settings_or_defaults(campaign).model_dump(mode="json"),
+        "starts_at": campaign.starts_at.isoformat() if campaign.starts_at else None,
+        "ends_at": campaign.ends_at.isoformat() if campaign.ends_at else None,
+        # A sentence rather than two timestamps, because "Starts on 2026-11-03" is what somebody
+        # wants from a list row and `2026-11-03T04:30:00+00:00` is a timezone puzzle.
+        "schedule_note": schedule_note(
+            status=campaign.status, starts_at=campaign.starts_at, ends_at=campaign.ends_at
+        ),
         "created_at": campaign.created_at.isoformat(),
     }
 
@@ -349,8 +357,6 @@ async def list_leads(
 
     rows = list((await session.execute(stmt)).scalars())
     return build_page(rows, size, lead_summary).body("leads")
-
-
 
 
 #: Which kind of email a lead is waiting for, by the state it is in. Mirrors `outbox._VALID_FROM`
@@ -1304,3 +1310,81 @@ async def delete_attachment(
         )
     await session.commit()
     return {"removed": removed}
+
+
+@router.put(
+    "/campaigns/{campaign_id}/schedule",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def set_schedule(
+    campaign_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    starts_at: Annotated[datetime | None, Body(embed=True)] = None,
+    ends_at: Annotated[datetime | None, Body(embed=True)] = None,
+) -> dict[str, Any]:
+    """Set or clear when this campaign starts and stops.
+
+    Both `null` clears the schedule, which returns the campaign to being started and stopped by
+    hand. That is the only way out, and it is deliberately the same call: a "clear" button that
+    posted to a different route would be a second place for this rule to live.
+
+    **The status moves straight away rather than waiting for the worker.** The `Scheduler` would
+    pick it up within a minute anyway, but a screen that still says `running` after somebody set
+    an end date in the past reads as the save having failed.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+
+    if starts_at is not None and ends_at is not None and ends_at <= starts_at:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The end has to be after the start.",
+        )
+
+    campaign.starts_at = _as_utc(starts_at)
+    campaign.ends_at = _as_utc(ends_at)
+
+    now = datetime.now(tz=UTC)
+    target = scheduled_status(
+        status=campaign.status,
+        starts_at=campaign.starts_at,
+        ends_at=campaign.ends_at,
+        now=now,
+    )
+    if target != campaign.status:
+        was = campaign.status
+        campaign.status = target
+        await record_event(
+            session,
+            org_id=user.org_id,
+            campaign_id=campaign.id,
+            type="campaign.schedule_moved",
+            actor="user",
+            actor_id=user.email or user.user_id,
+            data={"from": was, "to": target},
+        )
+
+    await record_event(
+        session,
+        org_id=user.org_id,
+        campaign_id=campaign.id,
+        type="campaign.schedule_set",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={
+            "starts_at": campaign.starts_at.isoformat() if campaign.starts_at else None,
+            "ends_at": campaign.ends_at.isoformat() if campaign.ends_at else None,
+        },
+    )
+    await session.commit()
+    return campaign_summary(campaign)
+
+
+def _as_utc(moment: datetime | None) -> datetime | None:
+    """Store everything in UTC (the convention: `timestamptz`, UTC, converted only in
+    `domain/scheduling`). A browser sends an offset; a naive value is read as UTC rather than
+    guessed at, because guessing a timezone for a send window is how a campaign starts at the
+    wrong hour."""
+    if moment is None:
+        return None
+    return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)

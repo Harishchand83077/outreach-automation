@@ -44,6 +44,10 @@ dependencies = [
     # same release also fixes OKP key-identity confusion (GHSA-x33g-cr3x-6449) and an
     # options-dict mutation that could silently skip claim verification on a reused dict.
     "pyjwt[crypto]==2.15.1",
+    # Fernet, for the mailbox credentials in `app/services/credentials.py` (ADR-018).
+    # It arrives transitively with pyjwt[crypto] anyway; declared because we import it
+    # directly, and a direct import resting on somebody else's extra breaks quietly.
+    "cryptography==50.0.2",
     # Main-content extraction: strips nav, footers and boilerplate, so the evidence budget is
     # spent on prose rather than menus.
     "trafilatura==2.3.1",

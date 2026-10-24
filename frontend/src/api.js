@@ -93,6 +93,14 @@ export function postJson(path, { body, json } = {}) {
   return request(path, init)
 }
 
+export function putJson(path, { json } = {}) {
+  return request(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(json ?? {}),
+  })
+}
+
 export function patchJson(path, { json } = {}) {
   return request(path, {
     method: 'PATCH',

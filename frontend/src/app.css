@@ -1358,3 +1358,17 @@ tbody tr:hover {
   color: var(--text-1);
   font-weight: 600;
 }
+
+/* Two fields side by side, stacking on a phone. Used for a start/end pair, where seeing both
+   at once is the whole point — a window you have to scroll between is one you mis-set. */
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-4);
+}
+
+@media (max-width: 640px) {
+  .field-row {
+    grid-template-columns: 1fr;
+  }
+}

@@ -749,3 +749,124 @@ whose domain it is not authenticated for (`GO_LIVE.md` §1) — the reply that w
 already the symptom. So the UI says, where somebody is about to upload, that a link is usually
 the better opening. The feature is built because it was asked for and both use cases are real;
 the deliverability advice belongs next to the button, not in place of the button.
+
+
+## ADR-017 — One org per sign-up, and sign-up is closed by default
+
+**Status.** Accepted. **Date.** 2026-10-25.
+
+**Context.** Access was a `members` row inserted by hand with SQL. Correct for one person,
+impossible for ten. The ask was that anyone can sign up, run their own campaigns, and never see
+anybody else's data.
+
+**Decision.** A new sign-up **creates a new org** with that person as its **owner**, provisioned
+on their first authenticated request.
+
+Everybody joining one shared org as `member` was rejected. Separate orgs give complete
+separation through the mechanism that is already load-bearing and already tested: `org_id` on
+every table since the first migration (ADR-004), an `OrgContext` on every repository call, and
+`deps.py` resolving the org from the membership row and **never** from the request. Roles inside
+an org answer a different question -- who on *your own team* may change *your own* sending rules
+-- and reusing them for tenancy would have been a second, weaker answer to a settled question.
+
+**Provisioning happens in `current_user`, not at a `POST /signup`.** A separate endpoint is a
+second door into the same room: the dashboard has to know to knock on it, and anything that
+forgets sees a 403 it cannot explain. One path, and `SIGNUP_MODE` decides whether it ends in a
+workspace or a refusal.
+
+**`SIGNUP_MODE` defaults to `closed`**, which is exactly the old behaviour. This matters more
+than it looks: a migration that quietly opened public sign-up on a system that sends email would
+be the worst default this project could ship. Same reasoning as `orgs.send_mode` being nullable
+in ADR-010.
+
+`MAX_ORGS` (25) is a ceiling, because the failure mode of open sign-up here is not a breach --
+it is strangers quietly exhausting one shared free LLM tier until the people who actually use the
+tool get nothing. Refusing the next person with a sentence beats degrading for everybody.
+
+**Consequences.** Ten people, ten workspaces, no cross-tenant work needed. The two things that do
+*not* scale are named in `MULTI_TENANT_PLAN.md` §6: the free LLM quota belongs to one API key
+(template mode calls no model, which is why it is the mode that scales), and one worker process.
+Neither is a correctness problem and both have known fixes.
+
+---
+
+## ADR-018 — Mailboxes authenticate per org, by OAuth, over SMTP and IMAP
+
+**Status.** Accepted. **Date.** 2026-10-25.
+
+**Context.** `SMTP_EMAIL` and `SMTP_PASSWORD` came from the environment: one sending account for
+the whole deployment. Ten people need their own, and asking each to paste an app password is both
+unpleasant and a worse security position than the alternative.
+
+**Decision.** "Connect Gmail" runs a Google OAuth flow. We store an encrypted **refresh token**
+per mailbox. The user never types a password into our software and can revoke us from their own
+Google account page.
+
+**Scope `https://mail.google.com/`, over SMTP and IMAP with XOAUTH2 -- not the Gmail API.** That
+scope authorises exactly the two protocols we already speak, so every line of the send loop,
+outbox, IMAP poller, reply matcher and ADR-002 recovery pass keeps working. Moving to the Gmail
+API would mean rewriting all of it to reach the same place, and the API cannot read the Sent
+folder, which is what ADR-002 depends on to resolve a send whose outcome we never learned. One
+function changed: how the clients authenticate.
+
+**The scope costs something and it is written down rather than discovered.** Google calls
+`gmail.send` *sensitive* (free brand verification) and anything that reads a mailbox
+*restricted* -- annual third-party security assessment, real money, and hard rule 5 says no. An
+**unpublished** client needs neither: 100 test users, any scope. The price is refresh tokens that
+expire after **7 days**.
+
+**That expiry is handled as a product state, not hidden.** The refresh fails, the mailbox is
+paused with a reason, and the dashboard shows Reconnect. A weekly click for ten people is
+acceptable; silence would not be. `MULTI_TENANT_PLAN.md` §4 records both exits -- pay for CASA,
+or drop to `gmail.send` only and route replies to a `Reply-To` on our own domain.
+
+**Encrypted with Fernet, key in the environment.** The nightly dump ships to S3; a refresh token
+in plain text in it is a Gmail account in a backup. No route returns the secret, no log line
+contains it, no event payload carries it, and both `Sealed` and `MailLogin` override `__repr__`
+so a traceback cannot print one. Losing the key means every mailbox reconnects -- a click each,
+and strictly the better failure.
+
+**Its own table**, not columns on `mailboxes`: that row is read on every send-loop cycle and a
+secret should not be dragged through a query that does not need it (the ADR-016 reasoning), and
+one table holding all the secrets is a single obvious thing to reason about.
+
+**A missing credential falls back to the environment.** This is what keeps the live deployment
+sending while this lands, and what keeps every existing test meaningful: a mailbox with no
+credential row behaves exactly as every mailbox did before.
+
+**The send gate does not move.** `effective_send_mode()` and `allowlist_permits()` stay in
+`smtp.py` and decide for every send, whoever it belongs to -- hard rule 1, and the structural test
+over the whole tree still passes. This ADR answers *as whom*, never *whether*.
+
+---
+
+## ADR-019 — A campaign's schedule moves its status, rather than every reader checking a clock
+
+**Status.** Accepted. **Date.** 2026-10-25.
+
+**Context.** A campaign could be set up but not started, and started but never stopped. Both meant
+somebody remembering, and "stop on Friday" meant running through the weekend if nobody was
+looking.
+
+**Decision.** `campaigns.starts_at` and `ends_at`, both nullable, and the `Scheduler` moves
+`status` when a boundary passes. A new status `scheduled` joins the check constraint.
+
+**Not a time window added to every query.** Three places ask whether a campaign is running -- the
+send loop's candidate query, the lifecycle pass and `repo.due_followups` -- and adding
+`starts_at <= now < ends_at` to each would be three copies of one rule. That is precisely the
+shape of defect this project has produced seven times. One writer moves the status; every reader
+goes on asking the question it already asked.
+
+The cost is up to a minute of lag. For something whose unit is a calendar day, that is not a cost.
+
+**`paused` is never overridden.** Pausing is a human saying stop, and a schedule that could undo
+it would make the pause button untrustworthy. `completed` and `archived` are likewise never
+restarted -- a campaign that has finished does not resume because somebody left a date on it.
+
+**The end is checked before the start**, so a window entirely in the past completes rather than
+briefly running. Without that ordering, saving a backdated schedule would start sending.
+
+**Consequences.** Both nullable means every existing campaign is untouched, which is what let this
+ship without a data migration. `scheduled` rather than leaving it in `draft` because `draft` reads
+as "not finished being set up", and a status that lies about why nothing is happening is the thing
+this whole area of work exists to stop.
