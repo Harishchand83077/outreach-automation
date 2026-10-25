@@ -1532,7 +1532,17 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       .catch(() => setFile({ attachment: null }))
     // Degrades rather than erroring: an older server without this route should leave the panel
     // out, not put a red banner over a screen whose numbers are all fine.
-    getJson('/connect/google/status')
+    //
+    // **Ask about THIS campaign's mailbox.** Without the id the server falls back to the org's
+    // oldest mailbox, so an org with more than one showed, and would have connected, a mailbox
+    // the operator was not looking at -- and the callback refuses an account that does not match
+    // the mailbox's own address, so the only symptom was a mismatch message naming an address
+    // from a different campaign.
+    getJson(
+      campaign.mailbox_id
+        ? `/connect/google/status?mailbox_id=${encodeURIComponent(campaign.mailbox_id)}`
+        : '/connect/google/status'
+    )
       .then(setConn)
       .catch(() => setConn({ configured: false, connected: false }))
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
@@ -1540,7 +1550,9 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     getJson(`/campaigns/${campaign.id}/activity`)
       .then(setActivity)
       .catch(() => setActivity({ series: [] }))
-  }, [campaign.id, onError])
+    // `mailbox_id` is a dependency because the connect panel is about that mailbox: attaching a
+    // different one has to re-ask, or the panel describes the mailbox that was there before.
+  }, [campaign.id, campaign.mailbox_id, onError])
 
   const setStatus = async (status) => {
     setBusy(true)
@@ -1562,7 +1574,11 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const connectGmail = async () => {
     setBusy(true)
     try {
-      const { authorize_url } = await postJson('/connect/google/start', { json: {} })
+      // The same id the status call asked about, so what gets connected is what was displayed.
+      // Sending `{}` connected whichever mailbox happened to be oldest in the org.
+      const { authorize_url } = await postJson('/connect/google/start', {
+        json: campaign.mailbox_id ? { mailbox_id: campaign.mailbox_id } : {},
+      })
       // A full navigation, not a popup: Google blocks its consent screen inside an iframe, and
       // a popup is the thing browsers and extensions are most likely to swallow silently.
       window.location.href = authorize_url

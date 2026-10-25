@@ -43,6 +43,17 @@ FUTURE_KEYS: dict[str, list[str]] = {
         "CORS_ALLOWED_ORIGINS",
     ],
     "Phase 9 - ops": ["ALERT_WEBHOOK_URL"],
+    # Added because check_env reported none of these, so its silence read as "nothing to
+    # report" when the truth was "this script has never heard of them". An operator ran it,
+    # saw "All required configuration is present", and still had Connect Gmail drawn as
+    # unavailable with nothing on screen explaining why.
+    "Phase 10 - sign-up and Gmail by OAuth": [
+        "CREDENTIAL_KEY",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REDIRECT_URI",
+        "DASHBOARD_URL",
+    ],
 }
 
 #: Models Groq has retired; silently upgraded so an old .env keeps working.

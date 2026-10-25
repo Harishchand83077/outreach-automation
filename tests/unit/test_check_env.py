@@ -20,7 +20,7 @@ from contextlib import redirect_stdout
 
 import pytest
 
-from app.core.settings import Settings
+from app.core.settings import FEATURE_KEYS, FUTURE_KEYS, REQUIRED_KEYS, Settings
 from app.scripts import check_env
 
 
@@ -101,3 +101,115 @@ class TestTheSendModeReport:
     def test_live_says_so_plainly(self) -> None:
         """An operator skimming this output must not be able to miss that sending is live."""
         assert "LIVE" in run(configured(SEND_MODE="live"))
+
+
+class TestEveryGatingVariableIsReported:
+    """The script must know about every variable that decides whether a feature works.
+
+    **Written because it did not.** `check_env` builds its whole report from `REQUIRED_KEYS`,
+    `FEATURE_KEYS` and `FUTURE_KEYS`, and the Gmail-OAuth work added `CREDENTIAL_KEY`,
+    `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` and `DASHBOARD_URL`
+    without adding them to any of the three. So the one command whose job is answering "what is
+    configured?" printed **"All required configuration is present."** on a server where Connect
+    Gmail was drawn as unavailable and sign-up was shut.
+
+    That is worse than an omission. A report that does not mention a variable is indistinguishable
+    from a variable that is fine, so its silence was read as an answer. Confirming it took a
+    hand-written `python -c` against the settings object inside the container.
+
+    The same shape as every other defect here: a correct producer (`Settings`, which declares the
+    fields) and a correct consumer (`check_env`, which prints the groups), with nothing checking
+    that the two agreed. So this asserts the agreement instead of a list somebody has to remember
+    to extend.
+    """
+
+    def _gating_fields(self) -> dict[str, set[str]]:
+        """Every settings field read by a `*_configured` property, keyed by that property.
+
+        Read out of the source with `ast` rather than from a hand-kept list, so a property added
+        later is covered without anybody remembering this test exists -- which is the only way a
+        guard against forgetting can itself not be forgotten.
+        """
+        import ast
+        import inspect
+
+        tree = ast.parse(inspect.getsource(Settings))
+        fields = set(Settings.model_fields)
+        found: dict[str, set[str]] = {}
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef) or not node.name.endswith("_configured"):
+                continue
+            found[node.name] = {
+                child.attr
+                for child in ast.walk(node)
+                if isinstance(child, ast.Attribute)
+                and isinstance(child.value, ast.Name)
+                and child.value.id == "self"
+                and child.attr in fields
+            }
+        return found
+
+    def test_the_reader_finds_the_properties(self) -> None:
+        """Guards the test below from passing vacuously.
+
+        If the ast walk found nothing -- a renamed property, a changed decorator, a moved class --
+        every assertion underneath would compare against an empty set and pass while proving
+        nothing. A test that cannot fail is worse than no test, because it is counted as coverage.
+        """
+        gating = self._gating_fields()
+
+        assert "google_oauth_configured" in gating
+        assert gating["google_oauth_configured"] == {
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_REDIRECT_URI",
+        }
+        assert "groq_configured" in gating
+
+    def test_every_gating_field_appears_in_a_reported_group(self) -> None:
+        reported = (
+            set(REQUIRED_KEYS)
+            | set(FEATURE_KEYS)
+            | {key for names in FUTURE_KEYS.values() for key in names}
+        )
+
+        for prop, fields in self._gating_fields().items():
+            missing = fields - reported
+            assert not missing, (
+                f"{prop} decides whether a feature works from {sorted(missing)}, but check_env "
+                "reports none of them -- so the report stays silent about the exact values an "
+                "operator is trying to confirm, and reads as 'nothing to report'. Add them to "
+                "FUTURE_KEYS in app/core/settings.py."
+            )
+
+    def test_the_oauth_names_reach_the_printed_report(self) -> None:
+        """The end-to-end version: the names an operator is looking for are actually on screen."""
+        output = run(configured())
+
+        for name in (
+            "CREDENTIAL_KEY",
+            "GOOGLE_CLIENT_ID",
+            "GOOGLE_CLIENT_SECRET",
+            "GOOGLE_REDIRECT_URI",
+            "DASHBOARD_URL",
+        ):
+            assert name in output, f"{name} is never mentioned by check_env"
+
+    def test_signup_mode_is_reported_because_closed_looks_like_unconfigured(self) -> None:
+        assert "SIGNUP_MODE" in run(configured())
+        assert "nobody new can sign up" in run(configured())
+        assert "OPEN" in run(configured(SIGNUP_MODE="open"))
+
+    def test_the_report_still_prints_no_values(self) -> None:
+        """The property that matters most, re-asserted over the newly reported variables."""
+        secret = "ultra-secret-client-value-9876543210"
+        output = run(
+            configured(
+                GOOGLE_CLIENT_ID="1234-abc.apps.googleusercontent.com",
+                GOOGLE_CLIENT_SECRET=secret,
+                CREDENTIAL_KEY=secret,
+            )
+        )
+
+        assert secret not in output
+        assert "googleusercontent" not in output

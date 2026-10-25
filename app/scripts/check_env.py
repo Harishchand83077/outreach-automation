@@ -151,6 +151,18 @@ def main(settings: Settings | None = None) -> int:
         print("                 LIVE: may send to anyone")
     print(f"  AUTO_APPROVE = {'on — human review is SKIPPED' if settings.AUTO_APPROVE else 'off'}")
 
+    # Who may get an account at all belongs beside who may be emailed. It is reported rather
+    # than grouped with the set/unset values above because it always has a value: the question
+    # is which one, and "closed" looks identical to "unconfigured" from the outside.
+    print(f"  SIGNUP_MODE  = {settings.SIGNUP_MODE}")
+    if settings.SIGNUP_MODE == "closed":
+        print("                 nobody new can sign up (this is the default)")
+    elif settings.SIGNUP_MODE == "allowlist":
+        domains = len(settings.signup_allowed_domains)
+        print(f"                 anyone at {domains} allow-listed domain(s) may sign up")
+    else:
+        print("                 OPEN: anyone with a Supabase login gets their own workspace")
+
     # A Google App Password is exactly 16 characters. Saying so costs one line and saves the
     # confusing failure it causes: SMTP closes the connection without a reason, and IMAP answers
     # a flat "Invalid credentials", neither of which points at the length.
