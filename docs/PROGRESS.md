@@ -672,6 +672,55 @@ only control and the UI says so, because nothing here scans file contents.
 1,586 tests, ruff and mypy strict clean, four CI jobs green, migration `b93d7e4a1c58` applied and
 verified on the live database, zero errors in the worker log.
 
+
+**Two gaps found by operating the deployed system, both the signature shape.**
+
+**Connect Gmail aimed at the wrong mailbox, and only an org with more than one would ever have
+noticed.** `/connect/google/status` and `/connect/google/start` have always accepted a
+`mailbox_id`; `App.jsx` sent neither, so `_mailbox_for` fell back to `order_by(created_at)
+.limit(1)` -- the org's **oldest** mailbox, regardless of which campaign was on screen. The live
+org had three. The Sending-account panel therefore described a mailbox from a different campaign,
+and connecting would have attached the credential to it.
+
+The failure would have been near-undiagnosable. The callback refuses an account whose address
+does not match the mailbox's own, so the only symptom is a mismatch message naming an address
+the operator never chose -- which reads exactly like picking the wrong Google account on the
+consent screen. A correct producer (routes that accept the id) and a correct consumer
+(`_mailbox_for`, which honours it) with nothing checking the caller passed it.
+
+The fallback is **kept**: a new workspace has one mailbox and no id to send, and removing it
+would break the ordinary case to serve the rare one. What changed is that the dashboard now says
+which mailbox it means, and the `useEffect` depends on `campaign.mailbox_id` so attaching a
+different one re-asks instead of describing the previous one.
+
+**The connect router had no tests at all.** It has nine now, in two halves, because testing only
+one half is how this defect survived: `tests/integration/test_connect_mailbox_choice.py` proves
+the server honours an id and that an id from another org resolves to nothing (ADR-004 asserted
+rather than assumed), and `tests/unit/test_connect_sends_mailbox_id.py` proves somebody sends
+one. A source check rather than a component test -- the frontend suite covers `api.js` and has no
+rendering dependencies, and adding React Testing Library to assert one fetch argument is a
+dependency tree to audit forever. Same bargain as `test_send_guard.py` and `test_cors_methods.py`.
+It strips `//` lines first, because the comments explaining the fix contain the word `mailbox_id`
+and prose must not satisfy an assertion about code.
+
+**`check_env` had never heard of the OAuth configuration.** It builds its whole report from
+`REQUIRED_KEYS`, `FEATURE_KEYS` and `FUTURE_KEYS`, and the multi-user work added `CREDENTIAL_KEY`,
+`GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` and `DASHBOARD_URL` to none of
+them. So the one command whose job is answering *"what is configured?"* printed **"All required
+configuration is present."** on a server where Connect Gmail was drawn as unavailable and sign-up
+was shut.
+
+**That is worse than an omission.** A report that does not mention a variable is
+indistinguishable from a variable that is fine, so its silence was read as an answer; confirming
+the truth took a hand-written `python -c` against the settings object inside the container. The
+fix is one `FUTURE_KEYS` group -- the script needed no change, which is the point -- plus a
+structural test that reads every `*_configured` property with `ast` and asserts each field it
+depends on is reported. A property added later is covered without anybody remembering the test
+exists, which is the only way a guard against forgetting can itself not be forgotten.
+
+`SIGNUP_MODE` joins `SEND_MODE` in the Safety block rather than the set/unset groups: it always
+has a value, and **`closed` looks identical to `unconfigured` from the outside**.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
