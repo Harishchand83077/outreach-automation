@@ -22,6 +22,29 @@ drifts, so this test maintains it instead.
 from __future__ import annotations
 
 from app.api.app import create_app
+from app.core.settings import Settings
+
+
+def _app() -> object:
+    """An app with CORS actually installed.
+
+    `create_app` only adds `CORSMiddleware` when `CORS_ALLOWED_ORIGINS` is set --
+    deliberately, since the worker and the health checks do not need it. CI runs
+    without one, so a test that assumed the middleware was always there failed
+    there while passing on a developer machine that happened to have the variable.
+    Configuring it explicitly is also more honest: this is about the *list*, and
+    the list only exists when CORS does.
+    """
+    return create_app(
+        Settings(
+            _env_file=None,
+            GROQ_API_KEY="gsk_test",
+            SMTP_EMAIL="asha@outreach.example",
+            SMTP_PASSWORD="not-a-real-password",
+            CORS_ALLOWED_ORIGINS="https://dashboard.example",
+        )
+    )
+
 
 #: Methods Starlette adds on its own for every route. Not something the app declared, and not
 #: something a browser preflights for a simple request.
@@ -36,7 +59,7 @@ def declared_methods() -> set[str]:
     version finds nothing at all and the assertion passes vacuously -- which is worse than
     failing, so `test_the_walker_finds_the_routes` guards it.
     """
-    return _walk(create_app().routes) - _IMPLICIT
+    return _walk(_app().routes) - _IMPLICIT
 
 
 def _walk(routes: object) -> set[str]:
@@ -60,7 +83,7 @@ def _walk(routes: object) -> set[str]:
 
 def configured_methods() -> set[str]:
     """What the CORS middleware is configured to allow."""
-    app = create_app()
+    app = _app()
     for middleware in app.user_middleware:
         if middleware.cls.__name__ == "CORSMiddleware":
             return set(middleware.kwargs["allow_methods"])
