@@ -49,13 +49,13 @@ class FakePoller:
         self.asked: list[tuple[int, int | None]] = []
         self.found: dict[str, str | None] = {}
 
-    async def poll(self, *, folder, last_uid, known_uidvalidity, limit, now=None):
+    async def poll(self, *, folder, last_uid, known_uidvalidity, limit, now=None, login=None):
         self.asked.append((last_uid, known_uidvalidity))
         if self.results:
             return self.results.pop(0)
         return PollResult(folder=folder, uidvalidity=known_uidvalidity, highest_uid=last_uid)
 
-    async def find_by_message_id(self, message_id, *, folders=()):
+    async def find_by_message_id(self, message_id, *, folders=(), login=None):
         return self.found.get(message_id)
 
 

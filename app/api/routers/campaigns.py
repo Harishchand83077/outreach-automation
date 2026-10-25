@@ -44,6 +44,7 @@ from app.domain.campaign import CampaignSettings
 from app.domain.campaign_schedule import schedule_note, scheduled_status
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
+from app.services.mail.connection import unavailable_reason
 from app.services.mail.smtp import effective_send_mode
 from app.services.privacy import erase_lead
 
@@ -259,6 +260,17 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
                     ),
                 }
             )
+
+    # **Asked of the same function the send loop authenticates with**, not of a second rule that
+    # would drift from it. `login_for` is the one place that decides whether a mailbox can log in
+    # at all; anything else here would be this project's signature defect again -- a correct
+    # producer and a correct consumer with nothing checking that they agreed.
+    if campaign.mailbox_id is not None:
+        mailbox = await session.get(Mailbox, campaign.mailbox_id)
+        if mailbox is not None:
+            reason = await unavailable_reason(session, mailbox=mailbox)
+            if reason:
+                found.append({"code": "mailbox_unavailable", "message": reason})
 
     org = await session.get(Org, campaign.org_id)
     if org is not None and org.paused:

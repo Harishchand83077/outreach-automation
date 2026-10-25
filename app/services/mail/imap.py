@@ -27,9 +27,14 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.core.settings import Settings, config
+from app.services.mail.google_oauth import xoauth2_string
 from app.services.mail.parse import ParsedMessage, parse_message
+
+if TYPE_CHECKING:  # pragma: no cover - import cycle at runtime, not at type-check time
+    from app.services.mail.connection import MailLogin
 
 logger = logging.getLogger(__name__)
 
@@ -163,23 +168,59 @@ def _parse_uidvalidity(responses: list[bytes | None] | None) -> int | None:
     return None
 
 
+def _can_authenticate(login: MailLogin | None, settings: Settings) -> bool:
+    """Is there anything to log in with at all?
+
+    A mailbox that has been connected carries its own login and needs nothing from the
+    environment. Only the fallback path needs `IMAP_EMAIL`, and only the org entitled to it ever
+    reaches here with `login=None`.
+    """
+    if login is not None:
+        return bool(login.username and (login.access_token or login.password))
+    return bool(settings.IMAP_EMAIL and settings.IMAP_PASSWORD)
+
+
+def _authenticate(
+    connection: imaplib.IMAP4_SSL, login: MailLogin | None, settings: Settings
+) -> None:
+    """Log in as this mailbox.
+
+    **XOAUTH2 rather than the Gmail API**, which is ADR-018's whole point: the
+    `https://mail.google.com/` scope authorises the two protocols this system already speaks, so
+    the poller, the reply matcher and ADR-002's sent-folder recovery keep working unchanged. The
+    Gmail API cannot read the Sent folder, which is exactly what ADR-002 depends on.
+
+    `imaplib` base64-encodes whatever the callback returns, so the callback hands back the raw
+    SASL string and nothing here encodes it twice.
+    """
+    if login is None:
+        connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
+        return
+    if login.uses_oauth:
+        assert login.access_token is not None
+        token = xoauth2_string(login.username, login.access_token)
+        connection.authenticate("XOAUTH2", lambda _: token.encode("utf-8"))
+        return
+    connection.login(login.username, login.password or "")
+
+
 class ImapPoller:
     """Reads new mail from one mailbox. Holds no state: the cursor lives in the database."""
 
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or config
 
-    async def folders(self) -> tuple[str, ...]:
+    async def folders(self, *, login: MailLogin | None = None) -> tuple[str, ...]:
         """INBOX plus this server's junk folder, discovered rather than guessed at.
 
         An unreachable server returns just INBOX: a folder list is not worth failing a poll
         over, and the next cycle tries again.
         """
-        return await asyncio.to_thread(self._folders_sync)
+        return await asyncio.to_thread(self._folders_sync, login)
 
-    def _folders_sync(self) -> tuple[str, ...]:
+    def _folders_sync(self, login: MailLogin | None = None) -> tuple[str, ...]:
         settings = self._settings
-        if not settings.IMAP_EMAIL or not settings.IMAP_PASSWORD:
+        if not _can_authenticate(login, settings):
             return DEFAULT_FOLDERS
 
         try:
@@ -189,7 +230,7 @@ class ImapPoller:
 
         try:
             try:
-                connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
+                _authenticate(connection, login, settings)
             except imaplib.IMAP4.error:
                 return DEFAULT_FOLDERS
 
@@ -213,6 +254,7 @@ class ImapPoller:
         known_uidvalidity: int | None = None,
         limit: int = MAX_PER_POLL,
         now: datetime | None = None,
+        login: MailLogin | None = None,
     ) -> PollResult:
         """Fetch messages newer than `last_uid`, without altering the mailbox.
 
@@ -221,7 +263,7 @@ class ImapPoller:
         failures, which needs them counted rather than thrown.
         """
         return await asyncio.to_thread(
-            self._poll_sync, folder, last_uid, known_uidvalidity, limit, now
+            self._poll_sync, folder, last_uid, known_uidvalidity, limit, now, login
         )
 
     def _poll_sync(
@@ -231,11 +273,12 @@ class ImapPoller:
         known_uidvalidity: int | None,
         limit: int,
         now: datetime | None,
+        login: MailLogin | None = None,
     ) -> PollResult:
         result = PollResult(folder=folder)
         settings = self._settings
 
-        if not settings.IMAP_EMAIL or not settings.IMAP_PASSWORD:
+        if not _can_authenticate(login, settings):
             result.error = "IMAP credentials are not configured"
             return result
 
@@ -247,7 +290,7 @@ class ImapPoller:
 
         try:
             try:
-                connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
+                _authenticate(connection, login, settings)
             except imaplib.IMAP4.error as exc:
                 # Almost always a missing App Password or IMAP disabled on the account, both of
                 # which a human must fix — so say which rather than retrying blindly.
@@ -363,7 +406,11 @@ class ImapPoller:
         return None
 
     async def find_by_message_id(
-        self, message_id: str, *, folders: tuple[str, ...] = ("[Gmail]/Sent Mail", "INBOX")
+        self,
+        message_id: str,
+        *,
+        folders: tuple[str, ...] = ("[Gmail]/Sent Mail", "INBOX"),
+        login: MailLogin | None = None,
     ) -> str | None:
         """Look for a specific `Message-ID`, returning the folder it was found in.
 
@@ -371,11 +418,13 @@ class ImapPoller:
         mailbox whether the message actually left. Confirmed working against Google Workspace,
         which copies SMTP-sent mail into Sent.
         """
-        return await asyncio.to_thread(self._find_sync, message_id, folders)
+        return await asyncio.to_thread(self._find_sync, message_id, folders, login)
 
-    def _find_sync(self, message_id: str, folders: tuple[str, ...]) -> str | None:
+    def _find_sync(
+        self, message_id: str, folders: tuple[str, ...], login: MailLogin | None = None
+    ) -> str | None:
         settings = self._settings
-        if not settings.IMAP_EMAIL or not settings.IMAP_PASSWORD or not message_id:
+        if not message_id or not _can_authenticate(login, settings):
             return None
 
         try:
@@ -384,7 +433,7 @@ class ImapPoller:
             return None
 
         try:
-            connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
+            _authenticate(connection, login, settings)
             for folder in folders:
                 try:
                     status, _ = connection.select(_quote_folder(folder), readonly=True)
