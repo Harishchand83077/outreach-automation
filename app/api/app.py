@@ -76,7 +76,12 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
             CORSMiddleware,
             allow_origins=origins,
             allow_credentials=True,
-            allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+            # **Every method the routes actually declare**, which is not a list to keep in
+            # your head: two PUT routes shipped and their preflight was refused with a 400,
+            # so the browser reported "the API did not answer with JSON" about an API that
+            # was answering fine. `test_cors_methods_cover_every_route` asserts this list
+            # against the router, so the next method added cannot be forgotten here.
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
             allow_headers=["Authorization", "Content-Type", REQUEST_ID_HEADER],
             max_age=600,
         )
