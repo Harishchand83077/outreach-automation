@@ -212,7 +212,12 @@ function Dashboard({ session }) {
     { id: 'leads', label: 'Leads', icon: Icons.leads },
     { id: 'import', label: 'Import', icon: Icons.import },
     { id: 'campaign', label: 'Campaign', icon: Icons.campaign },
-    ...(mayAdminister ? [{ id: 'settings', label: 'Settings', icon: Icons.settings }] : []),
+    ...(mayAdminister
+      ? [
+          { id: 'admin', label: 'Admin', icon: Icons.inbox },
+          { id: 'settings', label: 'Settings', icon: Icons.settings },
+        ]
+      : []),
   ]
 
   const who = me.email || session.user?.email || ''
@@ -430,6 +435,8 @@ function Dashboard({ session }) {
                 refreshCampaigns()
               }}
             />
+          ) : view === 'admin' ? (
+            <Admin onError={handle} onToast={toast} />
           ) : view === 'settings' ? (
             <Settings
               campaign={campaign}
@@ -1905,7 +1912,7 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
             value={mailbox.from_email}
             onChange={(event) => setMailbox({ ...mailbox, from_email: event.target.value })}
             required
-            hint="The mailbox your SPF and DKIM cover — the same address as SMTP_EMAIL on the server."
+            hint="The address you will connect a Google account for. It is what recipients see, and what your SPF and DKIM records must cover."
           />
           <Field
             label="Sender name recipients see"
@@ -2566,6 +2573,205 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           </button>
         </div>
       </form>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------- admin */
+
+function Admin({ onError, onToast }) {
+  const [data, setData] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(() => {
+    getJson('/admin/overview')
+      .then((body) => {
+        setData(body)
+        setFailed(false)
+      })
+      // "Loaded" has to mean *we asked and heard back*, including hearing an error. A skeleton
+      // that spins for ever above a real problem is the bug this project already shipped once.
+      .catch((err) => {
+        setFailed(true)
+        onError(err)
+      })
+  }, [onError])
+
+  useEffect(load, [load])
+
+  if (failed) return <p className="muted">Could not load the admin overview.</p>
+  if (!data) return <p className="muted">Loading…</p>
+
+  const { totals, workspace, google_test_users: google } = data
+
+  return (
+    <>
+      <h1>Admin</h1>
+      <p className="muted">
+        Only an owner or admin can open this screen, and the API checks the role itself rather
+        than trusting the button being hidden.
+      </p>
+
+      <dl className="stat-grid" style={{ marginTop: 14 }}>
+        <div className="stat">
+          <dt>People</dt>
+          <dd className="num">{totals.members}</dd>
+        </div>
+        <div className="stat">
+          <dt>Invited, not yet signed in</dt>
+          <dd className="num">{totals.invited}</dd>
+        </div>
+        <div className="stat">
+          <dt>Mailboxes connected</dt>
+          <dd className="num">
+            {totals.connected}/{totals.mailboxes}
+          </dd>
+        </div>
+        <div className="stat">
+          <dt>Need reconnecting</dt>
+          {/* Coloured only when non-zero: a red "0" is an alarm about nothing. */}
+          <dd className="num" data-tone={totals.needs_reconnect ? 'bad' : undefined}>
+            {totals.needs_reconnect}
+          </dd>
+        </div>
+      </dl>
+
+      <h2 className="section-title">People</h2>
+      <p className="muted">
+        Whether somebody may sign in at all is decided by Supabase, which this system cannot
+        read — it never joins across the identity provider&apos;s boundary. A row below means
+        they have authenticated here at least once, which is the only honest signal we have.
+      </p>
+      <table className="table" style={{ marginTop: 10 }}>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Signed in</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.people.map((person) => (
+            <tr key={person.id}>
+              <td>
+                {person.email || 'no address on file'}
+                {person.is_you ? <span className="badge">you</span> : null}
+              </td>
+              <td>
+                <span className="badge">{person.role}</span>
+              </td>
+              <td>
+                <span className="badge" data-tone="ok">
+                  yes
+                </span>
+              </td>
+            </tr>
+          ))}
+          {data.invited.map((row) => (
+            <tr key={row.id}>
+              <td className="muted">{row.email}</td>
+              <td>
+                <span className="badge">{row.role}</span>
+              </td>
+              <td>
+                <span className="badge" data-tone="warn">
+                  invited
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted" style={{ marginTop: 8 }}>
+        Invite and remove people in Settings → Team.
+      </p>
+
+      <h2 className="section-title">Sending accounts</h2>
+      {data.mailboxes.length ? (
+        <table className="table" style={{ marginTop: 10 }}>
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th>Connected</th>
+              <th>By</th>
+              <th>Days left</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.mailboxes.map((row) => (
+              <tr key={row.id}>
+                <td>{row.from_email}</td>
+                <td>
+                  {row.connected ? (
+                    <span className="badge" data-tone="ok">
+                      connected
+                    </span>
+                  ) : row.needs_reconnect ? (
+                    <span className="badge" data-tone="bad">
+                      needs reconnecting
+                    </span>
+                  ) : (
+                    <span className="badge">not connected</span>
+                  )}
+                  {row.paused ? <span className="badge" data-tone="warn">paused</span> : null}
+                </td>
+                <td className="muted">{row.connected_by || '—'}</td>
+                <td>{row.days_left === null ? '—' : row.days_left}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="muted">No mailbox yet. One is created when a campaign is made.</p>
+      )}
+
+      {google.required_while_unpublished ? (
+        <>
+          <h2 className="section-title">Before somebody can connect Gmail</h2>
+          <div className="banner" data-tone="warn">
+            <p>{google.note}</p>
+            <p style={{ marginTop: 8 }}>
+              <a href={google.console_url} target="_blank" rel="noreferrer">
+                Open the Google Cloud console
+              </a>{' '}
+              → Audience → Test users.
+            </p>
+          </div>
+        </>
+      ) : null}
+
+      <h2 className="section-title">Workspace</h2>
+      <table className="table" style={{ marginTop: 10 }}>
+        <tbody>
+          <tr>
+            <td>Sign-up</td>
+            <td>
+              <span className="badge">{workspace.signup_mode}</span>{' '}
+              {workspace.signup_mode === 'open'
+                ? 'anyone Supabase lets sign in gets their own workspace'
+                : workspace.signup_mode === 'closed'
+                  ? 'nobody new, unless invited'
+                  : 'only approved email domains'}
+            </td>
+          </tr>
+          <tr>
+            <td>Gmail connections last</td>
+            <td>
+              {workspace.grant_days > 0
+                ? `${workspace.grant_days} days, then each person reconnects`
+                : 'until revoked (the OAuth client is published)'}
+            </td>
+          </tr>
+          <tr>
+            <td>Connect Gmail available</td>
+            <td>{workspace.google_oauth_configured ? 'yes' : 'no — the server has no OAuth client'}</td>
+          </tr>
+          <tr>
+            <td>Workspace limit</td>
+            <td>{workspace.max_orgs}</td>
+          </tr>
+        </tbody>
+      </table>
     </>
   )
 }

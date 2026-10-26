@@ -135,8 +135,12 @@ class ImapLoop(WorkerTask):
 
         return report
 
-    async def _login_for(self, mailbox: Mailbox) -> MailLogin | None:
-        """This mailbox's own credentials, or None for the environment account.
+    async def _login_for(self, mailbox: Mailbox) -> MailLogin:
+        """This mailbox's own credentials, or `MailboxUnavailable`.
+
+        **Never None.** There is no environment account to fall back to (ADR-023), so a mailbox
+        nobody has connected raises and the caller skips it with a reason rather than reading
+        somebody else's inbox in its place.
 
         A refreshed token is written, so this takes its own session and commits: polling must not
         mint a new access token every three minutes when the cached one is still good.

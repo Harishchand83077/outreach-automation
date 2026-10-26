@@ -175,16 +175,6 @@ def main(settings: Settings | None = None) -> int:
     else:
         print("  GMAIL GRANT  = does not expire (the OAuth client is published)")
 
-    # A Google App Password is exactly 16 characters. Saying so costs one line and saves the
-    # confusing failure it causes: SMTP closes the connection without a reason, and IMAP answers
-    # a flat "Invalid credentials", neither of which points at the length.
-    for name in ("SMTP_PASSWORD", "IMAP_PASSWORD"):
-        value = str(getattr(settings, name, "") or "")
-        if value and len(value) != 16:
-            print(f"  {name:<12} = {len(value)} characters")
-            print("                 NOTE: a Google App Password is 16. If this mailbox is Gmail")
-            print("                 or Workspace, check the value was copied in full.")
-
     # ADR-005: a DATABASE_URL on the default port very likely belongs to another project —
     # but only on a developer machine, where another project's Postgres may already hold 5432.
     # Inside the Compose network each container has its own address space and `postgres:5432` is

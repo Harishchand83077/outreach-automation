@@ -1016,6 +1016,46 @@ nothing left that distinguishes the operator's workspace from anybody else's.
 
 1,682 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
 
+**An admin screen, because three systems decide one question.** Whether a given person can send
+depends on Supabase (may they sign in), this database (which workspace, what role) and Google (may
+they connect a mailbox) -- and nothing showed them together, so "why can this person not send?"
+meant checking two consoles and a `psql` session and holding the answer in your head.
+
+`GET /admin/overview` and an **Admin** item in the sidebar, both `admin`-gated. Every person with
+whether they have signed in, every mailbox with whether it is connected, who connected it and how
+many days are left on the grant, plus the workspace's sign-up mode and grant length.
+
+**Two things it refuses to pretend to know**, which is most of the design:
+
+- **It cannot read Supabase.** `deps.py` has never joined across the identity provider's boundary
+  and is not about to start. A person shows as *signed in* because a `members` row exists, and
+  that row is written on their first authenticated request -- the only honest evidence available.
+  Reporting it as "Supabase says yes" would be a guess dressed as a fact.
+- **It cannot read Google's test-user list.** While the OAuth client is unpublished only addresses
+  on that list can connect a mailbox, capped at 100, and there is no API for it. So the screen
+  links to the console and names the step, rather than showing a tick nothing maintains. Missing
+  that step produces a Google refusal about an unverified app, which reads like our bug and is
+  not.
+
+No `invalid_reason` is echoed, here as everywhere: that text can quote a provider's reply and this
+reaches a browser and screenshots.
+
+**Four things the review before merging turned up**, all in this stack's own code:
+
+1. `check_env` still looped over `SMTP_PASSWORD` and `IMAP_PASSWORD` to warn about App Password
+   length. `getattr(settings, name, "")` meant it silently did nothing rather than failing, which
+   is exactly how dead code survives a refactor.
+2. The new-mailbox form still told people to use "the same address as `SMTP_EMAIL` on the server",
+   naming a variable that no longer exists.
+3. **`_send_test_message` re-resolved the login and did not catch `MailboxUnavailable`.** The SMTP
+   check immediately before it can *invalidate* a credential -- a refresh Google will not honour
+   writes `invalid_reason` -- so the second resolution can fail where the first succeeded. That
+   would have escaped as a 500, and a bare 500 leaves FastAPI's error middleware *outside* CORS,
+   so the dashboard would have reported the backend unreachable while it was answering perfectly.
+   The identical trap that made a duplicate-key error look like a connectivity failure.
+4. `ImapLoop._login_for` was still typed and documented as returning `None` for the environment
+   account. There is no environment account; it raises now.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

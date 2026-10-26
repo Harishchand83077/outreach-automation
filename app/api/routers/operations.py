@@ -547,18 +547,21 @@ async def sending_config(
     approve this draft?"*, and answers it from the same configuration object the send guard
     reads, rather than from anything a client could have influenced.
 
-    **The allowlist is reported as a count, not a list.** The addresses are personal data, the
-    count is what tells you whether the gate is configured, and a list would put real addresses
-    into a response that ends up in a browser's cache and a screenshot. Nothing here is a
-    credential: the sending account is named, because the `From` address is public the moment a
-    single email arrives, but no password, key or token is returned.
+    **The allowlist is not here at all.** It used to be reported as a count, because
+    `SEND_ALLOWLIST` was one list for the whole deployment and showing it to a workspace would
+    have handed them the operator's personal addresses. ADR-023 made it the org's own rows, so it
+    is a different question with its own route — `GET /admin/send-allowlist` — and the property
+    that replaced the count is cross-org isolation rather than secrecy.
 
-    **`sending_account` is this org's, not the environment's.** It reported `SMTP_EMAIL`
-    unconditionally, which was true of a single-tenant deployment and became two problems the
-    moment strangers could sign up: it showed every workspace the operator's personal address,
-    and it told them mail would leave from an account they have no access to. It now names the
-    addresses this org actually sends from — its own mailboxes — and says explicitly when one of
-    them is the deployment's shared account.
+    Nothing here is a credential: the sending accounts are named, because a `From` address is
+    public the moment a single email arrives, but no password, key or token is returned.
+
+    **`sending_accounts` is this org's, and there is no longer any other kind.** It reported
+    `SMTP_EMAIL` unconditionally, which was true of a single-tenant deployment and became two
+    problems the moment strangers could sign up: it showed every workspace the operator's
+    personal address, and told them mail would leave from an account they have no access to.
+    ADR-023 then removed the deployment's account entirely, so `uses_shared_account` went with
+    it — there is no shared account to be using.
     """
     org = await session.get(Org, user.org_id)
     override = org.send_mode if org else None

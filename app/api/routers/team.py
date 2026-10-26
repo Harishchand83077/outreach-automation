@@ -26,8 +26,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import func, select
 
 from app.api.deps import ROLE_ORDER, CurrentUserDep, SessionDep, require_role
-from app.db.models import Invitation, Member
+from app.core.settings import config
+from app.db.models import Invitation, Mailbox, MailCredential, Member
 from app.db.state import record_event
+from app.services.mail.expiry import grant_status
 
 router = APIRouter(tags=["team"], dependencies=[Depends(require_role("admin"))])
 
@@ -72,6 +74,139 @@ async def list_team(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]
             }
             for row in pending
         ],
+    }
+
+
+@router.get("/admin/overview")
+async def admin_overview(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """Everything an admin has to keep track of, in one place.
+
+    **Written because three of the gates live in three different systems** and nothing showed
+    them together, so "why can this person not send?" meant checking a Supabase dashboard, a
+    Google Cloud console and this database, and holding the answer in your head.
+
+    1. **Supabase** decides whether somebody may sign in at all. We cannot see it from here --
+       the identity provider owns that table and we deliberately never join across the boundary
+       (`deps.py`) -- so what this reports is the shadow it casts: a member row exists only
+       *after* that person has authenticated at least once. `signed_in` is that, stated as what
+       it is rather than as a guess about Supabase.
+    2. **This database** decides which workspace they are in and what they may do.
+    3. **Google** decides whether they may connect a mailbox. While the OAuth client is
+       unpublished (ADR-018) only addresses on its *test users* list can, capped at 100 --
+       and that list is managed in the Cloud console with no API we can read. So it is reported
+       as the unknown it is, with the link, rather than as a tick somebody would trust.
+
+    Nothing here is a credential, and no `invalid_reason` is echoed: that text can quote a
+    provider's reply and this reaches a browser and screenshots.
+    """
+    members = (
+        await session.scalars(
+            select(Member).where(Member.org_id == user.org_id).order_by(Member.created_at)
+        )
+    ).all()
+    pending = (
+        await session.scalars(
+            select(Invitation)
+            .where(
+                Invitation.org_id == user.org_id,
+                Invitation.accepted_at.is_(None),
+                Invitation.revoked_at.is_(None),
+            )
+            .order_by(Invitation.created_at)
+        )
+    ).all()
+
+    mailboxes = (
+        await session.scalars(
+            select(Mailbox).where(Mailbox.org_id == user.org_id).order_by(Mailbox.created_at)
+        )
+    ).all()
+    credentials = {
+        row.mailbox_id: row
+        for row in (
+            await session.scalars(
+                select(MailCredential).where(
+                    MailCredential.mailbox_id.in_([m.id for m in mailboxes])
+                )
+            )
+        ).all()
+        if mailboxes
+    }
+
+    connected = 0
+    needs_reconnect = 0
+    mailbox_rows: list[dict[str, Any]] = []
+    for mailbox in mailboxes:
+        credential = credentials.get(mailbox.id)
+        grant = grant_status(credential)
+        is_connected = credential is not None and credential.invalid_reason is None
+        connected += 1 if is_connected else 0
+        needs_reconnect += 1 if credential is not None and not is_connected else 0
+        mailbox_rows.append(
+            {
+                "id": str(mailbox.id),
+                "from_email": mailbox.from_email,
+                "connected": is_connected,
+                "needs_reconnect": credential is not None and not is_connected,
+                # Who pressed Connect, so an admin can tell whose account this actually is.
+                "connected_by": credential.connected_by if credential else None,
+                "days_left": grant.days_left,
+                "paused": mailbox.paused,
+            }
+        )
+
+    return {
+        "people": [
+            {
+                "id": str(member.id),
+                "email": member.email,
+                "role": member.role,
+                # A member row is written on the first authenticated request, so its existence
+                # *is* the evidence that Supabase let them in. Nothing else here can see that.
+                "signed_in": True,
+                "joined_at": member.created_at.isoformat(),
+                "is_you": member.user_id == user.user_id,
+            }
+            for member in members
+        ],
+        "invited": [
+            {
+                "id": str(row.id),
+                "email": row.email,
+                "role": row.role,
+                "invited_by": row.invited_by,
+                "signed_in": False,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in pending
+        ],
+        "mailboxes": mailbox_rows,
+        "totals": {
+            "members": len(members),
+            "invited": len(pending),
+            "mailboxes": len(mailboxes),
+            "connected": connected,
+            "needs_reconnect": needs_reconnect,
+        },
+        "workspace": {
+            # Reported, never editable here. The send mode has exactly one write path and it is
+            # owner-gated with a typed confirmation (ADR-010).
+            "signup_mode": config.SIGNUP_MODE,
+            "grant_days": config.GOOGLE_GRANT_DAYS,
+            "google_oauth_configured": config.google_oauth_configured,
+            "max_orgs": config.MAX_ORGS,
+        },
+        # The step this system cannot take for you, named with the place to take it.
+        "google_test_users": {
+            "required_while_unpublished": config.GOOGLE_GRANT_DAYS > 0,
+            "console_url": "https://console.cloud.google.com/auth/audience",
+            "note": (
+                "While the OAuth client is unpublished, only addresses on its test-user list "
+                "can connect a mailbox (100 maximum). That list lives in the Google Cloud "
+                "console and cannot be read or changed from here, so add each person there "
+                "before they press Connect Gmail."
+            ),
+        },
     }
 
 

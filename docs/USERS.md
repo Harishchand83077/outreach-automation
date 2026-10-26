@@ -188,6 +188,40 @@ double-membership failure above, and nothing will tell you it happened.
 
 ---
 
+## The admin screen
+
+**Admin → in the sidebar**, for an `owner` or `admin`. It exists because three different systems
+decide whether one person can send, and nothing showed them together:
+
+| Gate | Who decides | Where you change it |
+|---|---|---|
+| May they sign in? | **Supabase** | the Supabase dashboard |
+| Which workspace, what role? | **this database** | Settings → Team |
+| May they connect a mailbox? | **Google** | the Google Cloud console |
+
+The screen lists every person with whether they have signed in, every mailbox with whether it is
+connected and how many days are left on its grant, and the workspace's sign-up mode.
+
+**What it deliberately does not claim to know.** This system never joins across the identity
+provider's boundary, so it cannot read Supabase. A person appears as *signed in* because a
+`members` row exists, and that row is written on their first authenticated request — which is the
+only honest evidence available. Somebody invited but not yet arrived shows as *invited*.
+
+**And the step it cannot take for you.** While the OAuth client is unpublished (ADR-018), only
+addresses on its **test users** list can connect a mailbox, up to 100. That list lives in the
+Google Cloud console under **Audience → Test users** and there is no API to read or change it from
+here, so the screen links to it and says so rather than showing a tick nothing maintains.
+
+So adding somebody who needs their own sending account is **two** steps, in either order:
+
+1. Invite them here (Settings → Team), or let them sign up if `SIGNUP_MODE` allows it.
+2. Add their address as a test user in the Google Cloud console.
+
+Miss the second and they will reach Connect Gmail and be refused by Google with a message about
+the app not being verified — which reads like our bug and is not.
+
+---
+
 ## When it does not work
 
 | What they see | What it is |
