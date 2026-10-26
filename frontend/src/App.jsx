@@ -1514,6 +1514,9 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   const [file, setFile] = useState(null)
   const [fileBusy, setFileBusy] = useState(false)
   const [conn, setConn] = useState(null)
+  // The last connection check. Cleared whenever the mailbox changes, because a result about a
+  // different mailbox sitting under this one is worse than no result at all.
+  const [checks, setChecks] = useState(null)
   const [schedule, setSchedule] = useState({ starts_at: '', ends_at: '' })
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
@@ -1553,6 +1556,7 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
     )
       .then(setConn)
       .catch(() => setConn({ configured: false, connected: false }))
+    setChecks(null)
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
     // whose numbers are all fine. It simply does not draw.
     getJson(`/campaigns/${campaign.id}/activity`)

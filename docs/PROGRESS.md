@@ -828,7 +828,23 @@ block, because an operator who does not know that number reads a weekly reconnec
 raised `NameError` instead of taking it. Nothing ever reached it, because `login_for` never
 returns `None`, which is exactly why it went unnoticed.
 
-1,647 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+**And the first version of this shipped a button that could not work.** `App.jsx` called
+`setChecks(report)` with no `const [checks, setChecks] = useState(...)` anywhere in the file.
+`npm run build` was green, because Vite does not resolve identifiers; `npm test` was green,
+because the frontend suite covers `api.js` and renders nothing; all four CI jobs were green. The
+button threw `ReferenceError` the first time a person pressed it, which is the one moment nobody
+is watching. A second defect of exactly the same shape went in alongside it -- `Field` hands its
+`onChange` the raw event and the Team panel passed a bare setter, so the invite box could not be
+typed in.
+
+`tests/unit/test_dashboard_state_is_declared.py` closes that class: every `setX` the dashboard
+calls must be declared by a `useState`, a `const`, or a destructured prop. It is a source check
+rather than a component test, for the same reason `test_connect_sends_mailbox_id.py` is -- ESLint
+would catch this and more, and it is a dependency tree to audit for the life of the project.
+Comments are stripped first, because the prose explaining a piece of state names it. It was run
+against the broken file to watch it fail before it was kept.
+
+1,649 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
 
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
