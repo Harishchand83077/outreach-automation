@@ -335,6 +335,10 @@ VALUES (gen_random_uuid(), '<org id from above>', '<supabase sub>', 'you@yourdom
 Only `owner` is issued today. `admin` and `member` exist in the check constraint so inviting
 people later is a row rather than a migration.
 
+**For everybody after the first, read `docs/USERS.md` instead of this section.** It covers the two
+things "add a user" can mean — their own separate workspace, which `SIGNUP_MODE` provisions with no
+SQL at all, and a teammate inside yours, which is the insert above with a role.
+
 ### 4.2 Point the dashboard at it
 
 In the Cloudflare project's **build variables** (not in this repository — they are compiled into
