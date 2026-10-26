@@ -2838,7 +2838,13 @@ function Team({ onError, onToast }) {
         ))}
       </ul>
       <form onSubmit={invite} className="field-row">
-        <Field label="Invite by email" value={email} onChange={setEmail} type="email" required />
+        <Field
+          label="Invite by email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          type="email"
+          required
+        />
         <label className="field">
           <span>Role</span>
           <select value={role} onChange={(event) => setRole(event.target.value)}>
