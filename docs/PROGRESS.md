@@ -829,6 +829,26 @@ raised `NameError` instead of taking it. Nothing ever reached it, because `login
 returns `None`, which is exactly why it went unnoticed.
 
 1,647 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+**`docs/USERS.md` is new: how somebody actually gets access.** Asked for after the
+multi-user work landed, and the question turned out to have two different answers that were being
+confused for one.
+
+Access needs **two** systems to agree — Supabase Auth says whether a person may sign in, and
+`app.members` says which workspace they are in — so "add a user" means either *their own separate
+workspace*, which `SIGNUP_MODE` provisions on their first request with no SQL at all (ADR-017), or
+*a teammate inside yours*, which is one `INSERT` and a role. They are not a progression, and
+getting them the wrong way round produces the one symptom nobody diagnoses: a person signs in,
+is provisioned a brand-new empty org, and reports that the campaigns have vanished.
+
+**The thing worth knowing is that `SIGNUP_MODE=open` is only as open as Supabase is.** Turning off
+*Allow new users to sign up* in the Supabase dashboard and leaving this `open` gives an invite-only
+product with the guest list in a UI and the workspace provisioning automatic — which is what the
+owner wanted and is not obvious from either setting alone.
+
+Two smaller things are recorded because they cost time: `docker compose` on the server needs
+`sudo` (it reads the root-only `.env`, and without it fails with `open /opt/outreach/.env:
+permission denied`, which reads like a Docker fault), and `MAX_ORGS` defaults to 25 and is a
+ceiling on top of whichever `SIGNUP_MODE` is set.
 
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
