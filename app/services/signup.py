@@ -23,12 +23,14 @@ from __future__ import annotations
 
 import logging
 
+from datetime import UTC, datetime
+
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings, config
-from app.db.models import Member, Org
+from app.db.models import Invitation, Member, Org
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +93,15 @@ async def provision(
     than degrading for everybody.
     """
     settings = settings or config
+
+    # **The invitation is checked first, and it bypasses `SIGNUP_MODE`.** Somebody with the
+    # `admin` role in that org named this address deliberately, which is a stronger statement
+    # than any global policy -- and a deployment that stays `closed` so strangers cannot wander
+    # in still has to be able to add its own team.
+    invitation = await _pending_invitation(session, email)
+    if invitation is not None:
+        return await _accept(session, invitation, user_id=user_id, email=email)
+
     may_sign_up(email, settings)
 
     orgs = await session.scalar(select(func.count()).select_from(Org))
@@ -119,4 +130,56 @@ async def provision(
     # No email address, no personal data: `user_id` is Supabase's opaque `sub`. This line exists
     # so that somebody reading the log can see a workspace was created and when.
     logger.info("workspace provisioned", extra={"org_id": str(org.id)})
+    return member
+
+
+async def _pending_invitation(session: AsyncSession, email: str | None) -> Invitation | None:
+    """An unused, unrevoked invitation for this address, or None.
+
+    Lower-cased on both sides. An invitation to `Asha@Example.com` that fails to match a sign-in
+    as `asha@example.com` is an invitation that silently does nothing, and the person it was for
+    ends up in a workspace of their own wondering where everything went.
+    """
+    if not email:
+        return None
+    return await session.scalar(
+        select(Invitation).where(
+            func.lower(Invitation.email) == email.strip().lower(),
+            Invitation.accepted_at.is_(None),
+            Invitation.revoked_at.is_(None),
+        )
+    )
+
+
+async def _accept(
+    session: AsyncSession, invitation: Invitation, *, user_id: str, email: str | None
+) -> Member:
+    """Join the inviting org instead of creating a new one.
+
+    The invitation is marked accepted in the **same transaction** as the membership it creates,
+    for the reason every other write in this project pairs that way: a row saying somebody was
+    invited, with no membership, and a membership nobody can account for are both worse than
+    either half failing.
+    """
+    member = Member(
+        org_id=invitation.org_id, user_id=user_id, email=email, role=invitation.role
+    )
+    session.add(member)
+    invitation.accepted_at = datetime.now(tz=UTC)
+    try:
+        await session.flush()
+    except IntegrityError:
+        # Two tabs, one person, as below. Whoever lost the race finds the row the winner wrote.
+        await session.rollback()
+        existing = await session.scalar(select(Member).where(Member.user_id == user_id))
+        if existing is None:
+            raise
+        return existing
+
+    # No address: `user_id` is opaque and `org_id` is ours. This line exists so somebody reading
+    # the log can see that a seat was taken and which workspace gained a person.
+    logger.info(
+        "invitation accepted",
+        extra={"org_id": str(invitation.org_id), "role": invitation.role},
+    )
     return member

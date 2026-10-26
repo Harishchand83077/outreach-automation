@@ -28,7 +28,16 @@ from fastapi.responses import JSONResponse, Response
 
 from app.api.deps import get_session, session_dependency
 from app.api.ratelimit import RateLimit
-from app.api.routers import campaigns, connect, health, imports, me, operations, review
+from app.api.routers import (
+    campaigns,
+    connect,
+    health,
+    imports,
+    me,
+    operations,
+    review,
+    team,
+)
 from app.core.logging import configure_logging, log_context
 from app.core.settings import Settings, config
 
@@ -175,6 +184,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(imports.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
+    application.include_router(team.router, prefix="/api/v1")
     return application
 
 

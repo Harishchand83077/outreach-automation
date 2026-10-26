@@ -90,6 +90,57 @@ class Org(Base):
     )
 
 
+class Invitation(Base):
+    """A place held in an org for somebody who has not signed in yet.
+
+    **This exists because order mattered and should not have.** Adding a teammate meant inserting
+    a `members` row by hand, and that row had to exist *before* their first authenticated
+    request -- because `provision()` sees no membership, creates them a workspace of their own,
+    and makes them its owner. Do it in the other order and the symptom is not an error: they land
+    in an empty workspace and report that every campaign has vanished, and the "fix" of inserting
+    the row afterwards leaves them with **two** memberships, which `deps.current_user` resolves by
+    taking whichever the database returns first. `uq_members_org_user` is scoped per org, so
+    nothing refuses the second row.
+
+    An invitation is the same intent expressed before the fact: when that address signs in for the
+    first time, `provision()` finds this row and joins them to **this** org with **this** role
+    instead of making a new one. Nothing has to happen in a particular order, and nothing depends
+    on somebody remembering which order it was.
+
+    **Matched on the email address, which is a deliberate, stated limit.** We cannot know a
+    person's Supabase `sub` before they have ever signed in -- that is the identifier the identity
+    provider mints for them -- so the address Google or the magic link reports is the only thing
+    available to match on. That means whoever controls the invited address gets the seat, which is
+    the same assumption every invitation email in existence makes. It is not a bearer token and it
+    is not secret: a pending invitation grants nothing until somebody authenticates as that
+    address through Supabase.
+    """
+
+    __tablename__ = "invitations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Lower-cased at the door, because an invitation to `Asha@X` that does not match a sign-in
+    #: as `asha@x` is an invitation that silently does nothing.
+    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="member")
+    #: Who sent it, for the audit trail. Their address, not their `sub`: this is read by people.
+    invited_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    #: Set when it is used. Kept rather than deleted: "who let them in, and when?" is a question
+    #: worth being able to answer, and a deleted row answers nothing.
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_invitations_role"),
+        Index("ix_invitations_email", "email"),
+        Index("ix_invitations_org", "org_id"),
+    )
+
+
 class Member(Base):
     """Who may act for an org, and in what capacity (§14).
 
