@@ -32,12 +32,12 @@ from zoneinfo import ZoneInfo
 import pytest
 import pytest_asyncio
 
-from app.core.settings import Settings
 from app.db.models import Campaign, Draft, Mailbox, Message
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.services.mail.smtp import SmtpSender
 from app.worker import send_loop
+from tests.integration.conftest import allow_sending_to, connect_mailbox, mail_settings
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -103,19 +103,33 @@ async def smtp_server():
         controller.stop()
 
 
+async def _set_allowlist(db, org, allow: str) -> None:
+    """Replace this org's allowlist with `allow`, a comma-separated string."""
+    from sqlalchemy import delete
+
+    from app.db.models import SendAllowlistEntry
+
+    await db.execute(delete(SendAllowlistEntry).where(SendAllowlistEntry.org_id == org.id))
+    await db.commit()
+    addresses = [part.strip() for part in allow.split(",") if part.strip()]
+    if addresses:
+        await allow_sending_to(db, org, *addresses)
+
+
 def sender_for(smtp_server, allow: str) -> SmtpSender:
+    """`allow` is unused now and kept so call sites read the same.
+
+    ADR-023: the allowlist is the org's own rows, written by `allow_sending_to`, not a value
+    configured on the sender. The parameter stays so the tests below still say out loud which
+    address they expect to be permitted.
+    """
     return SmtpSender(
-        Settings(
-            _env_file=None,
-            GROQ_API_KEY="gsk_test",
-            SMTP_EMAIL="asha@outreach.example",
-            SMTP_PASSWORD="not-a-real-password",
+        mail_settings(
             SMTP_HOST=smtp_server.host,
             SMTP_PORT=smtp_server.port,
             SMTP_USE_TLS=False,
             SMTP_START_TLS=False,
             SEND_MODE="allowlist",
-            SEND_ALLOWLIST=allow,
         )
     )
 
@@ -132,6 +146,9 @@ async def shared_mailbox(db, org, campaign):
     )
     db.add(mailbox)
     await db.flush()
+    await db.commit()
+    # Nothing sends without credentials of its own any more (ADR-023).
+    await connect_mailbox(db, mailbox)
 
     campaign.mailbox_id = mailbox.id
     campaign.persona = ACME.model_dump(mode="json")
@@ -182,6 +199,8 @@ async def approved_lead_in(db, org, campaign_id, email, *, approved_at):
 
 
 async def send_once(db, org, mailbox, smtp_server, *, allow):
+    # The allowlist is the org's own rows now (ADR-023), so the harness writes them.
+    await _set_allowlist(db, org, allow)
     # No persona is passed: `send_one` takes the signature from the chosen candidate's own
     # campaign, which is the whole point of this file.
     return await send_loop.send_one(

@@ -16,14 +16,23 @@ import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import clamp_limit
 from app.core.settings import config
 from app.db import ops, repo
-from app.db.models import Job, LlmUsage, Mailbox, Message, Org, Suppression
+from app.db.models import (
+    Job,
+    LlmUsage,
+    Mailbox,
+    Message,
+    Org,
+    SendAllowlistEntry,
+    Suppression,
+)
+from app.db.state import record_event
 from app.services.mail.smtp import ALLOWED_SEND_MODES, effective_send_mode
 
 logger = logging.getLogger(__name__)
@@ -33,6 +42,114 @@ router = APIRouter(tags=["operations"])
 #: Mirrors `ck_suppressions_reason`. Validated here rather than left to the database, because a
 #: check-constraint violation surfaces as a 500 and tells the caller nothing about what to send.
 SUPPRESSION_REASONS = ("opt_out", "bounce", "manual", "complaint")
+
+
+@router.get("/admin/send-allowlist", dependencies=[Depends(require_role("admin"))])
+async def list_send_allowlist(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """The addresses this workspace may send to while its mode is `allowlist`.
+
+    **The list is returned, not a count.** It used to be a count, deliberately: `SEND_ALLOWLIST`
+    was one list for the entire deployment, so showing it to a workspace would have handed them
+    the operator's personal addresses. ADR-023 made the list the org's own rows, and an org's own
+    addresses shown to its own admin are not a disclosure -- they are the thing being edited. A
+    screen that will not show you what you are editing is not a screen.
+
+    Cross-org isolation is the property that replaces the count, and it is asserted directly:
+    `org_id` comes from the membership and never from the caller (ADR-004).
+    """
+    rows = (
+        await session.scalars(
+            select(SendAllowlistEntry)
+            .where(SendAllowlistEntry.org_id == user.org_id)
+            .order_by(SendAllowlistEntry.created_at)
+        )
+    ).all()
+    return {
+        "allowlist": [
+            {
+                "id": str(row.id),
+                "email": row.email_norm,
+                "added_by": row.added_by,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post(
+    "/admin/send-allowlist",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_role("admin"))],
+)
+async def add_to_send_allowlist(
+    user: CurrentUserDep,
+    session: SessionDep,
+    email: Annotated[str, Body(embed=True)],
+    response: Response,
+) -> dict[str, Any]:
+    """Allow one more address while rehearsing.
+
+    **`admin`, not `owner`.** Adding an address widens who may be emailed, so it is not a
+    read-only act -- but it widens it by exactly one address that somebody typed, inside a mode
+    whose entire purpose is rehearsal. Going `live`, which removes the gate altogether, stays
+    `owner` (ADR-010). Treating the two the same would mean either handing out `live` or making
+    rehearsal impossible without the one role nobody wants to share.
+    """
+    address = (email or "").strip().lower()
+    if "@" not in address or len(address) > 320:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, f"{email!r} is not an email address."
+        )
+
+    existing = await session.scalar(
+        select(SendAllowlistEntry).where(
+            SendAllowlistEntry.org_id == user.org_id,
+            SendAllowlistEntry.email_norm == address,
+        )
+    )
+    if existing is not None:
+        # Idempotent: there is nothing else to create, and a 409 would only make the caller ask
+        # for the id of the row it just described.
+        response.status_code = status.HTTP_200_OK
+        return {"id": str(existing.id), "email": existing.email_norm, "added": False}
+
+    entry = SendAllowlistEntry(
+        org_id=user.org_id, email_norm=address, added_by=user.email or user.user_id
+    )
+    session.add(entry)
+    await session.flush()
+    await record_event(
+        session,
+        org_id=user.org_id,
+        type="send_allowlist.added",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={"email": address},
+    )
+    await session.commit()
+    return {"id": str(entry.id), "email": entry.email_norm, "added": True}
+
+
+@router.delete("/admin/send-allowlist/{entry_id}", dependencies=[Depends(require_role("admin"))])
+async def remove_from_send_allowlist(
+    entry_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Stop allowing an address. Always safe: this can only ever narrow who may be emailed."""
+    entry = await session.get(SendAllowlistEntry, entry_id)
+    if entry is None or entry.org_id != user.org_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Not on this workspace's allowlist.")
+    await session.delete(entry)
+    await record_event(
+        session,
+        org_id=user.org_id,
+        type="send_allowlist.removed",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={"email": entry.email_norm},
+    )
+    await session.commit()
+    return {"removed": True}
 
 
 @router.get("/suppressions")
@@ -462,7 +579,6 @@ async def sending_config(
         # `live` is refused outside production, so the screen can say why the option is absent
         # rather than appearing broken.
         "live_allowed": config.APP_ENV == "production",
-        "allowlist_size": len(config.send_allowlist),
         "smtp_host": config.SMTP_HOST,
         "smtp_port": config.SMTP_PORT,
         # A list, because a campaign picks its own mailbox and an org may hold several. Empty
@@ -471,7 +587,6 @@ async def sending_config(
         # Kept for the Settings screen's single-line summary. None rather than the operator's
         # address when this org has no mailbox of its own.
         "sending_account": mailboxes[0].from_email if mailboxes else None,
-        "uses_shared_account": bool(org and org.uses_environment_mailbox),
         "imap_host": config.IMAP_HOST,
         "environment": config.APP_ENV,
         # The product rules that are locked in code rather than configurable per campaign, so

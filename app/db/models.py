@@ -69,15 +69,6 @@ class Org(Base):
     #: did this"; the `events` table cannot hold it because every row there is keyed to a lead.
     send_mode_set_by: Mapped[str | None] = mapped_column(String(320))
     send_mode_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: May this org's mailboxes authenticate with the credentials in `.env`?
-    #:
-    #: False for everyone who signs up, and there is no route that sets it — the only way in is
-    #: the migration that added the column, which granted it to the one org that predated public
-    #: sign-up. The environment account belongs to whoever installed the deployment; a stranger
-    #: who creates a workspace must connect their own, or send nothing.
-    uses_environment_mailbox: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default="false"
-    )
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
@@ -88,6 +79,40 @@ class Org(Base):
             name="ck_orgs_send_mode",
         ),
     )
+
+
+class SendAllowlistEntry(Base):
+    """An address this org may send to while `send_mode` is `allowlist`.
+
+    **It used to be `SEND_ALLOWLIST` in the environment**, one list for the whole deployment.
+    That was right while there was one user and wrong the moment there were ten: everybody
+    rehearsing shared one list that only somebody with shell access could edit, so a new
+    workspace could select `allowlist` and then discover there was no way to put their own
+    address on it. Worse, they could put mail into *the operator's* rehearsal list, and read the
+    operator's addresses out of their own settings screen.
+
+    So the list is the org's, like `send_mode` itself (ADR-010). The **decision** has not moved:
+    `allowlist_permits()` in `smtp.py` is still the only function that compares a recipient
+    against anything, and the structural test over the whole tree still asserts it. What changed
+    is where the values come from -- exactly the trade ADR-010 made for the mode.
+
+    An entry is **not** a suppression's opposite. Adding one widens who may be emailed, which is
+    why it is an `admin` action and why `live` remains `owner`. Removing one is always safe.
+    """
+
+    __tablename__ = "send_allowlist"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Lower-cased at the door. `allowlist_permits` compares case-insensitively, and a list whose
+    #: entries do not match the comparison is a list that silently permits nobody.
+    email_norm: Mapped[str] = mapped_column(String(320), nullable=False)
+    added_by: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (UniqueConstraint("org_id", "email_norm", name="uq_send_allowlist_org_email"),)
 
 
 class Invitation(Base):

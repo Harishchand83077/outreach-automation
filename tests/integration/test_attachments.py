@@ -30,6 +30,7 @@ from app.worker import send_loop
 
 from .test_send_loop import (  # noqa: F401 — `mailbox` and `smtp_server` are used as fixtures
     INSIDE,
+    _set_allowlist,
     allowlist_settings,
     approved_lead,
     mailbox,
@@ -75,6 +76,8 @@ async def send(db, org, mailbox, smtp_server, *, now=INSIDE):
     throws away, which is the fixture-does-not-match-production trap that hid the persona
     crash-loop. To change the rules, change the campaign row: `configure` below.
     """
+    # The allowlist is the org's own rows now (ADR-023), not a value on the sender.
+    await _set_allowlist(db, org, "ben@example.com")
     sender = SmtpSender(allowlist_settings(smtp_server.host, smtp_server.port))
     return await send_loop.send_one(
         db,

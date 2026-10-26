@@ -19,6 +19,7 @@ from typing import ClassVar
 import pytest
 
 from app.services.mail import imap as imap_module
+from app.services.mail.connection import MailLogin
 from app.services.mail.imap import RESCAN_DAYS, ImapPoller, _quote_folder
 
 pytestmark = pytest.mark.asyncio
@@ -109,9 +110,12 @@ def fake_imap(monkeypatch):
 class FakeSettings:
     IMAP_HOST = "imap.example.com"
     IMAP_PORT = 993
-    IMAP_EMAIL = "asha@outreach.example"
-    # A fake, and the tests below assert it never appears in an error message.
-    IMAP_PASSWORD = "not-a-real-password"
+
+
+#: **The login is passed in, not configured** (ADR-023). There is no `IMAP_EMAIL` to fall back
+#: to: a mailbox is read with the credential somebody connected for it, or it is not read at all.
+#: The password is a fake, and the tests below assert it never reaches an error message.
+LOGIN = MailLogin(username="asha@outreach.example", password="not-a-real-password")
 
 
 def poller() -> ImapPoller:
@@ -120,7 +124,7 @@ def poller() -> ImapPoller:
 
 class TestTheMailboxIsNeverModified:
     async def test_select_is_readonly(self, fake_imap):
-        await poller().poll(folder="INBOX", now=NOW)
+        await poller().poll(folder="INBOX", login=LOGIN, now=NOW)
         connection = fake_imap.instances[0]
         assert connection.selected_readonly is True
 
@@ -155,7 +159,7 @@ class TestTheMailboxIsNeverModified:
         assert not any("UNSEEN" in s.upper() for s in searches)
 
     async def test_the_connection_is_always_closed(self, fake_imap):
-        await poller().poll(folder="INBOX", now=NOW)
+        await poller().poll(folder="INBOX", login=LOGIN, now=NOW)
         assert fake_imap.instances[0].logged_out
 
 
@@ -225,7 +229,7 @@ class TestFailuresAreReportedNotRaised:
         original = module.imaplib.IMAP4_SSL
         module.imaplib.IMAP4_SSL = Rejecting  # type: ignore[misc]
         try:
-            result_holder["result"] = await poller().poll(folder="INBOX", now=NOW)
+            result_holder["result"] = await poller().poll(folder="INBOX", login=LOGIN, now=NOW)
         finally:
             module.imaplib.IMAP4_SSL = original  # type: ignore[misc]
 
@@ -233,11 +237,14 @@ class TestFailuresAreReportedNotRaised:
         assert not result.ok
         assert "App Password" in (result.error or ""), "names the human fix"
 
-    async def test_missing_credentials_are_a_result_not_an_exception(self):
-        class NoCredentials(FakeSettings):
-            IMAP_EMAIL = ""
+    async def test_a_mailbox_with_no_login_is_a_result_not_an_exception(self):
+        """ADR-023: an unconnected mailbox is read as nobody, rather than as the operator.
 
-        result = await ImapPoller(settings=NoCredentials()).poll(folder="INBOX")  # type: ignore[arg-type]
+        It must not raise either. `ImapLoop` polls every mailbox in turn, and an exception here
+        would stop the ones after it -- so the workspace that *has* connected would lose its
+        replies because of a workspace that has not.
+        """
+        result = await poller().poll(folder="INBOX", login=None)
         assert not result.ok
         assert "not configured" in (result.error or "")
 
@@ -254,11 +261,11 @@ class TestFailuresAreReportedNotRaised:
         original = module.imaplib.IMAP4_SSL
         module.imaplib.IMAP4_SSL = Rejecting  # type: ignore[misc]
         try:
-            result = await poller().poll(folder="INBOX", now=NOW)
+            result = await poller().poll(folder="INBOX", login=LOGIN, now=NOW)
         finally:
             module.imaplib.IMAP4_SSL = original  # type: ignore[misc]
 
-        assert FakeSettings.IMAP_PASSWORD not in (result.error or "")
+        assert LOGIN.password not in (result.error or "")
 
 
 class TestFolderNames:
@@ -277,7 +284,7 @@ class TestFindByMessageId:
 
         async def run():
             return await poll.find_by_message_id(
-                "ours-1@outreach.example", folders=("[Gmail]/Sent Mail",)
+                "ours-1@outreach.example", folders=("[Gmail]/Sent Mail",), login=LOGIN
             )
 
         FakeIMAP.instances = []
@@ -296,11 +303,11 @@ class TestFindByMessageId:
         assert found == "[Gmail]/Sent Mail"
 
     async def test_a_message_that_is_nowhere_returns_none(self, fake_imap):
-        found = await poller().find_by_message_id("missing@outreach.example")
+        found = await poller().find_by_message_id("missing@outreach.example", login=LOGIN)
         assert found is None
 
     async def test_it_searches_readonly(self, fake_imap):
-        await poller().find_by_message_id("x@outreach.example", folders=("Sent",))
+        await poller().find_by_message_id("x@outreach.example", folders=("Sent",), login=LOGIN)
         connection = fake_imap.instances[0]
         assert connection.selected_readonly is True
 
@@ -325,6 +332,7 @@ async def _poll_with(
     try:
         return await poll.poll(
             folder="INBOX",
+            login=LOGIN,
             last_uid=last_uid,
             known_uidvalidity=known_uidvalidity,
             limit=limit,

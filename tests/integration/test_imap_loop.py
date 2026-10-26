@@ -20,6 +20,7 @@ from app.db.models import Mailbox
 from app.services.mail.imap import PollResult
 from app.worker.context import WorkerContext
 from app.worker.imap_loop import FOLDERS, ImapLoop
+from tests.integration.conftest import connect_mailbox, mail_settings
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -53,19 +54,12 @@ class RecordingPoller:
         return None
 
 
-#: The deployment's own account. `login_for` hands out the environment credentials only to an
-#: org the migration granted them to, and only for the address `SMTP_EMAIL` logs in as, so these
-#: two values are what make the ordinary single-tenant path the ordinary path here too.
+#: The ordinary case: one workspace with one connected mailbox. It used to be the *deployment's*
+#: account, reachable through `SMTP_EMAIL` with no credential row at all. ADR-023 removed that,
+#: so this mailbox is connected exactly like every other one.
 ENV_ADDRESS = "asha@outreach.example"
 
-ENV_SETTINGS = Settings(
-    _env_file=None,  # type: ignore[call-arg]
-    GROQ_API_KEY="gsk_test",
-    SMTP_EMAIL=ENV_ADDRESS,
-    SMTP_PASSWORD="from-the-environment",
-    IMAP_EMAIL=ENV_ADDRESS,
-    IMAP_PASSWORD="from-the-environment",
-)
+ENV_SETTINGS = mail_settings()
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -79,6 +73,7 @@ async def mailbox(db, org):
     )
     db.add(row)
     await db.commit()
+    await connect_mailbox(db, row)
     return row
 
 

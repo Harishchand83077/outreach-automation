@@ -947,6 +947,75 @@ And connecting at signup would not have prevented the double-membership failure,
 *which org a teammate lands in* -- it would have added a mailbox to the wrong org as well.
 ADR-022 is the fix for that.
 
+**The deployment no longer has a mailbox of its own (ADR-023).** Asked for plainly: *"now there is
+no single user .ecell or arkvane.in — I can connect whatever email I want to send from."*
+
+`SMTP_EMAIL`, `SMTP_PASSWORD`, `IMAP_EMAIL` and `IMAP_PASSWORD` are **gone from `Settings`
+entirely**, along with `orgs.uses_environment_mailbox` and both fallback paths. A mailbox with no
+credential cannot send and cannot be read — **including the owner's own**. `SMTP_HOST` and the
+other three stay, because they describe Google's servers rather than anybody's identity.
+
+ADR-020 narrowed that fallback to one org and one address, which was the right fix for the bug and
+the wrong shape for the product. As long as one account lives in `.env` there is an identity that
+belongs to the *deployment* rather than to a person, and every question about it — who may use it,
+which org, which address, what if two match — is a rule somebody has to hold in their head and a
+guard somebody has to maintain. Now there is no identity here that is not somebody's own: nobody
+can send on an account they did not personally authorise, and "whose Gmail sent this?" has exactly
+one answer.
+
+**It costs a real outage and that is worth saying out loud.** The live deployment stops sending the
+moment this lands, because its mailbox has no credential — it had been using the environment
+account. One click of Connect Gmail resumes it. That is the change working rather than a cost of
+it, but it must be expected rather than discovered.
+
+**`CREDENTIAL_KEY` and the three `GOOGLE_*` values are now `REQUIRED_KEYS`.** What a deployment
+must be able to do is no longer *send*; it is *let somebody connect their own account*. Missing
+them, nothing can ever send — better as a startup failure than as a surprise at the first campaign.
+
+**The allowlist is the org's rows now, not one environment variable.** `app.send_allowlist`, edited
+in Settings by an `admin`. Before this, a new workspace could select `allowlist` mode and find no
+way to put its own address on the list, while reading the operator's personal addresses out of its
+own settings screen.
+
+**The decision did not move.** `allowlist_permits()` in `smtp.py` is still the only function in the
+tree that compares a recipient against anything, and the structural test over every file still
+asserts it — only the *values* travel in now, which is exactly the trade ADR-010 made when the mode
+moved out of the environment. `test_the_send_loop_does_not_reimplement_the_check` was tightened to
+match: the loop may load the list, and may never test membership against it.
+
+`None` and an empty list mean the same thing on purpose. "We could not load the list" and "the list
+is empty" must have one answer, or a database hiccup becomes a send to somebody who was never on
+it.
+
+**The migration backfills `SEND_ALLOWLIST` from the process environment into the oldest org.**
+Without it, a deployment rehearsing in `allowlist` mode comes back from the migration with an empty
+list and sends nothing — correct by the new rules and indistinguishable from a break. A count is
+logged, never an address.
+
+**One connect option, not two.** Asked directly, and the answer is that a Workspace address and an
+ordinary Gmail are the same OAuth client, the same `https://mail.google.com/` scope and the same
+XOAUTH2 handshake. The address is whatever Google says it is. A second button would be a choice
+with no consequence, which is a choice people get wrong. A genuinely different second path — app
+passwords for a non-Google provider — needs per-mailbox host and port; `MailCredential.kind ==
+"app_password"` already exists for it and nothing exposes it.
+
+**Adding an allowlist entry is `admin`; going `live` stays `owner`.** Different in kind rather than
+degree: an entry widens sending by one address somebody typed, inside a mode whose purpose is
+rehearsal, while `live` removes the gate. Treating them the same would mean either handing out
+`owner` or making rehearsal impossible without it.
+
+`check_env` no longer counts the allowlist, because it cannot: the list is per org and in the
+database, and a number right for one workspace and wrong for every other is worse than a sentence
+saying where to look.
+
+**What this cost in tests, which is the honest measure of how load-bearing that account was.**
+Thirteen test files, and every send test now connects its mailbox and writes its own allowlist rows
+— `connect_mailbox`, `allow_sending_to` and `mail_settings` in `tests/integration/conftest.py`.
+The `org` fixture lost its one special field, which is the whole change in miniature: there is
+nothing left that distinguishes the operator's workspace from anybody else's.
+
+1,682 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

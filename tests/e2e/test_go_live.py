@@ -60,6 +60,7 @@ from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.services.mail.smtp import SmtpSender
 from app.worker import send_loop
+from tests.integration.conftest import allow_sending_to, connect_mailbox, mail_settings
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -214,17 +215,13 @@ async def smtp_server():
 
 
 def sending_settings(host: str, port: int, *, allow: str, mode: str = "allowlist") -> Settings:
-    return Settings(
-        _env_file=None,
-        GROQ_API_KEY="gsk_test",
-        SMTP_EMAIL="asha@outreach.example",
-        SMTP_PASSWORD="not-a-real-password",
+    """`allow` is kept for readability; the list itself is the org's rows (ADR-023)."""
+    return mail_settings(
         SMTP_HOST=host,
         SMTP_PORT=port,
         SMTP_USE_TLS=False,
         SMTP_START_TLS=False,
         SEND_MODE=mode,
-        SEND_ALLOWLIST=allow,
     )
 
 
@@ -243,6 +240,7 @@ async def mailbox(db, org, campaign):
     campaign.persona = PERSONA.model_dump(mode="json")
     campaign.status = "running"
     await db.commit()
+    await connect_mailbox(db, record)
     return record
 
 
@@ -284,6 +282,8 @@ async def send_once(
     settings=None,
     mode="allowlist",
 ):
+    # ADR-023: the allowlist is the org's own rows and a mailbox needs its own credential.
+    await _set_allowlist(db, org, allow)
     return await send_loop.send_one(
         db,
         org_id=org.id,
@@ -294,6 +294,18 @@ async def send_once(
         ),
         now=now,
     )
+
+
+async def _set_allowlist(db, org, allow: str) -> None:
+    from sqlalchemy import delete
+
+    from app.db.models import SendAllowlistEntry
+
+    await db.execute(delete(SendAllowlistEntry).where(SendAllowlistEntry.org_id == org.id))
+    await db.commit()
+    addresses = [part.strip() for part in allow.split(",") if part.strip()]
+    if addresses:
+        await allow_sending_to(db, org, *addresses)
 
 
 class TestImportIsRepeatable:

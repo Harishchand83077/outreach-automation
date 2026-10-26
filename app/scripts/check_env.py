@@ -145,8 +145,11 @@ def main(settings: Settings | None = None) -> int:
     if settings.SEND_MODE == "disabled":
         print("                 nothing will be sent, to anyone (this is the default)")
     elif settings.SEND_MODE == "allowlist":
-        count = len(settings.send_allowlist)
-        print(f"                 may send only to {count} allow-listed address(es)")
+        # The list itself is per org and lives in the database now (ADR-023), so this script
+        # cannot count it -- and should not pretend to. Saying where it is beats a number that
+        # would be wrong for every workspace but one.
+        print("                 may send only to each workspace's own allow-listed addresses")
+        print("                 (Settings -> Send mode in the dashboard; no longer in .env)")
     else:
         print("                 LIVE: may send to anyone")
     print(f"  AUTO_APPROVE = {'on — human review is SKIPPED' if settings.AUTO_APPROVE else 'off'}")
