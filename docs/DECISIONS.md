@@ -1023,3 +1023,172 @@ A latent bug surfaced while writing this and is fixed here: `MailLogin` was impo
 only under `TYPE_CHECKING`, so `send(login=None)` — the documented fallback to the environment
 account — raised `NameError` rather than taking it. Nothing reached it, because `login_for` never
 returns `None`, which is exactly why it went unnoticed.
+
+---
+
+## ADR-022 — An invitation, because the order mattered and should not have
+
+**Status.** Accepted, 2026-10-26.
+
+**Context.** Adding a teammate to an existing workspace meant one `INSERT` into `app.members`
+against production, and it had to happen **before** that person's first authenticated request.
+
+Afterwards, `provision()` sees no membership, creates them a workspace of their own and makes them
+its owner (ADR-017). Writing the `members` row at that point does not fail: `uq_members_org_user`
+is scoped per org, so the database accepts a **second** membership for the same `user_id` in a
+different org. `deps.current_user` then resolves them with `select(Member).where(user_id == sub)`
+and `scalar()`, which returns whichever row the database happens to hand back first.
+
+So the failure was not an error. It was a person seeing one workspace on Monday and a different
+one on Tuesday, with nothing on screen admitting that two existed — and before that, the much
+more ordinary symptom of signing in, landing in an empty org, and reporting that every campaign
+had vanished.
+
+An earlier note in this project's own documentation said the second insert would be refused by a
+unique constraint. It would not. There is no global unique index on `members.user_id`, and the
+absence of one is exactly what makes this worth a table rather than a warning in a runbook.
+
+**Decision.** `app.invitations` — org, address, role, who sent it, and when it was accepted or
+revoked. `provision()` consults it **before** anything else, and an address with a pending
+invitation joins that org with that role instead of getting a new one. Nothing has to happen in a
+particular order any more, which is the entire point: a rule that depends on somebody remembering
+a sequence is a rule that will be broken by whoever did not read the runbook.
+
+**An invitation overrides `SIGNUP_MODE=closed`.** An admin naming an address deliberately is a
+stronger statement than a global policy, and the default this project ships is `closed` — without
+the override, the safest configuration would also be the one in which nobody can add their own
+team. A stranger with no invitation is refused exactly as before; there is a test for each.
+
+**Matched on the email address, which is a stated limit rather than an oversight.** A Supabase
+`sub` does not exist until the first sign-in, so the address the identity provider reports is the
+only thing available. Whoever controls the invited address gets the seat — the same assumption
+every invitation email makes. It is not a bearer token and it is not secret: a pending invitation
+grants nothing until somebody authenticates as that address, so the security boundary is still
+Supabase.
+
+**One pending invitation per address across the whole deployment**, enforced by a partial unique
+index. Per-org would allow two workspaces to hold an invitation for the same person, and the
+winner would be decided by which of them signed in first. Refusing the second invitation is a
+sentence somebody can act on; losing a race is not. The index is partial so that a used or revoked
+row never blocks a fresh invitation — re-inviting somebody who left has to work.
+
+**Inviting somebody who already has a workspace is refused, not absorbed.** That is the failure
+this table exists to prevent, and silently accepting it at the invitation end would recreate it at
+the acceptance end. The way out is a decision — they keep their workspace, or an admin deletes
+their membership and their org and invites them fresh — and it destroys data, so nothing does it
+automatically.
+
+**You cannot invite above your own role.** Without it the door built to let people in is a
+privilege escalation: an admin invites an owner, who may then change the send mode (ADR-010).
+
+**Removal has two refusals**, both about leaving a workspace reachable: you cannot remove yourself,
+and the last `owner` cannot be removed, because an org with no owner has nobody who may change its
+send mode. A removed member's work stays — a member is a key, not a container, and deleting the
+campaigns and messages of somebody who left would destroy the record of what was sent to whom,
+which `PRIVACY.md` requires to stay attributable.
+
+**Alternatives rejected.**
+
+- **A signed invitation token in a link.** More moving parts (expiry, replay, a second place
+  secrets live) for no extra safety: the link would still be honoured only for whoever can
+  authenticate as the address, which is what the address match already says.
+- **Letting a person hold memberships in several orgs.** A larger change than it looks — every
+  request would need to know *which* org, and `deps.py` would have to take it from the caller,
+  which ADR-004 exists to forbid. One workspace per person stays.
+- **Making `members.user_id` globally unique instead.** It would turn the silent failure into a
+  loud one, which is better, but it would still leave no way to add a teammate who has already
+  signed in, and no way to add one without SQL. It is worth doing as well; it is not a substitute.
+
+**Consequences.** `docs/USERS.md` §B is now a dashboard flow rather than a `psql` session, and the
+by-hand escape hatch writes an invitation rather than a membership for the same reason. A
+deployment that never creates an invitation behaves exactly as it does today — the migration is
+one new table and reads nothing.
+
+---
+
+## ADR-023 — The deployment has no mailbox of its own
+
+**Status.** Accepted, 2026-10-26. Supersedes ADR-020's narrowed fallback.
+
+**Context.** This started as one agency's internal tool, so one sending account in the environment
+— `SMTP_EMAIL`, `SMTP_PASSWORD`, `IMAP_EMAIL`, `IMAP_PASSWORD` — was exactly right. ADR-018 added
+per-mailbox OAuth for other people; ADR-020 found that the *fallback* to those environment
+credentials had no owner and narrowed it to one org and one address.
+
+Narrowing it was the right fix for the bug and the wrong shape for the product. The owner's
+intent, stated plainly: *"now there is no single user .ecell or arkvane.in — I can connect
+whatever email I want to send from."* As long as one account lives in `.env`, the system has an
+identity that belongs to the deployment rather than to a person, and every question about it
+(who may use it? which org? which address? what if two match?) is a rule somebody has to hold in
+their head and a guard somebody has to maintain.
+
+The same was true of `SEND_ALLOWLIST`, one environment variable for the whole deployment. A new
+workspace could select `allowlist` mode and find no way to put its own address on the list, while
+reading the operator's personal addresses out of its own settings screen.
+
+**Decision.**
+
+**1. There is no environment mailbox.** `SMTP_EMAIL`, `SMTP_PASSWORD`, `IMAP_EMAIL` and
+`IMAP_PASSWORD` are gone from `Settings` entirely, along with `orgs.uses_environment_mailbox` and
+both fallback paths. A mailbox with no credential cannot send and cannot be read, **including the
+owner's own**. `SMTP_HOST`, `SMTP_PORT`, `IMAP_HOST` and `IMAP_PORT` stay: they describe Google's
+servers, not anybody's identity.
+
+This is a deliberate, visible loss of convenience. What it buys is that **there is no identity in
+the system that is not somebody's own**: nobody can send on an account they did not personally
+authorise, no configuration mistake can put a stranger's campaign under the operator's address,
+and "whose Gmail sent this?" has exactly one answer — the credential row.
+
+**2. `CREDENTIAL_KEY` and the three `GOOGLE_*` values become required.** What a deployment must be
+able to do is no longer *send*; it is *let somebody connect their own account*. A deployment
+missing them has a dashboard on which nothing can ever send, which is a startup failure rather
+than a surprise at the first campaign.
+
+**3. The allowlist is the org's rows, not the environment's string.** `app.send_allowlist`, edited
+in Settings by an `admin`. **The decision did not move**: `allowlist_permits()` in `smtp.py` is
+still the only function in the tree that compares a recipient against anything, and the structural
+test over every file still asserts it. Only the *values* now travel in, which is precisely the
+trade ADR-010 made when the mode moved out of the environment.
+
+`None` and an empty list mean the same thing, deliberately: "we could not load the list" and "the
+list is empty" must have one answer, or a database hiccup becomes a send to somebody who was never
+on it.
+
+**4. One connect option, not two.** The owner asked whether a Workspace address and an ordinary
+Gmail need separate flows. They do not: both are the same OAuth client, the same
+`https://mail.google.com/` scope and the same XOAUTH2 handshake, and the address is whatever
+Google says the account is. A second option would be a choice with no consequence, which is a
+choice people get wrong. (A genuinely different second path — app passwords for a non-Google
+provider — would need per-mailbox host and port. `MailCredential.kind == "app_password"` already
+exists for it; nothing exposes it yet.)
+
+**Who may do what.** Adding an allowlist entry is `admin`; going `live` stays `owner` (ADR-010).
+They are different in kind rather than degree: an allowlist entry widens sending by one address
+somebody typed, inside a mode whose whole purpose is rehearsal, while `live` removes the gate.
+Treating them the same would mean either handing out `owner` or making rehearsal impossible
+without it.
+
+**Consequences, and one of them is immediate.** **The existing deployment stops sending the moment
+this lands**, because its mailbox has no credential — it had been using the environment account.
+It resumes on one click of Connect Gmail. That is the change working, not a cost of it, but it is
+a live outage of a running campaign and must not be discovered rather than expected.
+
+The migration backfills `SEND_ALLOWLIST` from the process environment into the oldest org, because
+the alternative is a deploy that silently empties the list of a deployment rehearsing in
+`allowlist` mode — correct by the new rules and indistinguishable from a break. Nothing is logged
+but a count.
+
+`check_env` no longer counts the allowlist. It cannot: the list is per org and in the database,
+and a number that is right for one workspace and wrong for every other is worse than a sentence
+saying where to look.
+
+**Alternatives rejected.**
+
+- **Keeping the environment account for the owner's org only** (ADR-020 as it stands). It works
+  and it is tested, but it leaves one org whose mail cannot be attributed to a person, and every
+  future question about sending identity has to carry the exception.
+- **Keeping `SMTP_EMAIL` as an unused field** so old `.env` files look unchanged. A setting
+  nothing reads is a trap: the next person to find it assumes it still means something.
+  `extra="ignore"` means a stale `.env` starts fine anyway.
+- **Per-org `SMTP_HOST`/`PORT`.** Only needed for a non-Google provider, which nothing supports
+  yet. Adding the columns now would be configuration nobody can use.

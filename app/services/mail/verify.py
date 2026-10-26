@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings, config
 from app.db.models import Mailbox, Org
+from app.services.mail.allowlist import allowed_for
 from app.services.mail.connection import MailboxUnavailable, login_for
 from app.services.mail.imap import ImapPoller
 from app.services.mail.message import FooterIdentity, build_message
@@ -151,42 +152,58 @@ async def _send_test_message(
     it is read off the row and handed to the one function allowed to decide.
     """
     org = await session.get(Org, mailbox.org_id)
-    built = build_message(
-        # `build_message` takes plain values, not the ORM row: it is the most heavily tested
-        # thing in this package and nothing it needs should require a session to construct.
-        mailbox=MessageMailbox(
-            from_name=mailbox.from_name,
-            from_email=mailbox.from_email,
-            reply_to=mailbox.reply_to,
-        ),
-        to_email=mailbox.from_email,
-        subject=TEST_SUBJECT,
-        body=(
-            "This is an automated check that your mailbox is connected correctly.\n\n"
-            "If you are reading it in the inbox of the account you connected, then sending "
-            "works, the address is right, and the message is being accepted.\n\n"
-            "Nobody else received this."
-        ),
-        identity=FooterIdentity(
-            sender_name=mailbox.from_email,
-            agency_name="",
-            # A self-test has no recipient to offer an opt-out to, and a footer telling somebody
-            # how to unsubscribe from their own connection test is nonsense. The slot is
-            # overridden rather than left to default, because the default is written for a
-            # stranger receiving cold email and this is not that.
-            opt_out_line="Sent by your outreach dashboard to check this connection.",
-        ),
-        now=now,
-    )
+    # `build_message` raises on an address it cannot use. A mailbox row should never hold one,
+    # but "should never" plus a 500 on a button is how an unexplainable error reaches somebody.
+    try:
+        built = build_message(
+            # `build_message` takes plain values, not the ORM row: it is the most heavily tested
+            # thing in this package and nothing it needs should require a session to construct.
+            mailbox=MessageMailbox(
+                from_name=mailbox.from_name,
+                from_email=mailbox.from_email,
+                reply_to=mailbox.reply_to,
+            ),
+            to_email=mailbox.from_email,
+            subject=TEST_SUBJECT,
+            body=(
+                "This is an automated check that your mailbox is connected correctly.\n\n"
+                "If you are reading it in the inbox of the account you connected, then sending "
+                "works, the address is right, and the message is being accepted.\n\n"
+                "Nobody else received this."
+            ),
+            identity=FooterIdentity(
+                sender_name=mailbox.from_email,
+                agency_name="",
+                # A self-test has no recipient to offer an opt-out to, and a footer telling
+                # somebody how to unsubscribe from their own connection test is nonsense. The
+                # slot is overridden rather than left to default, because the default is written
+                # for a stranger receiving cold email and this is not that.
+                opt_out_line="Sent by your outreach dashboard to check this connection.",
+            ),
+            now=now,
+        )
+    except ValueError as exc:
+        return Check("test_message", False, f"This mailbox's address cannot be used: {exc}")
 
     # The login is resolved again rather than passed in: it may have been refreshed by the SMTP
     # check moments ago, and sending with a token this function captured before that would fail
     # for a reason nobody could reconstruct from the report.
-    login = await login_for(session, mailbox=mailbox, settings=settings, now=now)
+    #
+    # **Caught, because this is a button.** The SMTP check can itself invalidate a credential --
+    # a refresh Google will not honour writes `invalid_reason` -- so the second resolution can
+    # fail where the first succeeded. Letting that escape would turn a report into a 500, and a
+    # bare 500 leaves FastAPI's error middleware, which sits outside CORS, so the dashboard
+    # would say the backend was unreachable while it was answering perfectly.
+    try:
+        login = await login_for(session, mailbox=mailbox, settings=settings, now=now)
+    except MailboxUnavailable as exc:
+        return Check("test_message", False, str(exc))
+
     report: SendReport = await sender.send(
         built,
         to_email=mailbox.from_email,
         send_mode=org.send_mode if org else None,
+        allowed=await allowed_for(session, mailbox.org_id),
         login=login,
     )
 

@@ -109,7 +109,9 @@ While you are there, two existing items worth closing:
 - **Confirm DKIM is signing.** Send one message from the arkvane.in mailbox to a Gmail address,
   open it, **⋮ → Show original**, and check `DKIM: PASS`. If it says anything else, Workspace
   admin → Apps → Gmail → Authenticate email → **Start authentication**.
-- **`SMTP_EMAIL` is still a personal Gmail.** Until it is an `@arkvane.in` Workspace address,
+- **The connected account is still a personal Gmail.** Until it is an `@arkvane.in` Workspace
+  address (ADR-023: this is now whichever account you press Connect Gmail with, not a value in
+  `.env`),
   your SPF and DKIM records protect a domain your mail is not actually sent from. This is the
   single biggest thing limiting deliverability, and it was the cause of the reply that went to
   Spam.

@@ -169,7 +169,7 @@ class TestRedaction:
 
     def test_short_values_are_not_treated_as_secrets(self) -> None:
         # Otherwise `SEND_MODE=live` becomes `SEND_MODE=***` and the logs stop being readable.
-        settings = Settings(_env_file=None, GROQ_API_KEY="live", SMTP_PASSWORD="x")
+        settings = Settings(_env_file=None, GROQ_API_KEY="live", CREDENTIAL_KEY="x")
         collected = secret_values(settings)
         assert "live" not in collected
         assert "x" not in collected
@@ -184,12 +184,14 @@ class TestRedaction:
         settings = Settings(
             _env_file=None,
             GROQ_API_KEY="groq_key_long_enough",
-            SMTP_PASSWORD="smtp_password_long_enough",
+            CREDENTIAL_KEY="credential_key_long_enough",
+            GOOGLE_CLIENT_SECRET="google_client_secret_long_enough",
             SUPABASE_ANON_KEY="anon_key_long_enough",
         )
         collected = secret_values(settings)
         assert "groq_key_long_enough" in collected
-        assert "smtp_password_long_enough" in collected
+        assert "credential_key_long_enough" in collected
+        assert "google_client_secret_long_enough" in collected
         assert "anon_key_long_enough" in collected
 
     def test_the_database_password_is_a_secret_but_the_url_is_not(self) -> None:

@@ -335,6 +335,10 @@ VALUES (gen_random_uuid(), '<org id from above>', '<supabase sub>', 'you@yourdom
 Only `owner` is issued today. `admin` and `member` exist in the check constraint so inviting
 people later is a row rather than a migration.
 
+**For everybody after the first, read `docs/USERS.md` instead of this section.** It covers the two
+things "add a user" can mean — their own separate workspace, which `SIGNUP_MODE` provisions with no
+SQL at all, and a teammate inside yours, which is the insert above with a role.
+
 ### 4.2 Point the dashboard at it
 
 In the Cloudflare project's **build variables** (not in this repository — they are compiled into
@@ -425,7 +429,8 @@ actually *signing* with that DKIM key. The record existing is necessary but not 
 somebody has to press **Start authentication** in the admin console. §6.2 is how you find out.
 
 **One thing to confirm about the sending address.** SPF, DKIM and DMARC protect the domain in the
-**From** header. These records are on `arkvane.in`, so `SMTP_EMAIL` must be an `@arkvane.in`
+**From** header. These records are on `arkvane.in`, so the **connected Google account** must
+be an `@arkvane.in`
 address. If it is still the `@athenaedu.in` mailbox used during testing, mail will go out
 unauthenticated against a domain with no matching records, which is worse than no setup at all.
 
@@ -579,7 +584,8 @@ Do **not** set `SEND_MODE=live` as part of a deploy. It is a separate, deliberat
 
 The sequence, which is Phase 10:
 
-1. `SEND_MODE=allowlist`, `SEND_ALLOWLIST` set to your own two addresses. Restart the worker.
+1. `SEND_MODE=allowlist`, and your own two addresses added in Settings -> Send mode ->
+   Allowlist (ADR-023: the list is per workspace and in the database, not in `.env`).
 2. Import a handful of leads, research them, review the drafts, approve, and watch the sends
    arrive. Reply to one from the outside and confirm it is ingested, classified and that the
    follow-up is cancelled in the same transaction.

@@ -36,8 +36,13 @@ def configured(**overrides: object) -> Settings:
     base: dict[str, object] = {
         "_env_file": None,
         "GROQ_API_KEY": "gsk_a_real_looking_key_1234567890",
-        "SMTP_EMAIL": "sender@example.com",
-        "SMTP_PASSWORD": "not-a-real-password-either",
+        # Everything `REQUIRED_KEYS` names, so "configured" means what the script means by it.
+        # ADR-023 replaced the mail credentials here with the OAuth client that lets each
+        # person connect their own.
+        "CREDENTIAL_KEY": "a_real_looking_fernet_key_1234567890=",
+        "GOOGLE_CLIENT_ID": "1234567890-ci.apps.googleusercontent.com",
+        "GOOGLE_CLIENT_SECRET": "a_real_looking_client_secret_123",
+        "GOOGLE_REDIRECT_URI": "https://api.example.com/api/v1/connect/google/callback",
     }
     base.update(overrides)
     return Settings(**base)  # type: ignore[arg-type]
@@ -77,8 +82,11 @@ class TestItNeverPrintsASecret:
         ("name", "value"),
         [
             ("GROQ_API_KEY", "gsk_secret_value_abcdefghijklmnop"),
-            ("SMTP_PASSWORD", "app-password-abcd-efgh-ijkl"),
-            ("IMAP_PASSWORD", "imap-password-abcd-efgh-ijkl"),
+            # The mail passwords were here until ADR-023 removed them. These are the secrets a
+            # deployment actually holds now: the key that encrypts every stored refresh token,
+            # and the OAuth client secret that mints them.
+            ("CREDENTIAL_KEY", "credential-key-abcdefghijklmnop"),
+            ("GOOGLE_CLIENT_SECRET", "google-client-secret-abcdefgh"),
             ("SUPABASE_ANON_KEY", "anon_key_abcdefghijklmnopqrstuv"),
         ],
     )

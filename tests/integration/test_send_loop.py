@@ -29,6 +29,7 @@ from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.services.mail.smtp import SmtpSender
 from app.worker import send_loop
+from tests.integration.conftest import allow_sending_to, connect_mailbox, mail_settings
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
@@ -48,19 +49,19 @@ PERSONA = Persona(
 INSIDE = datetime(2026, 10, 12, 11, 0, tzinfo=IST).astimezone(UTC)
 
 
-def allowlist_settings(host: str, port: int, *, allow: str = "ben@example.com") -> Settings:
-    """Real SMTP against the fake server, with the allowlist as the only gate."""
-    return Settings(
-        _env_file=None,
-        GROQ_API_KEY="gsk_test",
-        SMTP_EMAIL="asha@outreach.example",
-        SMTP_PASSWORD="not-a-real-password",
+def allowlist_settings(host: str, port: int) -> Settings:
+    """Real SMTP against the fake server, with the allowlist as the only gate.
+
+    **No `SMTP_EMAIL` and no `SEND_ALLOWLIST`** (ADR-023). The login comes from the mailbox's own
+    credential and the allowlist from the org's own rows, so a test that wants either has to
+    create it -- `connect_mailbox` and `allow_sending_to` in `conftest.py`.
+    """
+    return mail_settings(
         SMTP_HOST=host,
         SMTP_PORT=port,
         SMTP_USE_TLS=False,
         SMTP_START_TLS=False,
         SEND_MODE="allowlist",
-        SEND_ALLOWLIST=allow,
     )
 
 
@@ -121,6 +122,9 @@ async def mailbox(db, org, campaign):
     await db.flush()
     campaign.mailbox_id = record.id
     await db.commit()
+    # A mailbox with no credential can no longer send at all (ADR-023), so connecting it is now
+    # part of what "a usable mailbox" means rather than something only the OAuth tests do.
+    await connect_mailbox(db, record)
     return record
 
 
@@ -166,10 +170,31 @@ async def approved_lead(
     return lead, draft
 
 
+async def _set_allowlist(db, org, allow: str) -> None:
+    """Replace this org's allowlist with `allow`, a comma-separated string.
+
+    Replace rather than append: a test that narrows the list between two passes is asserting
+    that the narrowing takes effect, and leftover rows would quietly make it pass for the wrong
+    reason.
+    """
+    from sqlalchemy import delete
+
+    from app.db.models import SendAllowlistEntry
+
+    await db.execute(delete(SendAllowlistEntry).where(SendAllowlistEntry.org_id == org.id))
+    await db.commit()
+    addresses = [part.strip() for part in allow.split(",") if part.strip()]
+    if addresses:
+        await allow_sending_to(db, org, *addresses)
+
+
 async def run_once(
     db, org, mailbox, smtp_server, *, now=INSIDE, settings=SETTINGS, allow="ben@example.com"
 ):
-    sender = SmtpSender(allowlist_settings(smtp_server.host, smtp_server.port, allow=allow))
+    # The allowlist is the org's own rows now (ADR-023), not an environment variable, so the
+    # harness writes them. `allowlist_settings` supplies only the mode and the fake server.
+    await _set_allowlist(db, org, allow)
+    sender = SmtpSender(allowlist_settings(smtp_server.host, smtp_server.port))
     return await send_loop.send_one(
         db,
         org_id=org.id,
@@ -588,18 +613,14 @@ class TestFailureHandling:
         self, db, ctx, org, mailbox, lead_factory
     ):
         lead, _ = await approved_lead(db, ctx, lead_factory)
+        await _set_allowlist(db, org, "ben@example.com")
         broken = SmtpSender(
-            Settings(
-                _env_file=None,
-                GROQ_API_KEY="gsk_test",
-                SMTP_EMAIL="asha@outreach.example",
-                SMTP_PASSWORD="x",
+            mail_settings(
                 SMTP_HOST="127.0.0.1",
                 SMTP_PORT=1,
                 SMTP_TIMEOUT=2,
                 SMTP_START_TLS=False,
                 SEND_MODE="allowlist",
-                SEND_ALLOWLIST="ben@example.com",
             )
         )
 
@@ -675,6 +696,9 @@ class TestThroughTheRealTask:
     ):
         """The regression: delivered to the server, and `sending` forever in the database."""
         lead, _ = await approved_lead(db, ctx, lead_factory)
+        # Driven through the real task rather than `run_once`, so the allowlist rows this org
+        # needs are written here instead of by the harness.
+        await _set_allowlist(db, org, "ben@example.com")
         await db.commit()
 
         report = await task.send_pass(INSIDE)

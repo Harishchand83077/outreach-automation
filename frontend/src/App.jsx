@@ -212,7 +212,12 @@ function Dashboard({ session }) {
     { id: 'leads', label: 'Leads', icon: Icons.leads },
     { id: 'import', label: 'Import', icon: Icons.import },
     { id: 'campaign', label: 'Campaign', icon: Icons.campaign },
-    ...(mayAdminister ? [{ id: 'settings', label: 'Settings', icon: Icons.settings }] : []),
+    ...(mayAdminister
+      ? [
+          { id: 'admin', label: 'Admin', icon: Icons.inbox },
+          { id: 'settings', label: 'Settings', icon: Icons.settings },
+        ]
+      : []),
   ]
 
   const who = me.email || session.user?.email || ''
@@ -430,6 +435,8 @@ function Dashboard({ session }) {
                 refreshCampaigns()
               }}
             />
+          ) : view === 'admin' ? (
+            <Admin onError={handle} onToast={toast} />
           ) : view === 'settings' ? (
             <Settings
               campaign={campaign}
@@ -1517,6 +1524,7 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   // The last connection check. Cleared whenever the mailbox changes, because a result about a
   // different mailbox sitting under this one is worse than no result at all.
   const [checks, setChecks] = useState(null)
+  const [mailboxes, setMailboxes] = useState([])
   const [schedule, setSchedule] = useState({ starts_at: '', ends_at: '' })
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
@@ -1557,6 +1565,11 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       .then(setConn)
       .catch(() => setConn({ configured: false, connected: false }))
     setChecks(null)
+    // Every sending account this workspace holds, so an existing campaign can be switched to one
+    // instead of its address being typed again into a second mailbox row.
+    getJson('/mailboxes')
+      .then((data) => setMailboxes(data.mailboxes))
+      .catch(() => setMailboxes([]))
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
     // whose numbers are all fine. It simply does not draw.
     getJson(`/campaigns/${campaign.id}/activity`)
@@ -1618,6 +1631,19 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           ? 'This mailbox can send and be read.'
           : 'Something about this connection is not working. See the details below.'
       )
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const useMailbox = async (mailboxId) => {
+    setBusy(true)
+    try {
+      await patchJson(`/campaigns/${campaign.id}`, { json: { mailbox_id: mailboxId } })
+      onToast('This campaign now sends from that account.')
+      onChanged(false)
     } catch (err) {
       onError(err)
     } finally {
@@ -1886,7 +1912,7 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
             value={mailbox.from_email}
             onChange={(event) => setMailbox({ ...mailbox, from_email: event.target.value })}
             required
-            hint="The mailbox your SPF and DKIM cover — the same address as SMTP_EMAIL on the server."
+            hint="The address you will connect a Google account for. It is what recipients see, and what your SPF and DKIM records must cover."
           />
           <Field
             label="Sender name recipients see"
@@ -1991,6 +2017,23 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
                 Send myself a test email
               </button>
             </div>
+          ) : null}
+          {mayAdminister && mailboxes.length > 1 ? (
+            <label className="field" style={{ marginTop: 12 }}>
+              <span>Send this campaign from</span>
+              <select
+                value={campaign.mailbox_id || ''}
+                disabled={busy}
+                onChange={(event) => useMailbox(event.target.value)}
+              >
+                {mailboxes.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.from_email}
+                    {row.usable ? '' : ' — not connected yet'}
+                  </option>
+                ))}
+              </select>
+            </label>
           ) : null}
           {checks ? (
             <ul className="muted" style={{ marginTop: 10, paddingLeft: 18 }}>
@@ -2179,6 +2222,25 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   })
   const [busy, setBusy] = useState(false)
   const [fieldErrors, setFieldErrors] = useState([])
+  // The accounts this workspace has already connected. Before this the form asked for an address
+  // every time, so anybody who meant the account they had connected last week typed it again and
+  // got the same row back -- or, worse, a second row they then had to connect separately.
+  const [mailboxes, setMailboxes] = useState([])
+  const [chosen, setChosen] = useState('')
+
+  useEffect(() => {
+    getJson('/mailboxes')
+      .then((data) => {
+        setMailboxes(data.mailboxes)
+        // Preselect the one that can actually send. With exactly one usable account -- the
+        // ordinary case -- there is nothing to decide and nothing to type.
+        const usable = data.mailboxes.filter((row) => row.usable)
+        if (usable.length === 1) setChosen(usable[0].id)
+      })
+      // Degrades to the old behaviour rather than erroring: an older server without this route
+      // leaves the picker out and the address fields still work.
+      .catch(() => setMailboxes([]))
+  }, [])
 
   const set = (key) => (event) => setForm({ ...form, [key]: event.target.value })
   const setMode = (mode) => setForm({ ...form, mode })
@@ -2216,8 +2278,8 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
     try {
       // The mailbox first: a campaign can exist without one, but it could never send, and
       // creating them together means one less half-finished state to explain later.
-      let mailboxId = null
-      if (form.from_email.trim()) {
+      let mailboxId = chosen || null
+      if (!mailboxId && form.from_email.trim()) {
         const mailbox = await postJson('/mailboxes', {
           json: { from_name: form.from_name || form.sender_name, from_email: form.from_email },
         })
@@ -2454,20 +2516,41 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           </>
         )}
 
-        <h2 className="section-title">Mailbox</h2>
+        <h2 className="section-title">Sending account</h2>
         <p className="muted">
-          Optional now, required before anything can send. It must be an address your SPF and
-          DKIM records cover.
+          Which address this campaign sends from. Pick one you have already connected, or add a
+          new one and connect it on the campaign screen afterwards.
         </p>
-        <div className="field-grid">
-          <Field label="Send from (email)" value={form.from_email} onChange={set('from_email')} />
-          <Field
-            label="Sender name recipients see"
-            value={form.from_name}
-            onChange={set('from_name')}
-            hint="Defaults to your name."
-          />
-        </div>
+        {mailboxes.length ? (
+          <label className="field">
+            <span>Send from</span>
+            <select value={chosen} onChange={(event) => setChosen(event.target.value)}>
+              <option value="">A new address…</option>
+              {mailboxes.map((row) => (
+                <option key={row.id} value={row.id} disabled={!row.usable}>
+                  {row.from_email}
+                  {row.usable ? '' : ' — not connected yet'}
+                  {row.campaigns ? ` · ${row.campaigns} campaign(s)` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {chosen ? null : (
+          <div className="field-grid">
+            <Field
+              label="Send from (email)"
+              value={form.from_email}
+              onChange={set('from_email')}
+            />
+            <Field
+              label="Sender name recipients see"
+              value={form.from_name}
+              onChange={set('from_name')}
+              hint="Defaults to your name."
+            />
+          </div>
+        )}
 
         {fieldErrors.length ? (
           <div className="banner" data-tone="bad" style={{ marginTop: 14 }}>
@@ -2490,6 +2573,205 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           </button>
         </div>
       </form>
+    </>
+  )
+}
+
+/* ------------------------------------------------------------------- admin */
+
+function Admin({ onError, onToast }) {
+  const [data, setData] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  const load = useCallback(() => {
+    getJson('/admin/overview')
+      .then((body) => {
+        setData(body)
+        setFailed(false)
+      })
+      // "Loaded" has to mean *we asked and heard back*, including hearing an error. A skeleton
+      // that spins for ever above a real problem is the bug this project already shipped once.
+      .catch((err) => {
+        setFailed(true)
+        onError(err)
+      })
+  }, [onError])
+
+  useEffect(load, [load])
+
+  if (failed) return <p className="muted">Could not load the admin overview.</p>
+  if (!data) return <p className="muted">Loading…</p>
+
+  const { totals, workspace, google_test_users: google } = data
+
+  return (
+    <>
+      <h1>Admin</h1>
+      <p className="muted">
+        Only an owner or admin can open this screen, and the API checks the role itself rather
+        than trusting the button being hidden.
+      </p>
+
+      <dl className="stat-grid" style={{ marginTop: 14 }}>
+        <div className="stat">
+          <dt>People</dt>
+          <dd className="num">{totals.members}</dd>
+        </div>
+        <div className="stat">
+          <dt>Invited, not yet signed in</dt>
+          <dd className="num">{totals.invited}</dd>
+        </div>
+        <div className="stat">
+          <dt>Mailboxes connected</dt>
+          <dd className="num">
+            {totals.connected}/{totals.mailboxes}
+          </dd>
+        </div>
+        <div className="stat">
+          <dt>Need reconnecting</dt>
+          {/* Coloured only when non-zero: a red "0" is an alarm about nothing. */}
+          <dd className="num" data-tone={totals.needs_reconnect ? 'bad' : undefined}>
+            {totals.needs_reconnect}
+          </dd>
+        </div>
+      </dl>
+
+      <h2 className="section-title">People</h2>
+      <p className="muted">
+        Whether somebody may sign in at all is decided by Supabase, which this system cannot
+        read — it never joins across the identity provider&apos;s boundary. A row below means
+        they have authenticated here at least once, which is the only honest signal we have.
+      </p>
+      <table className="table" style={{ marginTop: 10 }}>
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Signed in</th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.people.map((person) => (
+            <tr key={person.id}>
+              <td>
+                {person.email || 'no address on file'}
+                {person.is_you ? <span className="badge">you</span> : null}
+              </td>
+              <td>
+                <span className="badge">{person.role}</span>
+              </td>
+              <td>
+                <span className="badge" data-tone="ok">
+                  yes
+                </span>
+              </td>
+            </tr>
+          ))}
+          {data.invited.map((row) => (
+            <tr key={row.id}>
+              <td className="muted">{row.email}</td>
+              <td>
+                <span className="badge">{row.role}</span>
+              </td>
+              <td>
+                <span className="badge" data-tone="warn">
+                  invited
+                </span>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted" style={{ marginTop: 8 }}>
+        Invite and remove people in Settings → Team.
+      </p>
+
+      <h2 className="section-title">Sending accounts</h2>
+      {data.mailboxes.length ? (
+        <table className="table" style={{ marginTop: 10 }}>
+          <thead>
+            <tr>
+              <th>Address</th>
+              <th>Connected</th>
+              <th>By</th>
+              <th>Days left</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.mailboxes.map((row) => (
+              <tr key={row.id}>
+                <td>{row.from_email}</td>
+                <td>
+                  {row.connected ? (
+                    <span className="badge" data-tone="ok">
+                      connected
+                    </span>
+                  ) : row.needs_reconnect ? (
+                    <span className="badge" data-tone="bad">
+                      needs reconnecting
+                    </span>
+                  ) : (
+                    <span className="badge">not connected</span>
+                  )}
+                  {row.paused ? <span className="badge" data-tone="warn">paused</span> : null}
+                </td>
+                <td className="muted">{row.connected_by || '—'}</td>
+                <td>{row.days_left === null ? '—' : row.days_left}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="muted">No mailbox yet. One is created when a campaign is made.</p>
+      )}
+
+      {google.required_while_unpublished ? (
+        <>
+          <h2 className="section-title">Before somebody can connect Gmail</h2>
+          <div className="banner" data-tone="warn">
+            <p>{google.note}</p>
+            <p style={{ marginTop: 8 }}>
+              <a href={google.console_url} target="_blank" rel="noreferrer">
+                Open the Google Cloud console
+              </a>{' '}
+              → Audience → Test users.
+            </p>
+          </div>
+        </>
+      ) : null}
+
+      <h2 className="section-title">Workspace</h2>
+      <table className="table" style={{ marginTop: 10 }}>
+        <tbody>
+          <tr>
+            <td>Sign-up</td>
+            <td>
+              <span className="badge">{workspace.signup_mode}</span>{' '}
+              {workspace.signup_mode === 'open'
+                ? 'anyone Supabase lets sign in gets their own workspace'
+                : workspace.signup_mode === 'closed'
+                  ? 'nobody new, unless invited'
+                  : 'only approved email domains'}
+            </td>
+          </tr>
+          <tr>
+            <td>Gmail connections last</td>
+            <td>
+              {workspace.grant_days > 0
+                ? `${workspace.grant_days} days, then each person reconnects`
+                : 'until revoked (the OAuth client is published)'}
+            </td>
+          </tr>
+          <tr>
+            <td>Connect Gmail available</td>
+            <td>{workspace.google_oauth_configured ? 'yes' : 'no — the server has no OAuth client'}</td>
+          </tr>
+          <tr>
+            <td>Workspace limit</td>
+            <td>{workspace.max_orgs}</td>
+          </tr>
+        </tbody>
+      </table>
     </>
   )
 }
@@ -2614,6 +2896,7 @@ function Settings({ campaign, onError, onToast, onChanged }) {
               Only an owner can change the send mode.
             </p>
           )}
+          <SendAllowlist mode={config.send_mode} onError={onError} onToast={onToast} />
         </div>
       ) : (
         <p className="muted">Loading…</p>
@@ -2734,9 +3017,230 @@ function Settings({ campaign, onError, onToast, onChanged }) {
         </form>
       ) : null}
 
+      <h2 className="section-title">Team</h2>
+      <Team onError={onError} onToast={onToast} />
+
       <h2 className="section-title">Suppression list</h2>
       <Suppressions onError={onError} onToast={onToast} />
     </>
+  )
+}
+
+function Team({ onError, onToast }) {
+  const [team, setTeam] = useState(null)
+  const [email, setEmail] = useState('')
+  const [role, setRole] = useState('member')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    // Degrades rather than erroring: an older server without this route should leave the panel
+    // out, not put a red banner over a settings screen whose other sections are all fine.
+    getJson('/team')
+      .then(setTeam)
+      .catch(() => setTeam(null))
+  }, [])
+
+  useEffect(load, [load])
+
+  const invite = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const made = await postJson('/team/invitations', { json: { email, role } })
+      setEmail('')
+      onToast(
+        made.already_invited
+          ? `${made.email} was already invited.`
+          : `${made.email} can now sign in and will land in this workspace.`
+      )
+      load()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (id) => {
+    try {
+      await deleteJson(`/team/invitations/${id}`)
+      onToast('Invitation withdrawn.')
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  const remove = async (id, who) => {
+    try {
+      await deleteJson(`/team/members/${id}`)
+      onToast(`${who} no longer has access. Their work stays in this workspace.`)
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  if (!team) return null
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <p className="muted">
+        People here share these campaigns, leads and drafts. Somebody who should have their own
+        separate workspace does not belong on this list — they sign up with their own email
+        instead.
+      </p>
+      <ul style={{ listStyle: 'none', padding: 0, margin: '12px 0' }}>
+        {team.members.map((member) => (
+          <li key={member.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span>{member.email || 'no address on file'}</span>
+            <span className="badge">{member.role}</span>
+            {member.is_you ? <span className="badge">you</span> : null}
+            <span className="spacer" />
+            {member.is_you ? null : (
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                data-variant="danger"
+                onClick={() => remove(member.id, member.email)}
+              >
+                Remove
+              </button>
+            )}
+          </li>
+        ))}
+        {team.invitations.map((row) => (
+          <li key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span className="muted">{row.email}</span>
+            <span className="badge">{row.role}</span>
+            <span className="badge" data-tone="warn">
+              invited
+            </span>
+            <span className="spacer" />
+            <button type="button" className="btn" data-size="sm" onClick={() => revoke(row.id)}>
+              Withdraw
+            </button>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={invite} className="field-row">
+        <Field
+          label="Invite by email"
+          value={email}
+          onChange={(event) => setEmail(event.target.value)}
+          type="email"
+          required
+        />
+        <label className="field">
+          <span>Role</span>
+          <select value={role} onChange={(event) => setRole(event.target.value)}>
+            <option value="member">member — reviews drafts</option>
+            <option value="admin">admin — can also change the rules</option>
+            <option value="owner">owner — can also change the send mode</option>
+          </select>
+        </label>
+        <button type="submit" className="btn" data-variant="primary" disabled={busy || !email}>
+          Invite
+        </button>
+      </form>
+      <p className="muted" style={{ marginTop: 8 }}>
+        They can be invited before or after they first sign in — but if they have already signed
+        in they will have been given a workspace of their own, and a person belongs to one
+        workspace here.
+      </p>
+    </div>
+  )
+}
+
+function SendAllowlist({ mode, onError, onToast }) {
+  const [rows, setRows] = useState(null)
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    // Degrades rather than erroring: an older server without this route leaves the panel out.
+    getJson('/admin/send-allowlist')
+      .then((data) => setRows(data.allowlist))
+      .catch(() => setRows(null))
+  }, [])
+
+  useEffect(load, [load])
+
+  const add = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const made = await postJson('/admin/send-allowlist', { json: { email: value } })
+      setValue('')
+      onToast(
+        made.added ? `${made.email} can now receive mail from this workspace.` : 'Already listed.'
+      )
+      load()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (id, email) => {
+    try {
+      await deleteJson(`/admin/send-allowlist/${id}`)
+      onToast(`${email} removed. Nothing will be sent to it.`)
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  if (!rows) return null
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <h3>Allowlist</h3>
+      <p className="muted">
+        While the send mode is <strong>allowlist</strong>, these are the only addresses this
+        workspace can reach. It is the list for <em>this</em> workspace only — nobody else&apos;s
+        rehearsal can put an address on it, and nothing here affects anybody else.
+        {mode === 'allowlist' ? '' : ' The mode is not allowlist right now, so it is not in use.'}
+      </p>
+      {rows.length ? (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0' }}>
+          {rows.map((row) => (
+            <li key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{row.email}</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                onClick={() => remove(row.id, row.email)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted" data-tone="warn" style={{ marginTop: 10 }}>
+          Empty, so in allowlist mode nothing can be sent at all. Add the address you want to
+          rehearse against — usually one of your own.
+        </p>
+      )}
+      <form onSubmit={add} className="field-row">
+        <Field
+          label="Allow an address"
+          type="email"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          required
+        />
+        <button type="submit" className="btn" disabled={busy || !value}>
+          Add
+        </button>
+      </form>
+    </div>
   )
 }
 
@@ -2778,9 +3282,7 @@ function SendModeControl({ config, onError, onToast, onDone }) {
         <label htmlFor="mode">Change send mode</label>
         <select id="mode" value={choice} onChange={(event) => setChoice(event.target.value)}>
           <option value="disabled">disabled — nothing is sent, to anybody</option>
-          <option value="allowlist">
-            allowlist — only the {config.allowlist_size} allowlisted address(es)
-          </option>
+          <option value="allowlist">allowlist — only this workspace&apos;s own list</option>
           <option value="live" disabled={!config.live_allowed}>
             live — any recipient{config.live_allowed ? '' : ' (production only)'}
           </option>
@@ -3011,7 +3513,7 @@ function modeTone(mode) {
 function modeExplanation(config) {
   if (config.send_mode === 'disabled') return 'nothing can be sent, to anybody'
   if (config.send_mode === 'allowlist') {
-    return `only the ${config.allowlist_size} allowlisted address(es)`
+    return "only the addresses on this workspace's allowlist"
   }
   return 'any recipient — real mail goes to real people'
 }

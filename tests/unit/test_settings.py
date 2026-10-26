@@ -134,7 +134,7 @@ class TestNothingLoadsTheTemplate:
         )
 
 
-class TestAppPasswordWhitespace:
+class TestPastedKeyWhitespace:
     """Google displays an App Password as `abcd efgh ijkl mnop`, and people paste what they see.
 
     The spaces are presentation only, but pasted verbatim they make every login fail — and the
@@ -143,21 +143,21 @@ class TestAppPasswordWhitespace:
     """
 
     def test_the_displayed_grouping_is_accepted(self):
-        settings = Settings(_env_file=None, SMTP_PASSWORD="abcd efgh ijkl mnop")
-        assert settings.SMTP_PASSWORD == "abcdefghijklmnop"
+        settings = Settings(_env_file=None, CREDENTIAL_KEY="abcd efgh ijkl mnop")
+        assert settings.CREDENTIAL_KEY == "abcdefghijklmnop"
 
     def test_imap_is_normalised_the_same_way(self):
-        settings = Settings(_env_file=None, IMAP_PASSWORD="abcd efgh ijkl mnop")
-        assert settings.IMAP_PASSWORD == "abcdefghijklmnop"
+        settings = Settings(_env_file=None, CREDENTIAL_KEY="abcd efgh ijkl mnop")
+        assert settings.CREDENTIAL_KEY == "abcdefghijklmnop"
 
     def test_surrounding_whitespace_goes_too(self):
-        settings = Settings(_env_file=None, SMTP_PASSWORD="  abcdefghijklmnop\t")
-        assert settings.SMTP_PASSWORD == "abcdefghijklmnop"
+        settings = Settings(_env_file=None, CREDENTIAL_KEY="  abcdefghijklmnop\t")
+        assert settings.CREDENTIAL_KEY == "abcdefghijklmnop"
 
     def test_a_password_without_spaces_is_untouched(self):
-        settings = Settings(_env_file=None, SMTP_PASSWORD="not-an-app-password")
-        assert settings.SMTP_PASSWORD == "not-an-app-password"
+        settings = Settings(_env_file=None, CREDENTIAL_KEY="not-an-app-password")
+        assert settings.CREDENTIAL_KEY == "not-an-app-password"
 
     def test_an_empty_value_stays_empty(self):
         """So `validate_required` still reports it as missing rather than as a placeholder."""
-        assert Settings(_env_file=None, SMTP_PASSWORD="   ").SMTP_PASSWORD == ""
+        assert Settings(_env_file=None, CREDENTIAL_KEY="   ").CREDENTIAL_KEY == ""

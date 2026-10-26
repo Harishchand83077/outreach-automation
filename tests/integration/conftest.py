@@ -21,6 +21,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -139,18 +140,71 @@ async def db(_migrated_database: None) -> AsyncIterator[AsyncSession]:
 async def org(db: AsyncSession):
     from app.db.models import Org
 
-    record = Org(
-        name="Test Agency",
-        # **The deployment's own workspace**, which is what almost every test here models: one
-        # org, the mailbox in `.env`, no OAuth. The migration grants this to the org that
-        # predates public sign-up, and `login_for` will hand out the environment credentials to
-        # nobody else -- so a test for a *stranger* builds its own `Org(...)`, where the default
-        # of False is the whole point.
-        uses_environment_mailbox=True,
-    )
+    # **Just an org.** There is no deployment-wide mailbox any more (ADR-023), so there is
+    # nothing here that distinguishes "the operator's workspace" from anybody else's -- which is
+    # the whole point of that change, and is why this fixture lost its one special field.
+    record = Org(name="Test Agency")
     db.add(record)
     await db.commit()
     return record
+
+
+#: The key the test harness seals mailbox credentials with. Generated per run, so nothing here
+#: is a value anybody could paste into a real deployment.
+TEST_CREDENTIAL_KEY = Fernet.generate_key().decode("ascii")
+
+
+def mail_settings(**kw: object):
+    """Settings a send test can use. Carries the credential key and nothing resembling a login.
+
+    ADR-023 removed `SMTP_EMAIL` and `SMTP_PASSWORD`: there is no account in the environment, so
+    a test that wants to send has to connect a mailbox exactly as a person would.
+    """
+    from app.core.settings import Settings
+
+    base: dict[str, object] = {
+        "_env_file": None,
+        "GROQ_API_KEY": "gsk_test",
+        "CREDENTIAL_KEY": TEST_CREDENTIAL_KEY,
+    }
+    return Settings(**{**base, **kw})  # type: ignore[arg-type]
+
+
+async def connect_mailbox(db, mailbox, *, password: str = "not-a-real-password"):
+    """Give a mailbox credentials of its own, the way Connect Gmail would.
+
+    An **app password** rather than an OAuth grant, deliberately: resolving an OAuth login mints
+    an access token from Google, and hard rule 9's sibling is that nothing in this suite touches
+    the network. Which branch of `login_for` runs is not what these tests are about.
+    """
+    from app.db.models import MailCredential
+    from app.services.credentials import seal
+
+    credential = MailCredential(
+        org_id=mailbox.org_id,
+        mailbox_id=mailbox.id,
+        kind="app_password",
+        account_email=mailbox.from_email,
+        secret=seal(password, mail_settings()).token,
+    )
+    db.add(credential)
+    await db.commit()
+    return credential
+
+
+async def allow_sending_to(db, org, *addresses: str) -> None:
+    """Put addresses on this org's allowlist.
+
+    ADR-023: the list is the org's rows, not `SEND_ALLOWLIST` in the environment, so a test that
+    rehearses in `allowlist` mode has to write them.
+    """
+    from app.db.models import SendAllowlistEntry
+
+    for address in addresses:
+        db.add(
+            SendAllowlistEntry(org_id=org.id, email_norm=address.strip().lower(), added_by="tests")
+        )
+    await db.commit()
 
 
 @pytest_asyncio.fixture(loop_scope="session")

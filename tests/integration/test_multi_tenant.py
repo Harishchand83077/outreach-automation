@@ -28,8 +28,6 @@ def settings_with(**kw: object) -> Settings:
     base: dict[str, object] = {
         "_env_file": None,
         "GROQ_API_KEY": "gsk_test",
-        "SMTP_EMAIL": "shared@outreach.example",
-        "SMTP_PASSWORD": "from-the-environment",
         "CREDENTIAL_KEY": KEY,
     }
     return Settings(**{**base, **kw})  # type: ignore[arg-type]
@@ -141,13 +139,17 @@ class TestTwoWorkspacesCannotSeeEachOther:
 
 
 class TestCredentialsPerMailbox:
-    async def test_the_owners_own_mailbox_with_no_credential_uses_the_environment(self, db, org):
-        """What keeps the live deployment sending while all of this lands.
+    async def test_nobody_gets_a_mailbox_they_did_not_connect(self, db, org):
+        """**Including the owner's own** (ADR-023).
 
-        Both conditions hold here and nowhere else: the org is the one the migration granted the
-        environment account to, and the address is the one `SMTP_EMAIL` authenticates as.
+        This used to be `test_the_owners_own_mailbox_with_no_credential_uses_the_environment`,
+        and it was the last thing in the system with an identity that was not somebody's own.
+        The deployment has no account any more, so the org that installed it is in exactly the
+        position every other workspace is: connect, or send nothing.
+
+        It is a real loss of convenience, and it is what makes "whose Gmail sent this?" have one
+        answer.
         """
-        org.uses_environment_mailbox = True
         mailbox = Mailbox(
             org_id=org.id,
             from_name="Asha",
@@ -157,11 +159,10 @@ class TestCredentialsPerMailbox:
         db.add(mailbox)
         await db.commit()
 
-        login = await login_for(db, mailbox=mailbox, settings=settings_with())
+        with pytest.raises(MailboxUnavailable) as caught:
+            await login_for(db, mailbox=mailbox, settings=settings_with())
 
-        assert login.username == "shared@outreach.example"
-        assert login.password == "from-the-environment"
-        assert not login.uses_oauth
+        assert "connect" in str(caught.value).lower()
 
     async def test_an_app_password_credential_is_used_instead(self, db, org):
         settings = settings_with()
@@ -241,28 +242,43 @@ class TestCredentialsPerMailbox:
         assert "secret" not in status
 
     async def test_a_login_never_prints_its_own_secret(self, db, org):
-        org.uses_environment_mailbox = True
+        """Hard rule 2 at the point a traceback would reach for it.
+
+        `MailLogin.__repr__` is overridden so a stack trace from deep inside aiosmtplib cannot
+        put a working credential into a log line.
+        """
+        settings = settings_with()
         mailbox = Mailbox(
-            org_id=org.id, from_name="Eve", from_email="shared@outreach.example", daily_cap=100
+            org_id=org.id, from_name="Eve", from_email="eve@outreach.example", daily_cap=100
         )
         db.add(mailbox)
+        await db.flush()
+        db.add(
+            MailCredential(
+                org_id=org.id,
+                mailbox_id=mailbox.id,
+                kind="app_password",
+                account_email="eve@outreach.example",
+                secret=seal("a-real-looking-password", settings).token,
+            )
+        )
         await db.commit()
 
-        login = await login_for(db, mailbox=mailbox, settings=settings_with())
+        login = await login_for(db, mailbox=mailbox, settings=settings)
 
-        assert "from-the-environment" not in repr(login)
+        assert login.password == "a-real-looking-password"
+        assert "a-real-looking-password" not in repr(login)
 
 
-class TestTheEnvironmentAccountIsNotEverybodysAccount:
-    """The fallback to `SMTP_EMAIL` had no owner, and public sign-up turned that into a hole.
+class TestNobodySendsAsSomebodyElse:
+    """There is no deployment-wide account to borrow, so there is nothing to borrow it (ADR-023).
 
-    It was written so the live deployment kept sending while per-mailbox credentials landed, and
-    for a single-tenant install it is exactly right. Once strangers can sign up it means a
-    mailbox nobody has connected authenticates as **the deployment's own Gmail**: a stranger's
-    campaign sends through the operator's account, spends the operator's daily cap, and stakes
-    the operator's sending reputation on mail the operator never saw.
+    These began as the guards on ADR-020's narrowed fallback -- the operator's credentials were
+    still reachable, by one org and one address. They are kept rather than deleted because the
+    *property* they assert is the one that now holds absolutely: an unconnected mailbox
+    authenticates as nobody, whoever owns it and whatever it is called.
 
-    Every test here would have passed before this change by sending the stranger's mail.
+    Every test here would have passed before ADR-020 by sending the stranger's mail.
     """
 
     async def test_an_unconnected_mailbox_may_not_borrow_the_environment_account(self, db, org):

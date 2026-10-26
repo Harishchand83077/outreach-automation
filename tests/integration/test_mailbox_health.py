@@ -26,6 +26,8 @@ from app.services.mail.verify import verify_mailbox
 pytestmark = pytest.mark.asyncio(loop_scope="session")
 
 KEY = Fernet.generate_key().decode("ascii")
+#: Just the operator's own address. ADR-023: it is not special any more -- there is no
+#: environment account, so this mailbox is connected exactly like anybody else's.
 ENV_ADDRESS = "operator@outreach.example"
 
 
@@ -33,10 +35,6 @@ def settings_with(**kw: object) -> Settings:
     base: dict[str, object] = {
         "_env_file": None,
         "GROQ_API_KEY": "gsk_test",
-        "SMTP_EMAIL": ENV_ADDRESS,
-        "SMTP_PASSWORD": "from-the-environment",
-        "IMAP_EMAIL": ENV_ADDRESS,
-        "IMAP_PASSWORD": "from-the-environment",
         "CREDENTIAL_KEY": KEY,
     }
     return Settings(**{**base, **kw})  # type: ignore[arg-type]
@@ -57,7 +55,7 @@ class RecordingSender:
             return SendReport(outcome=SmtpOutcome.SENT, detail="accepted")
         return SendReport(outcome=SmtpOutcome.AUTH_FAILED, detail="refused the credentials")
 
-    async def send(self, built, *, to_email, send_mode=None, login=None):
+    async def send(self, built, *, to_email, send_mode=None, allowed=None, login=None):
         self.sent_to.append(to_email)
         return self._send
 
@@ -119,6 +117,7 @@ class TestCheckingAConnection:
     async def test_both_halves_are_checked_separately(self, db, org):
         """SMTP working proves nothing about IMAP, and the reading half fails silently."""
         mailbox = await _mailbox(db, org, ENV_ADDRESS)
+        await _connect(db, org, mailbox, kind="app_password")
         sender, poller = RecordingSender(), RecordingPoller(ok=False)
 
         report = await verify_mailbox(
@@ -133,6 +132,7 @@ class TestCheckingAConnection:
 
     async def test_a_healthy_mailbox_passes_and_sends_nothing(self, db, org):
         mailbox = await _mailbox(db, org, ENV_ADDRESS)
+        await _connect(db, org, mailbox, kind="app_password")
         sender = RecordingSender()
 
         report = await verify_mailbox(
@@ -168,6 +168,7 @@ class TestCheckingAConnection:
 class TestTheTestMessage:
     async def test_it_goes_to_the_mailbox_itself_and_nowhere_else(self, db, org):
         mailbox = await _mailbox(db, org, ENV_ADDRESS)
+        await _connect(db, org, mailbox, kind="app_password")
         sender = RecordingSender()
 
         report = await verify_mailbox(
@@ -189,6 +190,7 @@ class TestTheTestMessage:
         that prove the account works are unaffected -- which is the useful answer anyway.
         """
         mailbox = await _mailbox(db, org, ENV_ADDRESS)
+        await _connect(db, org, mailbox, kind="app_password")
         sender = RecordingSender(send=SendReport(outcome=SmtpOutcome.BLOCKED, detail="disabled"))
 
         report = await verify_mailbox(
@@ -206,6 +208,7 @@ class TestTheTestMessage:
 
     async def test_nothing_is_sent_unless_it_was_asked_for(self, db, org):
         mailbox = await _mailbox(db, org, ENV_ADDRESS)
+        await _connect(db, org, mailbox, kind="app_password")
         sender = RecordingSender()
 
         await verify_mailbox(

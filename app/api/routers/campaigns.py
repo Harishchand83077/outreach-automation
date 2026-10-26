@@ -35,7 +35,17 @@ from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db import attachments as attachment_store
 from app.db import outbox
-from app.db.models import Campaign, Draft, Event, Lead, Mailbox, Message, Org, Research
+from app.db.models import (
+    Campaign,
+    Draft,
+    Event,
+    Lead,
+    Mailbox,
+    MailCredential,
+    Message,
+    Org,
+    Research,
+)
 from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.domain.attachment import MAX_BYTES, AttachmentRejected
@@ -45,6 +55,7 @@ from app.domain.campaign_schedule import schedule_note, scheduled_status
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
 from app.services.mail.connection import unavailable_reason
+from app.services.mail.expiry import grant_status
 from app.services.mail.smtp import effective_send_mode
 from app.services.privacy import erase_lead
 
@@ -789,6 +800,79 @@ async def erase_lead_endpoint(
         },
         "suppression_kept": result.suppression_kept,
     }
+
+
+@router.get("/mailboxes")
+async def list_mailboxes(session: SessionDep, user: CurrentUserDep) -> dict[str, Any]:
+    """Every sending account this workspace holds, with whether each one actually works.
+
+    **The question this answers is "which address shall this campaign send from?"** It had no
+    answer: a mailbox could only be created, never listed, so the New campaign form asked for an
+    address every time and quietly made a second row for anybody who meant the account they had
+    already connected. The data model always allowed one workspace to hold several and a campaign
+    to pick one -- `campaigns.mailbox_id` and `PATCH /campaigns/{id}` have accepted it since
+    Phase 2 -- and nothing produced the list in between. The signature defect once more.
+
+    Connection state travels with each row rather than being fetched per mailbox afterwards,
+    because the choice is meaningless without it: an address that cannot authenticate is not an
+    option, it is a thing to fix, and a picker that presents the two identically is a picker that
+    sends somebody down a dead end.
+
+    **Non-networked.** `grant_status` is arithmetic over a stored column and nothing here calls
+    Google -- this is a `GET`, and a read path that mints tokens is one anybody can fire by
+    pressing F5.
+    """
+    mailboxes = (
+        await session.scalars(
+            select(Mailbox).where(Mailbox.org_id == user.org_id).order_by(Mailbox.created_at)
+        )
+    ).all()
+    if not mailboxes:
+        return {"mailboxes": []}
+
+    ids = [mailbox.id for mailbox in mailboxes]
+    credentials = {
+        credential.mailbox_id: credential
+        for credential in (
+            await session.scalars(select(MailCredential).where(MailCredential.mailbox_id.in_(ids)))
+        ).all()
+    }
+    # One grouped query rather than one per mailbox: "is this address in use?" decides whether
+    # changing a campaign's sender is a quiet edit or a thing to warn about.
+    in_use = dict(
+        (
+            await session.execute(
+                select(Campaign.mailbox_id, func.count())
+                .where(Campaign.org_id == user.org_id, Campaign.mailbox_id.in_(ids))
+                .group_by(Campaign.mailbox_id)
+            )
+        ).all()
+    )
+
+    rows: list[dict[str, Any]] = []
+    for mailbox in mailboxes:
+        credential = credentials.get(mailbox.id)
+        grant = grant_status(credential)
+        rows.append(
+            {
+                "id": str(mailbox.id),
+                "from_name": mailbox.from_name,
+                "from_email": mailbox.from_email,
+                "daily_cap": mailbox.daily_cap,
+                "paused": mailbox.paused,
+                "pause_reason": mailbox.pause_reason,
+                "connected": credential is not None and credential.invalid_reason is None,
+                "needs_reconnect": credential is not None and credential.invalid_reason is not None,
+                "account_email": credential.account_email if credential else None,
+                "days_left": grant.days_left,
+                "expiry_notice": grant.notice,
+                # Never `invalid_reason` verbatim: it can quote a provider's reply, and this
+                # travels to a browser and into screenshots.
+                "usable": await unavailable_reason(session, mailbox=mailbox) is None,
+                "campaigns": int(in_use.get(mailbox.id, 0)),
+            }
+        )
+    return {"mailboxes": rows}
 
 
 @router.post("/mailboxes", status_code=status.HTTP_201_CREATED)

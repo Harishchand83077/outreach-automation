@@ -846,6 +846,216 @@ against the broken file to watch it fail before it was kept.
 
 1,649 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
 
+**`docs/USERS.md` is new: how somebody actually gets access.** Asked for after the
+multi-user work landed, and the question turned out to have two different answers that were being
+confused for one.
+
+Access needs **two** systems to agree — Supabase Auth says whether a person may sign in, and
+`app.members` says which workspace they are in — so "add a user" means either *their own separate
+workspace*, which `SIGNUP_MODE` provisions on their first request with no SQL at all (ADR-017), or
+*a teammate inside yours*, which is one `INSERT` and a role. They are not a progression, and
+getting them the wrong way round produces the one symptom nobody diagnoses: a person signs in,
+is provisioned a brand-new empty org, and reports that the campaigns have vanished.
+
+**The thing worth knowing is that `SIGNUP_MODE=open` is only as open as Supabase is.** Turning off
+*Allow new users to sign up* in the Supabase dashboard and leaving this `open` gives an invite-only
+product with the guest list in a UI and the workspace provisioning automatic — which is what the
+owner wanted and is not obvious from either setting alone.
+
+Two smaller things are recorded because they cost time: `docker compose` on the server needs
+`sudo` (it reads the root-only `.env`, and without it fails with `open /opt/outreach/.env:
+permission denied`, which reads like a Docker fault), and `MAX_ORGS` defaults to 25 and is a
+ceiling on top of whichever `SIGNUP_MODE` is set.
+
+**Adding a teammate no longer depends on doing things in the right order (ADR-022).** The old way
+was one `INSERT` into `app.members` against production, and it had to happen *before* that person's
+first sign-in.
+
+**And what happens if you do it afterwards is worse than "the insert fails".** There is **no global
+unique index on `members.user_id`** — `uq_members_org_user` is scoped per org — so the second
+insert succeeds. `deps.current_user` then resolves that person with `scalar()`, taking whichever
+row the database returns first. The symptom is not an error: it is somebody seeing one workspace on
+Monday and a different one on Tuesday, with nothing on screen admitting that two exist. Before
+that, the ordinary symptom is signing in, landing in an empty org, and reporting that every
+campaign has vanished.
+
+`app.invitations` holds a seat. `provision()` consults it before anything else, so an invited
+address joins **that** org with **that** role instead of being given a new one, whenever they
+happen to sign in. **An invitation overrides `SIGNUP_MODE=closed`**, because the default this
+project ships is `closed` and without the override the safest configuration would also be the one
+where nobody can add their own team. A stranger with no invitation is refused exactly as before.
+
+**It is matched on the email address, and that is a stated limit rather than an oversight.** A
+Supabase `sub` does not exist until the first sign-in, so the address is the only thing available
+to match on. It is not a token and not secret: a pending invitation grants nothing until somebody
+authenticates as that address, so the boundary is still Supabase.
+
+**One pending invitation per address across the deployment**, by a partial unique index. Per-org
+would let two workspaces invite the same person and decide the winner by who signs in first —
+refusing the second is a sentence somebody can act on, losing a race is not. Partial, so a used or
+revoked row never blocks re-inviting somebody who left.
+
+**Inviting somebody who already has a workspace is refused rather than absorbed**, since that is
+the exact failure the table exists to prevent. And **you cannot invite above your own role**, or
+the door built to let people in is a privilege escalation: an admin invites an owner, who may then
+change the send mode.
+
+Removal has two refusals, both about leaving a workspace reachable — not yourself, and not the last
+owner — and a removed member's work stays, because a member is a key rather than a container and
+the record of what was sent to whom must remain attributable.
+
+Settings now has a **Team** panel, so none of this is SQL. `docs/USERS.md` §B was rewritten around
+it, and its by-hand escape hatch writes an *invitation* rather than a membership for the same
+reason.
+
+**A campaign can be pointed at an account you already connected.** Asked for directly: *"he
+can change the email per campaign ... either send from what he has connected or connect new"*.
+
+Most of it already existed and nothing joined it up. `campaigns.mailbox_id` and
+`PATCH /campaigns/{id}` have accepted a choice since Phase 2, and `POST /mailboxes` could create
+one -- but nothing could **list** them, so the New campaign form asked for an address every time.
+Within one org `POST /mailboxes` is idempotent on the address, so typing the same one back
+quietly returned the same row; type a different one and you got a second mailbox that then had to
+be connected separately, with nothing on screen saying why the new campaign would not send. The
+signature defect once more: a correct producer, a correct consumer, nothing in between.
+
+`GET /mailboxes` returns every sending account the workspace holds **with whether each one
+actually works** -- connected, needs reconnecting, days left on the grant, and how many campaigns
+use it. The state travels with the row rather than being fetched per mailbox afterwards, because
+the choice is meaningless without it: an address that cannot authenticate is not an option, it is
+a thing to fix, and a picker that presents the two identically sends people down the dead end.
+
+It is **non-networked**. `grant_status` is arithmetic over a stored column, so a `GET` that
+anybody can fire by pressing F5 never calls Google.
+
+`invalid_reason` is deliberately not echoed -- it can quote a provider's reply and this reaches a
+browser and screenshots -- so each row carries a boolean `usable` instead, computed by the same
+`unavailable_reason()` the campaign blockers use. There is a test asserting the stored text does
+not appear in the response.
+
+The New campaign form now offers the list and preselects the single usable account when there is
+one, so the ordinary case has nothing to decide and nothing to type. The campaign screen gains a
+switcher when the workspace has more than one.
+
+**What was not built, and why it is not a shortcut.** Connecting Gmail *before* signing up is not
+possible: the OAuth callback carries no `Authorization` header, so the `state` nonce written by an
+authenticated request is what says whose workspace the credential belongs to. Without that,
+anybody could hand a signed-in user a crafted callback and attach their own mailbox to that user's
+org. The order is necessarily sign in, workspace, connect.
+
+And connecting at signup would not have prevented the double-membership failure, which is about
+*which org a teammate lands in* -- it would have added a mailbox to the wrong org as well.
+ADR-022 is the fix for that.
+
+**The deployment no longer has a mailbox of its own (ADR-023).** Asked for plainly: *"now there is
+no single user .ecell or arkvane.in — I can connect whatever email I want to send from."*
+
+`SMTP_EMAIL`, `SMTP_PASSWORD`, `IMAP_EMAIL` and `IMAP_PASSWORD` are **gone from `Settings`
+entirely**, along with `orgs.uses_environment_mailbox` and both fallback paths. A mailbox with no
+credential cannot send and cannot be read — **including the owner's own**. `SMTP_HOST` and the
+other three stay, because they describe Google's servers rather than anybody's identity.
+
+ADR-020 narrowed that fallback to one org and one address, which was the right fix for the bug and
+the wrong shape for the product. As long as one account lives in `.env` there is an identity that
+belongs to the *deployment* rather than to a person, and every question about it — who may use it,
+which org, which address, what if two match — is a rule somebody has to hold in their head and a
+guard somebody has to maintain. Now there is no identity here that is not somebody's own: nobody
+can send on an account they did not personally authorise, and "whose Gmail sent this?" has exactly
+one answer.
+
+**It costs a real outage and that is worth saying out loud.** The live deployment stops sending the
+moment this lands, because its mailbox has no credential — it had been using the environment
+account. One click of Connect Gmail resumes it. That is the change working rather than a cost of
+it, but it must be expected rather than discovered.
+
+**`CREDENTIAL_KEY` and the three `GOOGLE_*` values are now `REQUIRED_KEYS`.** What a deployment
+must be able to do is no longer *send*; it is *let somebody connect their own account*. Missing
+them, nothing can ever send — better as a startup failure than as a surprise at the first campaign.
+
+**The allowlist is the org's rows now, not one environment variable.** `app.send_allowlist`, edited
+in Settings by an `admin`. Before this, a new workspace could select `allowlist` mode and find no
+way to put its own address on the list, while reading the operator's personal addresses out of its
+own settings screen.
+
+**The decision did not move.** `allowlist_permits()` in `smtp.py` is still the only function in the
+tree that compares a recipient against anything, and the structural test over every file still
+asserts it — only the *values* travel in now, which is exactly the trade ADR-010 made when the mode
+moved out of the environment. `test_the_send_loop_does_not_reimplement_the_check` was tightened to
+match: the loop may load the list, and may never test membership against it.
+
+`None` and an empty list mean the same thing on purpose. "We could not load the list" and "the list
+is empty" must have one answer, or a database hiccup becomes a send to somebody who was never on
+it.
+
+**The migration backfills `SEND_ALLOWLIST` from the process environment into the oldest org.**
+Without it, a deployment rehearsing in `allowlist` mode comes back from the migration with an empty
+list and sends nothing — correct by the new rules and indistinguishable from a break. A count is
+logged, never an address.
+
+**One connect option, not two.** Asked directly, and the answer is that a Workspace address and an
+ordinary Gmail are the same OAuth client, the same `https://mail.google.com/` scope and the same
+XOAUTH2 handshake. The address is whatever Google says it is. A second button would be a choice
+with no consequence, which is a choice people get wrong. A genuinely different second path — app
+passwords for a non-Google provider — needs per-mailbox host and port; `MailCredential.kind ==
+"app_password"` already exists for it and nothing exposes it.
+
+**Adding an allowlist entry is `admin`; going `live` stays `owner`.** Different in kind rather than
+degree: an entry widens sending by one address somebody typed, inside a mode whose purpose is
+rehearsal, while `live` removes the gate. Treating them the same would mean either handing out
+`owner` or making rehearsal impossible without it.
+
+`check_env` no longer counts the allowlist, because it cannot: the list is per org and in the
+database, and a number right for one workspace and wrong for every other is worse than a sentence
+saying where to look.
+
+**What this cost in tests, which is the honest measure of how load-bearing that account was.**
+Thirteen test files, and every send test now connects its mailbox and writes its own allowlist rows
+— `connect_mailbox`, `allow_sending_to` and `mail_settings` in `tests/integration/conftest.py`.
+The `org` fixture lost its one special field, which is the whole change in miniature: there is
+nothing left that distinguishes the operator's workspace from anybody else's.
+
+1,682 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+
+**An admin screen, because three systems decide one question.** Whether a given person can send
+depends on Supabase (may they sign in), this database (which workspace, what role) and Google (may
+they connect a mailbox) -- and nothing showed them together, so "why can this person not send?"
+meant checking two consoles and a `psql` session and holding the answer in your head.
+
+`GET /admin/overview` and an **Admin** item in the sidebar, both `admin`-gated. Every person with
+whether they have signed in, every mailbox with whether it is connected, who connected it and how
+many days are left on the grant, plus the workspace's sign-up mode and grant length.
+
+**Two things it refuses to pretend to know**, which is most of the design:
+
+- **It cannot read Supabase.** `deps.py` has never joined across the identity provider's boundary
+  and is not about to start. A person shows as *signed in* because a `members` row exists, and
+  that row is written on their first authenticated request -- the only honest evidence available.
+  Reporting it as "Supabase says yes" would be a guess dressed as a fact.
+- **It cannot read Google's test-user list.** While the OAuth client is unpublished only addresses
+  on that list can connect a mailbox, capped at 100, and there is no API for it. So the screen
+  links to the console and names the step, rather than showing a tick nothing maintains. Missing
+  that step produces a Google refusal about an unverified app, which reads like our bug and is
+  not.
+
+No `invalid_reason` is echoed, here as everywhere: that text can quote a provider's reply and this
+reaches a browser and screenshots.
+
+**Four things the review before merging turned up**, all in this stack's own code:
+
+1. `check_env` still looped over `SMTP_PASSWORD` and `IMAP_PASSWORD` to warn about App Password
+   length. `getattr(settings, name, "")` meant it silently did nothing rather than failing, which
+   is exactly how dead code survives a refactor.
+2. The new-mailbox form still told people to use "the same address as `SMTP_EMAIL` on the server",
+   naming a variable that no longer exists.
+3. **`_send_test_message` re-resolved the login and did not catch `MailboxUnavailable`.** The SMTP
+   check immediately before it can *invalidate* a credential -- a refresh Google will not honour
+   writes `invalid_reason` -- so the second resolution can fail where the first succeeded. That
+   would have escaped as a 500, and a bare 500 leaves FastAPI's error middleware *outside* CORS,
+   so the dashboard would have reported the backend unreachable while it was answering perfectly.
+   The identical trap that made a duplicate-key error look like a connectivity failure.
+4. `ImapLoop._login_for` was still typed and documented as returning `None` for the environment
+   account. There is no environment account; it raises now.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

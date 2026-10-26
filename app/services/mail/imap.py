@@ -171,13 +171,11 @@ def _parse_uidvalidity(responses: list[bytes | None] | None) -> int | None:
 def _can_authenticate(login: MailLogin | None, settings: Settings) -> bool:
     """Is there anything to log in with at all?
 
-    A mailbox that has been connected carries its own login and needs nothing from the
-    environment. Only the fallback path needs `IMAP_EMAIL`, and only the org entitled to it ever
-    reaches here with `login=None`.
+    **There is no environment mailbox to fall back to (ADR-023).** A mailbox that has been
+    connected carries its own login; one that has not cannot be read, and the loop skips it with
+    a reason rather than reading somebody else's inbox in its place.
     """
-    if login is not None:
-        return bool(login.username and (login.access_token or login.password))
-    return bool(settings.IMAP_EMAIL and settings.IMAP_PASSWORD)
+    return login is not None and bool(login.username and (login.access_token or login.password))
 
 
 def _authenticate(
@@ -193,9 +191,8 @@ def _authenticate(
     `imaplib` base64-encodes whatever the callback returns, so the callback hands back the raw
     SASL string and nothing here encodes it twice.
     """
-    if login is None:
-        connection.login(settings.IMAP_EMAIL, settings.IMAP_PASSWORD)
-        return
+    if login is None:  # pragma: no cover - callers check `_can_authenticate` first
+        raise imaplib.IMAP4.error("this mailbox has no credentials to authenticate with")
     if login.uses_oauth:
         assert login.access_token is not None
         token = xoauth2_string(login.username, login.access_token)
@@ -245,7 +242,7 @@ class ImapPoller:
             status, _ = connection.select("INBOX", readonly=True)
             if status != "OK":
                 return False, "signed in, but INBOX could not be opened"
-            who = login.username if login else settings.IMAP_EMAIL
+            who = login.username if login else "this mailbox"
             return True, f"{settings.IMAP_HOST} accepted the credentials for {who}"
         finally:
             with contextlib.suppress(Exception):
