@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -97,13 +98,29 @@ def effective_send_mode(settings: Settings | None = None, override: str | None =
 
 
 def allowlist_permits(
-    to_email: str, settings: Settings | None = None, *, override: str | None = None
+    to_email: str,
+    settings: Settings | None = None,
+    *,
+    override: str | None = None,
+    allowed: Collection[str] | None = None,
 ) -> bool:
     """The one send decision, as in the Phase 0 patch but now at the SMTP boundary.
 
     - `disabled` (the default): nothing may be sent, to anybody.
-    - `allowlist`: only addresses in `SEND_ALLOWLIST`, compared case-insensitively.
-    - `live`: anybody. Set by the operator, in production, deliberately.
+    - `allowlist`: only addresses in `allowed`, compared case-insensitively.
+    - `live`: anybody. Set by the owner, in production, deliberately.
+
+    **`allowed` is the org's own list, and `None` means an empty one** (ADR-023). It used to come
+    from `SEND_ALLOWLIST` in the environment, which was one list for the whole deployment: every
+    workspace rehearsed against the operator's addresses, nobody but a shell user could edit it,
+    and a new org choosing `allowlist` had no way to put its own address on it.
+
+    The *decision* has not moved -- this is still the only function in the tree that compares a
+    recipient against anything, and the structural test still asserts it. Only the **values** now
+    come from the caller, which is precisely the trade ADR-010 made for the mode itself.
+
+    `None` failing closed matters: "we could not load the list" and "the list is empty" must have
+    the same answer, or a database hiccup becomes a send to somebody who was never on it.
     """
     settings = settings or config
     recipient = (to_email or "").strip().lower()
@@ -113,7 +130,7 @@ def allowlist_permits(
     if mode == "live":
         return True
     if mode == "allowlist":
-        return recipient in settings.send_allowlist
+        return recipient in {entry.strip().lower() for entry in (allowed or ())}
     return False
 
 
@@ -141,6 +158,7 @@ class SmtpSender:
         *,
         to_email: str,
         send_mode: str | None = None,
+        allowed: Collection[str] | None = None,
         login: MailLogin | None = None,
     ) -> SendReport:
         """Deliver one message, or explain why it was not delivered.
@@ -149,14 +167,14 @@ class SmtpSender:
         against the outbox row, and an exception escaping here would leave that row in
         `sending` with nothing to resolve it.
 
-        `login` says **as whom**. `None` means the environment's single account, which is what
-        every caller meant before mailboxes had their own credentials and is what a single-tenant
-        deployment still means. It does not affect **whether** we may send: that is
+        `login` says **as whom**, and every caller must supply one: ADR-023 removed the
+        deployment-wide account, so there is no longer any identity here that is not
+        somebody's own. It does not affect **whether** we may send: that is
         `allowlist_permits` below, unchanged, in the one place hard rule 1 allows it to be.
         """
         settings = self._settings
 
-        if not allowlist_permits(to_email, settings, override=send_mode):
+        if not allowlist_permits(to_email, settings, override=send_mode, allowed=allowed):
             return SendReport(
                 outcome=SmtpOutcome.BLOCKED,
                 detail=(
@@ -170,13 +188,15 @@ class SmtpSender:
         except ImportError as exc:  # pragma: no cover - dependency is pinned
             raise RuntimeError("aiosmtplib is not installed") from exc
 
-        # Imported here rather than at the top because the annotation above is lazy and this is
-        # not: `MailLogin` lived only under `TYPE_CHECKING`, so the documented `login=None`
-        # fallback to the environment account raised `NameError` instead of taking it. Nothing
-        # reached it -- `login_for` never returns None -- which is exactly why it went unnoticed.
-        from app.services.mail.connection import MailLogin
-
-        login = login or MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
+        if login is None:
+            # **There is no environment account to fall back to (ADR-023).** Reaching here
+            # without a login is a programming error rather than a configuration one, but it is
+            # reported as an outcome: the send loop has an outbox row to resolve, and an
+            # exception escaping here would leave it in `sending` with nothing to resolve it.
+            return SendReport(
+                outcome=SmtpOutcome.AUTH_FAILED,
+                detail="this mailbox has no credentials to authenticate with",
+            )
 
         try:
             if login.uses_oauth:
@@ -232,10 +252,7 @@ class SmtpSender:
         except ImportError as exc:  # pragma: no cover - dependency is pinned
             raise RuntimeError("aiosmtplib is not installed") from exc
 
-        from app.services.mail.connection import MailLogin
-
-        login = login or MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
-        if not login.username or not (login.access_token or login.password):
+        if login is None or not login.username or not (login.access_token or login.password):
             return SendReport(
                 outcome=SmtpOutcome.AUTH_FAILED,
                 detail="there are no credentials for this mailbox to authenticate with",

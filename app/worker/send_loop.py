@@ -44,6 +44,7 @@ from app.domain.scheduling import (
     remaining_capacity,
     warmup_cap,
 )
+from app.services.mail.allowlist import allowed_for
 from app.services.mail.connection import MailboxUnavailable, login_for, mark_unavailable
 from app.services.mail.message import Attachment as OutgoingAttachment
 from app.services.mail.message import FooterIdentity, build_message
@@ -440,8 +441,15 @@ async def send_one(
     # Step 3: the one SMTP call. Nothing else in the system sends mail.
     # The org's chosen mode travels with the send. `org` was already loaded to check `paused`,
     # so this costs no query, and the decision stays inside the guard rather than here (ADR-010).
+    # The org's own mode **and** its own allowlist travel with the send. `org` was already
+    # loaded to check `paused`; the list is one indexed lookup. Neither is a decision -- both are
+    # values handed to the one function allowed to decide (ADR-010, ADR-023).
     report = await sender.send(
-        built, to_email=chosen.lead.email_norm, send_mode=org.send_mode, login=login
+        built,
+        to_email=chosen.lead.email_norm,
+        send_mode=org.send_mode,
+        allowed=await allowed_for(session, org.id),
+        login=login,
     )
 
     # Step 4: record the outcome in its own transaction.

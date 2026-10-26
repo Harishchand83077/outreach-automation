@@ -15,14 +15,21 @@ from pydantic import computed_field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 #: Required for the full workflow. Reported together so one run fixes them all.
-REQUIRED_KEYS = ("GROQ_API_KEY", "SMTP_EMAIL", "SMTP_PASSWORD")
+#: Without these the application cannot do its job for anybody. **The mail credentials are no
+#: longer here** (ADR-023): there is no deployment-wide sending account, so what is required is
+#: the ability to *let somebody connect their own* -- the OAuth client and the key that encrypts
+#: what it returns. A deployment missing them has a dashboard on which nothing can ever send.
+REQUIRED_KEYS = (
+    "GROQ_API_KEY",
+    "CREDENTIAL_KEY",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_REDIRECT_URI",
+)
 
 #: Not required to start. Each maps to what stops working without it.
 FEATURE_KEYS: dict[str, str] = {
-    "IMAP_EMAIL": "replies are not monitored",
-    "IMAP_PASSWORD": "replies are not monitored",
     "CALENDAR_LINK": "drafts have no booking link to call to action with",
-    "SEND_ALLOWLIST": "SEND_MODE=allowlist can reach nobody",
 }
 
 #: Configuration for phases that have not landed yet. Declared and validated so a value can be
@@ -47,13 +54,9 @@ FUTURE_KEYS: dict[str, list[str]] = {
     # report" when the truth was "this script has never heard of them". An operator ran it,
     # saw "All required configuration is present", and still had Connect Gmail drawn as
     # unavailable with nothing on screen explaining why.
-    "Phase 10 - sign-up and Gmail by OAuth": [
-        "CREDENTIAL_KEY",
-        "GOOGLE_CLIENT_ID",
-        "GOOGLE_CLIENT_SECRET",
-        "GOOGLE_REDIRECT_URI",
-        "DASHBOARD_URL",
-    ],
+    # CREDENTIAL_KEY and the GOOGLE_* values moved to REQUIRED_KEYS with ADR-023: without
+    # them nobody can connect a mailbox, and without a mailbox nothing can ever send.
+    "Phase 10 - sign-up": ["DASHBOARD_URL"],
 }
 
 #: Models Groq has retired; silently upgraded so an old .env keeps working.
@@ -120,8 +123,9 @@ class Settings(BaseSettings):
     # === SMTP ===
     SMTP_HOST: str = "smtp.gmail.com"
     SMTP_PORT: int = 587
-    SMTP_EMAIL: str = ""
-    SMTP_PASSWORD: str = ""
+    #: **No SMTP_EMAIL or SMTP_PASSWORD.** ADR-023: the deployment has no mailbox of its own, so
+    #: every send authenticates as a credential somebody connected. Host and port stay, because
+    #: they describe Google's servers rather than anybody's identity.
     SMTP_TIMEOUT: float = 90.0
     #: True for implicit TLS (port 465). Leave False for STARTTLS on 587.
     SMTP_USE_TLS: bool = False
@@ -132,14 +136,13 @@ class Settings(BaseSettings):
     # === IMAP ===
     IMAP_HOST: str = "imap.gmail.com"
     IMAP_PORT: int = 993
-    IMAP_EMAIL: str = ""
-    IMAP_PASSWORD: str = ""
 
     # === Sending safety (hard rule 1) ===
-    #: disabled = nothing leaves, drafts only. allowlist = only SEND_ALLOWLIST. live = normal.
+    #: disabled = nothing leaves, drafts only. allowlist = only the org's own allowlist rows.
+    #: live = normal. **There is no SEND_ALLOWLIST here** (ADR-023): one list for the whole
+    #: deployment meant every workspace rehearsed against the operator's addresses and only
+    #: somebody with shell access could edit it. The list is `app.send_allowlist`, per org.
     SEND_MODE: Literal["disabled", "allowlist", "live"] = "disabled"
-    #: Comma-separated addresses that may receive mail when SEND_MODE=allowlist.
-    SEND_ALLOWLIST: str = ""
 
     # === Who may have an account (ADR-017) ===
     #: closed = only members somebody inserted deliberately (today's behaviour, and the default
@@ -282,20 +285,18 @@ class Settings(BaseSettings):
             return False
         return v
 
-    @field_validator("SMTP_PASSWORD", "IMAP_PASSWORD", mode="before")
+    @field_validator("CREDENTIAL_KEY", mode="before")
     @classmethod
-    def _strip_app_password_spaces(cls, v: object) -> object:
-        """Remove the spaces Google *displays* in an App Password.
+    def _strip_pasted_whitespace(cls, v: object) -> object:
+        """Trim whitespace a key picks up on its way through a terminal and an editor.
 
-        Google shows a 16-character App Password grouped as `abcd efgh ijkl mnop`, and the
-        obvious thing to do is select it and paste it. The spaces are presentation only — the
-        credential is the 16 characters — but pasted verbatim they make every login fail, and
-        the failure is unhelpful: SMTP closes the connection without a reason and IMAP answers
-        a flat "Invalid credentials", neither of which hints that the value merely needs
-        trimming.
+        This validator used to exist for Google App Passwords, which are *displayed* grouped as
+        `abcd efgh ijkl mnop` and fail silently when pasted with the spaces. Those are gone with
+        ADR-023 — nobody types a mail password into this system any more.
 
-        Stripping internal whitespace is safe: no mail provider issues a password containing a
-        space, so nothing legitimate is altered.
+        It is kept for `CREDENTIAL_KEY` because that value is generated inside a container and
+        copied by hand into `.env`, and a stray newline there means every stored credential fails
+        to decrypt with an error that points at the credential rather than at the key.
         """
         if isinstance(v, str):
             return "".join(v.split())
@@ -305,14 +306,6 @@ class Settings(BaseSettings):
     @classmethod
     def _upgrade_retired_model(cls, v: str) -> str:
         return _CURRENT_MODEL if v.strip() in _DECOMMISSIONED_MODELS else v
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def send_allowlist(self) -> frozenset[str]:
-        """Normalised recipient allowlist. Matching is case-insensitive."""
-        return frozenset(
-            part.strip().lower() for part in self.SEND_ALLOWLIST.split(",") if part.strip()
-        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -354,9 +347,6 @@ class Settings(BaseSettings):
                 problems.append(f"{key} is not set")
             elif looks_like_placeholder(value):
                 problems.append(f"{key} still holds a placeholder from .env.example")
-
-        if self.SEND_MODE == "allowlist" and not self.send_allowlist:
-            problems.append("SEND_MODE=allowlist but SEND_ALLOWLIST is empty, so nothing can send")
 
         # The prototype's flag inverted its own meaning: bool("0") is True, so DRY_RUN_EMAILS=0 —
         # which .env.example documented as "send real emails" — silently disabled every send.

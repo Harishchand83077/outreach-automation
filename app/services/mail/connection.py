@@ -1,18 +1,23 @@
 """Which credentials a mailbox sends with.
 
-One sending account came from the environment. Ten people need their own, so this resolves a
-mailbox to the credentials it should authenticate with, **falling back to the environment only
-for the org that owns it** (`orgs.uses_environment_mailbox`, and only for the address
-`SMTP_EMAIL` actually logs in as).
+**Every mailbox carries its own, and there is no deployment-wide account any more.**
 
-The fallback is not politeness. It is what keeps the live deployment sending while all of this
-lands: the operator's own mailbox behaves exactly as every mailbox did before this module
-existed. What it is *not* is a default for strangers — an unconnected mailbox in a workspace
-somebody signed up for would otherwise send through the operator's Gmail, on the operator's
-quota and reputation, and nothing afterwards would say it had.
+For most of this project there was one: `SMTP_EMAIL` and `SMTP_PASSWORD` in the environment,
+which is correct for one person and impossible for ten. ADR-020 narrowed the fallback to the one
+org entitled to it; ADR-023 removes it. A mailbox with no credential cannot send and cannot be
+read, whoever it belongs to, including the owner's.
+
+That is a deliberate and visible loss of convenience, and it buys the property the product needs:
+**there is no identity here that is not somebody's own.** Nobody can send on an account they did
+not personally authorise, no configuration mistake can make a stranger's campaign go out under
+the operator's address, and the question "whose Gmail sent this?" has exactly one answer -- the
+one named on the credential row.
+
+A mailbox nobody has connected is not an error. It is a product state with a one-click fix, and
+`unavailable_reason()` is the sentence the dashboard shows for it.
 
 **The send gate does not move.** `effective_send_mode()` and `allowlist_permits()` stay in
-`smtp.py` and go on deciding for every send, whoever it belongs to — hard rule 1, and the
+`smtp.py` and go on deciding for every send, whoever it belongs to -- hard rule 1, and the
 structural test over the whole tree still asserts that nothing else decides. This module answers
 a different question: not *may* we send, but *as whom*.
 """
@@ -28,7 +33,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings, config
-from app.db.models import Mailbox, MailCredential, Org
+from app.db.models import Mailbox, MailCredential
 from app.services.credentials import CredentialError, seal, unseal
 from app.services.mail.google_oauth import (
     REFRESH_MARGIN,
@@ -86,7 +91,7 @@ async def login_for(
         select(MailCredential).where(MailCredential.mailbox_id == mailbox.id)
     )
     if credential is None:
-        return await _environment_login(session, mailbox, settings)
+        raise MailboxUnavailable(_not_connected(mailbox))
 
     if credential.invalid_reason:
         raise MailboxUnavailable(credential.invalid_reason)
@@ -119,79 +124,25 @@ async def unavailable_reason(
     case — a refresh Google will not honour — is unknowable without asking, and surfaces through
     `invalid_reason` the moment the send loop finds out.
     """
-    settings = settings or config
     credential = await session.scalar(
         select(MailCredential).where(MailCredential.mailbox_id == mailbox.id)
     )
     if credential is not None:
         return credential.invalid_reason
-    if await _environment_entitles(session, mailbox, settings):
-        return None
+    return _not_connected(mailbox)
+
+
+def _not_connected(mailbox: Mailbox) -> str:
+    """The sentence shown for a mailbox nobody has authorised yet.
+
+    One function, because the campaign blocker, the mailbox list and the send loop's pause reason
+    must all say the same thing. A person who sees three different wordings for one state assumes
+    they are three different problems.
+    """
     return (
         f"{mailbox.from_email} has not been connected yet. "
-        "Connect this Gmail account from the campaign screen before sending."
+        "Connect this Google account from the campaign screen before sending."
     )
-
-
-async def _environment_entitles(
-    session: AsyncSession, mailbox: Mailbox, settings: Settings
-) -> bool:
-    """May this mailbox authenticate with the credentials in `.env`?
-
-    **Two conditions, and each closes a different hole.**
-
-    `orgs.uses_environment_mailbox` says whose they are. Without it any stranger's unconnected
-    mailbox authenticates as the deployment's own account: their campaign spends the operator's
-    daily cap, carries the operator's sending reputation, and arrives signed by SPF and DKIM
-    records the operator published — mail the operator never wrote, from an address they have
-    never seen, and nothing afterwards to say it happened. Matching on the address alone would
-    not do, because `uq_mailboxes_org_from_email` is scoped per org: a second workspace may
-    create a mailbox named after the operator's address, and the guard would become the attack.
-
-    The address must *also* match `SMTP_EMAIL`, because an owner may hold several mailboxes and
-    only one of them is the account these credentials log in as. Sending `rahul@arkvane.in`
-    through a Gmail authenticated as somebody else is the mismatched-envelope problem already on
-    record: Gmail accepts it, nothing bounces, and the message is simply unauthenticated against
-    a domain whose SPF and DKIM say otherwise — at volume a suspended account, not a spam folder.
-    """
-    configured = (settings.SMTP_EMAIL or "").strip().lower()
-    if not configured or mailbox.from_email.lower() != configured:
-        return False
-    org = await session.get(Org, mailbox.org_id)
-    return bool(org and org.uses_environment_mailbox)
-
-
-async def _environment_login(
-    session: AsyncSession, mailbox: Mailbox, settings: Settings
-) -> MailLogin:
-    """The credentials in `.env`, for the one org entitled to them.
-
-    **Two conditions, and each closes a different hole.**
-
-    `orgs.uses_environment_mailbox` says whose they are. Without it any stranger's unconnected
-    mailbox authenticates as the deployment's own account: their campaign spends the operator's
-    daily cap, carries the operator's sending reputation, and arrives signed by SPF and DKIM
-    records the operator published — mail the operator never wrote, from an address they have
-    never seen, and no way to tell afterwards that it happened.
-
-    The address must also match `SMTP_EMAIL`, because an owner may hold several mailboxes and
-    only one of them is the account these credentials log in as. Sending `rahul@arkvane.in`
-    through a Gmail authenticated as somebody else is the mismatched-envelope problem already on
-    record: Gmail accepts it, nothing bounces, and the message is simply unauthenticated — which
-    at volume is a suspended account rather than a spam folder.
-
-    The entitlement rule itself lives in `_environment_entitles`, because the dashboard has to
-    ask the same question without sending anything.
-
-    Refusing is a `MailboxUnavailable`, so the send loop pauses that one mailbox with a reason
-    the dashboard turns into a Connect button, and every other mailbox keeps its turn.
-    """
-    if await _environment_entitles(session, mailbox, settings):
-        # A single-tenant deployment never has to know any of this exists.
-        return MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
-
-    reason = await unavailable_reason(session, mailbox=mailbox, settings=settings)
-    raise MailboxUnavailable(reason or f"{mailbox.from_email} cannot authenticate.")
 
 
 async def _google_login(

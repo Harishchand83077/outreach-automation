@@ -2690,6 +2690,7 @@ function Settings({ campaign, onError, onToast, onChanged }) {
               Only an owner can change the send mode.
             </p>
           )}
+          <SendAllowlist mode={config.send_mode} onError={onError} onToast={onToast} />
         </div>
       ) : (
         <p className="muted">Loading…</p>
@@ -2946,6 +2947,97 @@ function Team({ onError, onToast }) {
   )
 }
 
+function SendAllowlist({ mode, onError, onToast }) {
+  const [rows, setRows] = useState(null)
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    // Degrades rather than erroring: an older server without this route leaves the panel out.
+    getJson('/admin/send-allowlist')
+      .then((data) => setRows(data.allowlist))
+      .catch(() => setRows(null))
+  }, [])
+
+  useEffect(load, [load])
+
+  const add = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const made = await postJson('/admin/send-allowlist', { json: { email: value } })
+      setValue('')
+      onToast(
+        made.added ? `${made.email} can now receive mail from this workspace.` : 'Already listed.'
+      )
+      load()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (id, email) => {
+    try {
+      await deleteJson(`/admin/send-allowlist/${id}`)
+      onToast(`${email} removed. Nothing will be sent to it.`)
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  if (!rows) return null
+
+  return (
+    <div style={{ marginTop: 18 }}>
+      <h3>Allowlist</h3>
+      <p className="muted">
+        While the send mode is <strong>allowlist</strong>, these are the only addresses this
+        workspace can reach. It is the list for <em>this</em> workspace only — nobody else&apos;s
+        rehearsal can put an address on it, and nothing here affects anybody else.
+        {mode === 'allowlist' ? '' : ' The mode is not allowlist right now, so it is not in use.'}
+      </p>
+      {rows.length ? (
+        <ul style={{ listStyle: 'none', padding: 0, margin: '10px 0' }}>
+          {rows.map((row) => (
+            <li key={row.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{row.email}</span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                onClick={() => remove(row.id, row.email)}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted" data-tone="warn" style={{ marginTop: 10 }}>
+          Empty, so in allowlist mode nothing can be sent at all. Add the address you want to
+          rehearse against — usually one of your own.
+        </p>
+      )}
+      <form onSubmit={add} className="field-row">
+        <Field
+          label="Allow an address"
+          type="email"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          required
+        />
+        <button type="submit" className="btn" disabled={busy || !value}>
+          Add
+        </button>
+      </form>
+    </div>
+  )
+}
+
 function SendModeControl({ config, onError, onToast, onDone }) {
   const [choice, setChoice] = useState(config.send_mode)
   const [confirm, setConfirm] = useState('')
@@ -2984,9 +3076,7 @@ function SendModeControl({ config, onError, onToast, onDone }) {
         <label htmlFor="mode">Change send mode</label>
         <select id="mode" value={choice} onChange={(event) => setChoice(event.target.value)}>
           <option value="disabled">disabled — nothing is sent, to anybody</option>
-          <option value="allowlist">
-            allowlist — only the {config.allowlist_size} allowlisted address(es)
-          </option>
+          <option value="allowlist">allowlist — only this workspace&apos;s own list</option>
           <option value="live" disabled={!config.live_allowed}>
             live — any recipient{config.live_allowed ? '' : ' (production only)'}
           </option>
@@ -3217,7 +3307,7 @@ function modeTone(mode) {
 function modeExplanation(config) {
   if (config.send_mode === 'disabled') return 'nothing can be sent, to anybody'
   if (config.send_mode === 'allowlist') {
-    return `only the ${config.allowlist_size} allowlisted address(es)`
+    return "only the addresses on this workspace's allowlist"
   }
   return 'any recipient — real mail goes to real people'
 }

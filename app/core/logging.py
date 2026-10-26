@@ -128,8 +128,13 @@ def secret_values(settings: Settings) -> frozenset[str]:
         "OPENROUTER_API_KEY",
         "GEMINI_API_KEY",
         "TAVILY_API_KEY",
-        "SMTP_PASSWORD",
-        "IMAP_PASSWORD",
+        # SMTP_PASSWORD and IMAP_PASSWORD were here until ADR-023 removed them: no mail password
+        # is configured any more. The replacements are per-mailbox refresh tokens, which are
+        # Fernet-encrypted at rest and never reach a settings object, so they cannot be collected
+        # by name here -- `Sealed` and `MailLogin` both override `__repr__` instead, so a
+        # traceback cannot print one.
+        "CREDENTIAL_KEY",
+        "GOOGLE_CLIENT_SECRET",
         "INTERNAL_TICK_SECRET",
         "SUPABASE_ANON_KEY",
         "ALERT_WEBHOOK_URL",

@@ -44,6 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings, config
 from app.db.models import Mailbox, Org
+from app.services.mail.allowlist import allowed_for
 from app.services.mail.connection import MailboxUnavailable, login_for
 from app.services.mail.imap import ImapPoller
 from app.services.mail.message import FooterIdentity, build_message
@@ -187,6 +188,7 @@ async def _send_test_message(
         built,
         to_email=mailbox.from_email,
         send_mode=org.send_mode if org else None,
+        allowed=await allowed_for(session, mailbox.org_id),
         login=login,
     )
 

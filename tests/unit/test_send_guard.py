@@ -47,37 +47,40 @@ class TestTheDefaultIsSilence:
 
     def test_disabled_blocks_even_an_allowlisted_address(self):
         """`disabled` means disabled. The allowlist is not an exemption from it."""
-        config = settings_with(SEND_MODE="disabled", SEND_ALLOWLIST="me@example.com")
-        assert not allowlist_permits("me@example.com", config)
+        config = settings_with(SEND_MODE="disabled")
+        assert not allowlist_permits("me@example.com", config, allowed={"me@example.com"})
 
 
 class TestAllowlistMode:
     def test_a_listed_address_is_permitted(self):
-        config = settings_with(SEND_MODE="allowlist", SEND_ALLOWLIST="me@example.com")
-        assert allowlist_permits("me@example.com", config)
+        config = settings_with(SEND_MODE="allowlist")
+        assert allowlist_permits("me@example.com", config, allowed={"me@example.com"})
 
     def test_an_unlisted_address_is_refused(self):
-        config = settings_with(SEND_MODE="allowlist", SEND_ALLOWLIST="me@example.com")
-        assert not allowlist_permits("someone.else@example.com", config)
+        config = settings_with(SEND_MODE="allowlist")
+        assert not allowlist_permits("someone.else@example.com", config, allowed={"me@example.com"})
 
     def test_matching_ignores_case_and_padding(self):
         """A rehearsal must not send to a stranger because of a stray space in an env var."""
-        config = settings_with(
-            SEND_MODE="allowlist", SEND_ALLOWLIST=" Me@Example.com , b@example.com "
-        )
-        assert allowlist_permits("me@example.com", config)
-        assert allowlist_permits("B@EXAMPLE.COM", config)
+        config = settings_with(SEND_MODE="allowlist")
+        listed = {" Me@Example.com ", "b@example.com"}
+        assert allowlist_permits("me@example.com", config, allowed=listed)
+        assert allowlist_permits("B@EXAMPLE.COM", config, allowed=listed)
 
     def test_an_empty_allowlist_permits_nobody(self):
         """Not 'everybody'. An unset list is the safe direction of the two."""
-        config = settings_with(SEND_MODE="allowlist", SEND_ALLOWLIST="")
-        assert not allowlist_permits("me@example.com", config)
+        config = settings_with(SEND_MODE="allowlist")
+        assert not allowlist_permits("me@example.com", config, allowed=set())
+        # `None` and "empty" must answer the same: a list that could not be loaded is not a
+        # licence to send to somebody who was never on it.
+        assert not allowlist_permits("me@example.com", config, allowed=None)
 
     def test_a_substring_is_not_a_match(self):
         """`me@example.com` must not permit `me@example.com.evil.test`."""
-        config = settings_with(SEND_MODE="allowlist", SEND_ALLOWLIST="me@example.com")
-        assert not allowlist_permits("me@example.com.evil.test", config)
-        assert not allowlist_permits("notme@example.com", config)
+        config = settings_with(SEND_MODE="allowlist")
+        listed = {"me@example.com"}
+        assert not allowlist_permits("me@example.com.evil.test", config, allowed=listed)
+        assert not allowlist_permits("notme@example.com", config, allowed=listed)
 
 
 class TestLiveMode:
@@ -155,10 +158,23 @@ class TestTheGuardIsInOnePlace:
         assert offenders == [], f"SEND_MODE is decided on outside the one gate: {offenders}"
 
     def test_the_send_loop_does_not_reimplement_the_check(self):
+        """It may *load* the org's allowlist; it may never compare a recipient against it.
+
+        ADR-023 moved the values out of the environment and into a table, so the send loop now
+        fetches a list and hands it over. That is the same division ADR-010 made for the mode:
+        values travel, the decision does not. What would be a second gate is this module deciding
+        anything from either -- a membership test, or a comparison against a mode.
+        """
         import app.worker.send_loop as module
 
         source = executable_source(module)
         assert "SEND_ALLOWLIST" not in source
+        # `executable_source` tokenises, so words are newline-separated rather than spaced.
+        #
+        # No membership test against the list it loads: deciding anything from the allowlist is
+        # `allowlist_permits`'s job and nobody else's.
+        assert "\nin\nallowed\n" not in source
+        assert "allowed_for" in source, "the loop must still supply the org's own list"
 
 
 class TestTheOrgOverride:
@@ -188,15 +204,20 @@ class TestTheOrgOverride:
 
     def test_disabling_blocks_an_allowlisted_recipient(self):
         """The kill switch has to beat the allowlist, or it is not a kill switch."""
-        config = settings_with(SEND_MODE="live", SEND_ALLOWLIST="me@example.com")
+        config = settings_with(SEND_MODE="live")
 
-        assert not allowlist_permits("me@example.com", config, override="disabled")
+        assert not allowlist_permits(
+            "me@example.com", config, override="disabled", allowed={"me@example.com"}
+        )
 
     def test_restricting_to_the_allowlist_still_checks_it(self):
-        config = settings_with(SEND_MODE="live", SEND_ALLOWLIST="me@example.com")
+        config = settings_with(SEND_MODE="live")
+        listed = {"me@example.com"}
 
-        assert allowlist_permits("me@example.com", config, override="allowlist")
-        assert not allowlist_permits("stranger@example.com", config, override="allowlist")
+        assert allowlist_permits("me@example.com", config, override="allowlist", allowed=listed)
+        assert not allowlist_permits(
+            "stranger@example.com", config, override="allowlist", allowed=listed
+        )
 
     def test_an_empty_recipient_is_refused_whatever_the_mode(self):
         assert not allowlist_permits("", settings_with(SEND_MODE="live"), override="live")

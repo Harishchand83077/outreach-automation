@@ -212,12 +212,17 @@ class TestTheSendingConfigIsReadOnly:
         # the role tests below prove nobody below owner can.
         assert body["editable"] is True
 
-    async def test_it_never_returns_the_allowlist_itself(self, api, owner):
-        """A count is what an operator needs. The addresses themselves are personal data."""
-        response = api.get("/api/v1/admin/sending-config", headers=owner)
+    async def test_the_sending_config_does_not_carry_the_allowlist(self, api, owner):
+        """It is a different question, answered by a different route.
 
-        body = response.json()
-        assert isinstance(body["allowlist_size"], int)
+        This used to assert that only a *count* was returned, because `SEND_ALLOWLIST` was one
+        list for the whole deployment and showing it to a workspace would have handed them the
+        operator's personal addresses. ADR-023 made the list the org's own rows, so the thing
+        worth asserting moved: not that nobody may see it, but that each org sees only its own.
+        `test_api_send_allowlist.py` holds that.
+        """
+        body = api.get("/api/v1/admin/sending-config", headers=owner).json()
+
         assert "allowlist" not in body
         assert "send_allowlist" not in body
 
