@@ -124,7 +124,10 @@ jobs:
           GROQ_API_KEY: gsk_ci_placeholder_value_1234567890
           # ADR-023: a deployment no longer needs a sending account, it needs to be able to let
           # somebody connect their own. These four are what REQUIRED_KEYS now names.
-          CREDENTIAL_KEY: Y2ktb25seS1ub3QtYS1yZWFsLWZlcm5ldC1rZXktMDA9
+          # Deliberately NOT shaped like a Fernet key. A base64-looking placeholder here is
+          # indistinguishable from a real one to a secret scanner, and gitleaks said so --
+          # correctly. check_env reports names and emptiness, so the value need only be present.
+          CREDENTIAL_KEY: ci-only-this-is-not-a-real-encryption-key
           GOOGLE_CLIENT_ID: 1234567890-ci.apps.googleusercontent.com
           GOOGLE_CLIENT_SECRET: ci-only-not-a-real-client-secret
           GOOGLE_REDIRECT_URI: https://api.example.com/api/v1/connect/google/callback
