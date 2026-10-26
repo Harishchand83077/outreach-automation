@@ -435,9 +435,23 @@ async def sending_config(
     into a response that ends up in a browser's cache and a screenshot. Nothing here is a
     credential: the sending account is named, because the `From` address is public the moment a
     single email arrives, but no password, key or token is returned.
+
+    **`sending_account` is this org's, not the environment's.** It reported `SMTP_EMAIL`
+    unconditionally, which was true of a single-tenant deployment and became two problems the
+    moment strangers could sign up: it showed every workspace the operator's personal address,
+    and it told them mail would leave from an account they have no access to. It now names the
+    addresses this org actually sends from — its own mailboxes — and says explicitly when one of
+    them is the deployment's shared account.
     """
     org = await session.get(Org, user.org_id)
     override = org.send_mode if org else None
+    mailboxes = list(
+        (
+            await session.execute(
+                select(Mailbox).where(Mailbox.org_id == user.org_id).order_by(Mailbox.created_at)
+            )
+        ).scalars()
+    )
     return {
         "send_mode": effective_send_mode(config, override),
         "source": "dashboard" if override else "environment",
@@ -451,7 +465,13 @@ async def sending_config(
         "allowlist_size": len(config.send_allowlist),
         "smtp_host": config.SMTP_HOST,
         "smtp_port": config.SMTP_PORT,
-        "sending_account": config.SMTP_EMAIL,
+        # A list, because a campaign picks its own mailbox and an org may hold several. Empty
+        # means nobody has added one yet, which is a different answer from "we do not know".
+        "sending_accounts": [m.from_email for m in mailboxes],
+        # Kept for the Settings screen's single-line summary. None rather than the operator's
+        # address when this org has no mailbox of its own.
+        "sending_account": mailboxes[0].from_email if mailboxes else None,
+        "uses_shared_account": bool(org and org.uses_environment_mailbox),
         "imap_host": config.IMAP_HOST,
         "environment": config.APP_ENV,
         # The product rules that are locked in code rather than configurable per campaign, so

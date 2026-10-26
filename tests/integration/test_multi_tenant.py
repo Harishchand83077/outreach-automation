@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from app.core.settings import Settings
 from app.db.models import Campaign, Lead, Mailbox, MailCredential, Member, Org
 from app.services.credentials import seal
-from app.services.mail.connection import connection_status, login_for
+from app.services.mail.connection import MailboxUnavailable, connection_status, login_for
 from app.services.signup import SignupRefused, provision
 
 pytestmark = pytest.mark.asyncio(loop_scope="session")
@@ -141,11 +141,18 @@ class TestTwoWorkspacesCannotSeeEachOther:
 
 
 class TestCredentialsPerMailbox:
-    async def test_a_mailbox_with_no_credential_uses_the_environment(self, db, org):
-        """What keeps the live deployment sending while all of this lands, and what keeps every
-        existing test meaningful."""
+    async def test_the_owners_own_mailbox_with_no_credential_uses_the_environment(self, db, org):
+        """What keeps the live deployment sending while all of this lands.
+
+        Both conditions hold here and nowhere else: the org is the one the migration granted the
+        environment account to, and the address is the one `SMTP_EMAIL` authenticates as.
+        """
+        org.uses_environment_mailbox = True
         mailbox = Mailbox(
-            org_id=org.id, from_name="Asha", from_email="asha@outreach.example", daily_cap=100
+            org_id=org.id,
+            from_name="Asha",
+            from_email="shared@outreach.example",
+            daily_cap=100,
         )
         db.add(mailbox)
         await db.commit()
@@ -234,8 +241,9 @@ class TestCredentialsPerMailbox:
         assert "secret" not in status
 
     async def test_a_login_never_prints_its_own_secret(self, db, org):
+        org.uses_environment_mailbox = True
         mailbox = Mailbox(
-            org_id=org.id, from_name="Eve", from_email="eve@outreach.example", daily_cap=100
+            org_id=org.id, from_name="Eve", from_email="shared@outreach.example", daily_cap=100
         )
         db.add(mailbox)
         await db.commit()
@@ -243,3 +251,103 @@ class TestCredentialsPerMailbox:
         login = await login_for(db, mailbox=mailbox, settings=settings_with())
 
         assert "from-the-environment" not in repr(login)
+
+
+class TestTheEnvironmentAccountIsNotEverybodysAccount:
+    """The fallback to `SMTP_EMAIL` had no owner, and public sign-up turned that into a hole.
+
+    It was written so the live deployment kept sending while per-mailbox credentials landed, and
+    for a single-tenant install it is exactly right. Once strangers can sign up it means a
+    mailbox nobody has connected authenticates as **the deployment's own Gmail**: a stranger's
+    campaign sends through the operator's account, spends the operator's daily cap, and stakes
+    the operator's sending reputation on mail the operator never saw.
+
+    Every test here would have passed before this change by sending the stranger's mail.
+    """
+
+    async def test_an_unconnected_mailbox_may_not_borrow_the_environment_account(self, db, org):
+        stranger = Org(name="Somebody who signed up")
+        db.add(stranger)
+        await db.flush()
+        mailbox = Mailbox(
+            org_id=stranger.id,
+            from_name="Stranger",
+            from_email="them@elsewhere.example",
+            daily_cap=100,
+        )
+        db.add(mailbox)
+        await db.commit()
+
+        with pytest.raises(MailboxUnavailable) as caught:
+            await login_for(db, mailbox=mailbox, settings=settings_with())
+
+        # Refusing is only half of it. The message is what the dashboard shows, so it has to say
+        # what to do rather than only that something is wrong.
+        assert "connect" in str(caught.value).lower()
+        assert "them@elsewhere.example" in str(caught.value)
+
+    async def test_naming_a_mailbox_after_the_operators_address_does_not_grant_it(self, db, org):
+        """The check that an address-only rule would fail.
+
+        `uq_mailboxes_org_from_email` is scoped per org, so a second workspace may create a
+        mailbox whose `from_email` is the operator's own address. Matching on the address alone
+        would hand that stranger the operator's password -- turning the guard into the attack.
+        """
+        impostor_org = Org(name="Impostor")
+        db.add(impostor_org)
+        await db.flush()
+        impostor = Mailbox(
+            org_id=impostor_org.id,
+            from_name="Impostor",
+            from_email="shared@outreach.example",
+            daily_cap=100,
+        )
+        db.add(impostor)
+        await db.commit()
+
+        with pytest.raises(MailboxUnavailable):
+            await login_for(db, mailbox=impostor, settings=settings_with())
+
+    async def test_the_owner_may_not_send_a_different_address_through_it_either(self, db, org):
+        """One org, several mailboxes, and only one of them is the account that logs in.
+
+        Sending `rahul@arkvane.in` through a Gmail authenticated as somebody else is the
+        mismatched-envelope problem already on record: nothing bounces, and the message is simply
+        unauthenticated against a domain whose SPF and DKIM say otherwise.
+        """
+        org.uses_environment_mailbox = True
+        second = Mailbox(
+            org_id=org.id, from_name="Another", from_email="other@outreach.example", daily_cap=100
+        )
+        db.add(second)
+        await db.commit()
+
+        with pytest.raises(MailboxUnavailable):
+            await login_for(db, mailbox=second, settings=settings_with())
+
+    async def test_a_connected_stranger_sends_as_themselves(self, db, org):
+        """The point of the whole feature: connect your own Gmail, send as yourself."""
+        settings = settings_with()
+        stranger = Org(name="Somebody who signed up")
+        db.add(stranger)
+        await db.flush()
+        mailbox = Mailbox(
+            org_id=stranger.id, from_name="Dev", from_email="dev@theirco.example", daily_cap=100
+        )
+        db.add(mailbox)
+        await db.flush()
+        db.add(
+            MailCredential(
+                org_id=stranger.id,
+                mailbox_id=mailbox.id,
+                kind="app_password",
+                account_email="dev@theirco.example",
+                secret=seal("their-own-password", settings).token,
+            )
+        )
+        await db.commit()
+
+        login = await login_for(db, mailbox=mailbox, settings=settings)
+
+        assert login.username == "dev@theirco.example"
+        assert login.password == "their-own-password"

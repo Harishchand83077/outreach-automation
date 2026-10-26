@@ -1062,13 +1062,27 @@ class TestWhyNothingSends:
         assert response.status_code == 200, response.text
         assert any(row["name"] == "Bad row" for row in response.json()["campaigns"])
 
-    async def test_a_ready_campaign_has_no_blockers(self, api, owner, db):
+    async def test_a_ready_campaign_has_no_blockers(self, api, owner, db, org):
+        from app.db.models import MailCredential
 
         mailbox = api.post(
             "/api/v1/mailboxes",
             headers=owner,
             json={"from_name": "Asha", "from_email": "asha@example.com"},
         ).json()
+        # **Ready now includes connected.** A mailbox nobody has connected cannot authenticate
+        # as anybody, so a campaign attached to one is not ready however running it looks -- that
+        # is the blocker this fixture would otherwise be asserting the absence of.
+        db.add(
+            MailCredential(
+                org_id=org.id,
+                mailbox_id=uuid.UUID(mailbox["id"]),
+                kind="google_oauth",
+                account_email="asha@example.com",
+                secret=b"sealed-elsewhere",
+            )
+        )
+        await db.commit()
         created = api.post(
             "/api/v1/campaigns",
             headers=owner,

@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.db.models import Mailbox
 from app.domain.campaign import CampaignSettings
 from app.domain.scheduling import in_window
+from app.services.mail.connection import MailboxUnavailable, MailLogin, login_for
 from app.services.reply.ingest import IngestReport, ingest_folder
 from app.worker.base import WorkerTask
 from app.worker.context import WorkerContext
@@ -46,6 +47,9 @@ FOLDER_TTL = timedelta(hours=6)
 @dataclass
 class ImapTickReport:
     mailboxes: int = 0
+    #: Mailboxes that could not authenticate, so were not read. Counted separately from errors:
+    #: a mailbox nobody has connected yet is a normal state, not a fault.
+    skipped: int = 0
     processed: int = 0
     duplicates: int = 0
     orphans: int = 0
@@ -62,36 +66,37 @@ class ImapLoop(WorkerTask):
         #: Used only to decide the polling cadence. Per-campaign windows govern sending, but a
         #: mailbox is shared, so the cadence follows the default working day.
         self.settings = settings or CampaignSettings()
-        #: Discovered once and reused: folders do not come and go, and a LIST on every cycle is
-        #: a login the provider counts against us.
-        self._folder_cache: tuple[str, ...] | None = None
-        self._folders_at: datetime | None = None
+        #: Discovered once per account and reused: folders do not come and go, and a LIST on
+        #: every cycle is a login the provider counts against us.
+        #:
+        #: **Keyed by the account**, not shared. Gmail calls its junk folder `[Gmail]/Spam` and
+        #: translates that name per locale, and another provider calls it something else — so one
+        #: cached list applied to every mailbox would have each of them polling a folder that
+        #: exists only in somebody else's account, which is an error on every cycle forever.
+        self._folder_cache: dict[str, tuple[tuple[str, ...], datetime]] = {}
 
-    async def _folders(self) -> tuple[str, ...]:
-        """INBOX plus this server's junk folder, asked for at most once every `FOLDER_TTL`.
+    async def _folders(self, login: MailLogin | None) -> tuple[str, ...]:
+        """INBOX plus this account's junk folder, asked for at most once every `FOLDER_TTL`.
 
         A failure to discover is not a failure to poll: the poller returns `FOLDERS` and the
         next expiry tries again.
         """
         now = datetime.now(tz=UTC)
-        if (
-            self._folder_cache is not None
-            and self._folders_at is not None
-            and now - self._folders_at < FOLDER_TTL
-        ):
-            return self._folder_cache
+        key = login.username if login is not None else ""
+        cached = self._folder_cache.get(key)
+        if cached is not None and now - cached[1] < FOLDER_TTL:
+            return cached[0]
 
         discover = getattr(self.ctx.poller, "folders", None)
         found: tuple[str, ...] = FOLDERS
         if discover is not None:
             try:
-                found = tuple(await discover()) or FOLDERS
+                found = tuple(await discover(login=login)) or FOLDERS
             except Exception as exc:
                 logger.warning("could not list folders", extra={"error": str(exc)})
                 found = FOLDERS
 
-        self._folder_cache = found
-        self._folders_at = now
+        self._folder_cache[key] = (found, now)
         return found
 
     async def tick(self, now: datetime) -> timedelta:
@@ -112,14 +117,43 @@ class ImapLoop(WorkerTask):
                 # A paused mailbox should not be sending, but it should still be read: a reply
                 # or an opt-out that arrives while it is paused still has to be honoured.
                 logger.debug("polling a paused mailbox", extra={"mailbox": str(mailbox.id)})
+
+            # **As whom.** Every mailbox used to be read with the one account in `.env`, so a
+            # second org's replies were never fetched at all -- their mail is in their inbox,
+            # and this loop was looking in the operator's. A mailbox that cannot authenticate is
+            # skipped with a reason rather than polled as somebody else.
+            try:
+                login = await self._login_for(mailbox)
+            except MailboxUnavailable as exc:
+                report.skipped += 1
+                report.errors.append(f"{mailbox.from_email}: {exc}")
+                continue
+
             report.mailboxes += 1
-            for folder in await self._folders():
-                await self._poll_one(report, mailbox, folder, now)
+            for folder in await self._folders(login):
+                await self._poll_one(report, mailbox, folder, now, login)
 
         return report
 
+    async def _login_for(self, mailbox: Mailbox) -> MailLogin | None:
+        """This mailbox's own credentials, or None for the environment account.
+
+        A refreshed token is written, so this takes its own session and commits: polling must not
+        mint a new access token every three minutes when the cached one is still good.
+        """
+        async with self.ctx.session_factory() as session:
+            merged = await session.merge(mailbox, load=True)
+            login = await login_for(session, mailbox=merged, settings=self.ctx.settings)
+            await session.commit()
+        return login
+
     async def _poll_one(
-        self, report: ImapTickReport, mailbox: Mailbox, folder: str, now: datetime | None
+        self,
+        report: ImapTickReport,
+        mailbox: Mailbox,
+        folder: str,
+        now: datetime | None,
+        login: MailLogin | None = None,
     ) -> None:
         try:
             result: IngestReport = await ingest_folder(
@@ -131,6 +165,7 @@ class ImapLoop(WorkerTask):
                 folder=folder,
                 settings=self.settings,
                 now=now,
+                login=login,
             )
         except Exception as exc:
             # ingest_folder reports expected failures rather than raising, so reaching here

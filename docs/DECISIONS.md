@@ -870,3 +870,65 @@ briefly running. Without that ordering, saving a backdated schedule would start 
 ship without a data migration. `scheduled` rather than leaving it in `draft` because `draft` reads
 as "not finished being set up", and a status that lies about why nothing is happening is the thing
 this whole area of work exists to stop.
+
+## ADR-020 — The environment mailbox belongs to one org, and every other mailbox must connect
+
+**Status.** Accepted. Supersedes the fallback described in ADR-018's "a mailbox with no
+credential falls back to the environment", which this narrows rather than removes.
+
+**Context.** ADR-018 gave each mailbox its own credentials and kept a fallback: a mailbox with no
+`mail_credentials` row authenticates with `SMTP_EMAIL`/`SMTP_PASSWORD`. That was deliberate and
+correct at the time — it is what kept the live deployment sending while per-mailbox credentials
+landed, and it is what kept every existing test meaningful.
+
+ADR-017 then made sign-up self-service. The two together produce a case neither anticipated. A
+stranger signs up, creates a campaign, types their own address as `from_email`, and never
+connects anything. `login_for` finds no credential and hands back **the operator's Gmail**. Their
+campaign then sends through the operator's account: the operator's daily cap, the operator's
+sending reputation, the operator's SPF and DKIM alignment, on mail the operator never saw and
+cannot find afterwards. The `From` header shows the stranger, so nothing in the recipient's
+mailbox says otherwise either.
+
+The same hole exists on the way in, and is worse. `ImapPoller` never called `login_for` at all —
+it read `IMAP_EMAIL`/`IMAP_PASSWORD` directly — so `ImapLoop`'s careful once-per-mailbox pass
+logged into the *same inbox* every time. A second workspace's replies, bounces and opt-outs sit
+in their own inbox and were never fetched; meanwhile the operator's personal mail was ingested
+into the stranger's org as orphaned inbound messages. **An opt-out nobody can read is an opt-out
+we will breach.**
+
+**Decision.**
+
+1. **`orgs.uses_environment_mailbox`**, a boolean with no API route that sets it. The migration
+   grants it to the oldest org — on this deployment the single `members` row inserted by hand in
+   `DEPLOY.md` §4.1, long before anyone could sign up — and to nobody else, ever.
+2. **The address must also match `SMTP_EMAIL`.** An owner may hold several mailboxes and only one
+   of them is the account those credentials log in as. Sending `rahul@arkvane.in` through a Gmail
+   authenticated as somebody else is the mismatched-envelope problem already on record: nothing
+   bounces and the message is simply unauthenticated against a domain whose records say otherwise.
+3. **Both conditions, not either.** `uq_mailboxes_org_from_email` is scoped *per org*, so a second
+   workspace may create a mailbox named after the operator's own address. An address-only rule
+   would hand that stranger the password — the guard would be the attack.
+4. **`ImapPoller` takes a `MailLogin` per call**, authenticating with XOAUTH2 when the mailbox has
+   a token. ADR-018's choice of SMTP/IMAP over the Gmail API is what makes this a parameter rather
+   than a rewrite.
+5. **Refusal is `MailboxUnavailable`**, which both loops already know how to contain: the send
+   loop pauses that one mailbox with a reason, the IMAP loop skips it and counts it, and every
+   other mailbox keeps its turn.
+
+**Why a column rather than inferring it.** Every alternative is a guess that a stranger can
+influence: the oldest org (fine until a workspace is created during a migration), an org with no
+`mail_credentials` (true of every new signup), `secret_ref` (the API accepts it from the caller).
+Ownership of a credential is a fact, and facts belong in a column.
+
+**The dashboard asks the same question, without sending anything.** `unavailable_reason()` is
+what `_blockers` calls, and `login_for` uses the same helper for the case they share. The obvious
+implementation — have the blocker call `login_for` — would mint an access token from inside a
+`GET`, so refreshing the campaign screen would make a request to Google and could write an
+`invalid_reason`. A second copy of the rule would have been this project's signature defect for
+the eighth time.
+
+**Consequences.** A single-tenant install is unchanged: one org, one mailbox, the address in
+`.env`, and nothing about this is visible. A second workspace must connect Gmail before it can
+send or receive — which is the product behaviour that was intended all along, and was previously
+achieved by accident in the worst possible way. The campaign screen names the reason, so "I
+approved a draft and nothing happened" stays answerable.

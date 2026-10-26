@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.db.models import ImapCursor
 from app.domain.campaign import CampaignSettings
+from app.services.mail.connection import MailLogin
 from app.services.mail.imap import FetchedMessage, ImapPoller, PollResult
 from app.services.reply.classify import Router, classify_reply
 from app.services.reply.service import ReplyOutcome, handle_inbound
@@ -86,6 +87,7 @@ async def ingest_folder(
     settings: CampaignSettings,
     limit: int = 200,
     now: datetime | None = None,
+    login: MailLogin | None = None,
 ) -> IngestReport:
     """Run one pass. Returns a report; raises only on a programming error.
 
@@ -108,6 +110,9 @@ async def ingest_folder(
         known_uidvalidity=known_uidvalidity,
         limit=limit,
         now=now,
+        # Whose mailbox this is. `None` means the environment account, which only the org
+        # entitled to it ever reaches here with.
+        login=login,
     )
 
     if not result.ok:

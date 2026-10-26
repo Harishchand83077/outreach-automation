@@ -69,6 +69,15 @@ class Org(Base):
     #: did this"; the `events` table cannot hold it because every row there is keyed to a lead.
     send_mode_set_by: Mapped[str | None] = mapped_column(String(320))
     send_mode_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: May this org's mailboxes authenticate with the credentials in `.env`?
+    #:
+    #: False for everyone who signs up, and there is no route that sets it — the only way in is
+    #: the migration that added the column, which granted it to the one org that predated public
+    #: sign-up. The environment account belongs to whoever installed the deployment; a stranger
+    #: who creates a workspace must connect their own, or send nothing.
+    uses_environment_mailbox: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (

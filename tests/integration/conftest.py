@@ -139,7 +139,15 @@ async def db(_migrated_database: None) -> AsyncIterator[AsyncSession]:
 async def org(db: AsyncSession):
     from app.db.models import Org
 
-    record = Org(name="Test Agency")
+    record = Org(
+        name="Test Agency",
+        # **The deployment's own workspace**, which is what almost every test here models: one
+        # org, the mailbox in `.env`, no OAuth. The migration grants this to the org that
+        # predates public sign-up, and `login_for` will hand out the environment credentials to
+        # nobody else -- so a test for a *stranger* builds its own `Org(...)`, where the default
+        # of False is the whole point.
+        uses_environment_mailbox=True,
+    )
     db.add(record)
     await db.commit()
     return record

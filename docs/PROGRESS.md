@@ -721,6 +721,55 @@ exists, which is the only way a guard against forgetting can itself not be forgo
 `SIGNUP_MODE` joins `SEND_MODE` in the Safety block rather than the set/unset groups: it always
 has a value, and **`closed` looks identical to `unconfigured` from the outside**.
 
+**Anyone who signs up can now send as themselves — and until this change, they sent as *us*
+(ADR-020).** Asked as a product question: why is the sending account fixed to one address when
+Gmail OAuth is integrated? The answer turned out to be a cross-tenant credential leak in two
+directions, and both had been live since sign-up opened.
+
+**Outbound.** ADR-018's fallback — a mailbox with no credential uses `SMTP_EMAIL` — had no owner
+check. A stranger signs up, creates a campaign, types their own `from_email`, never connects:
+`login_for` hands back **the operator's Gmail**. Their campaign sends on the operator's daily
+cap, under the operator's sending reputation, aligned to the operator's SPF and DKIM — mail the
+operator never saw, from an address they have never heard of, with nothing afterwards to say it
+happened. The `From` header shows the stranger, so the recipient's mailbox does not say so either.
+
+**Inbound, which is worse.** `ImapPoller` never called `login_for` at all. It read
+`IMAP_EMAIL`/`IMAP_PASSWORD` directly, so `ImapLoop`'s careful once-per-mailbox pass logged into
+**the same inbox every time**. A second workspace's replies, bounces and opt-outs are in their
+own inbox and were never fetched — while the operator's personal mail was ingested into the
+stranger's org as orphaned inbound messages. An opt-out nobody can read is an opt-out we will
+breach, and that is a compliance failure rather than a missing feature.
+
+**The fix is two conditions, and either alone is wrong.** `orgs.uses_environment_mailbox` says
+whose the environment credentials are; no route sets it and the migration grants it to the oldest
+org only. The address must *also* equal `SMTP_EMAIL`, because an owner holds several mailboxes
+and only one of them is the account that logs in. Matching on the address alone would have been
+the hole in a new costume: `uq_mailboxes_org_from_email` is per org, so anyone may create a
+mailbox named after the operator's address, and the guard would have handed them the password.
+
+`ImapPoller` now takes a `MailLogin` per call and authenticates with XOAUTH2 when the mailbox has
+a token — a parameter rather than a rewrite, which is ADR-018's choice of SMTP/IMAP over the
+Gmail API paying off. A mailbox that cannot authenticate is **skipped and counted**, not polled
+as somebody else, and one unconnected mailbox does not stop the others.
+
+**The dashboard can say so, and asking cost a design decision.** `blockers` gains
+`mailbox_unavailable`. The obvious implementation — call `login_for` — would mint an access token
+from inside a `GET`, so refreshing the campaign screen would call Google and could write an
+`invalid_reason`: a read path with a side effect, fired by anyone pressing F5. So the knowable
+half lives in `unavailable_reason()` and **`login_for` calls the same helper**, rather than a
+second copy of the rule that would drift the first time either side changed — which would have
+been this project's signature defect for the eighth time.
+
+**And `/admin/sending-config` was telling every workspace the operator's address.**
+`sending_account` returned `config.SMTP_EMAIL` unconditionally. It now names the org's own
+mailboxes, with `uses_shared_account` saying whether one of them is the deployment's.
+
+1,614 tests, ruff and mypy strict clean. Both new guard sets were run against the unfixed code
+first: restoring the old fallback fails three tenancy tests and two IMAP tests, and the
+pre-existing `test_a_mailbox_with_no_credential_uses_the_environment` **asserted the bug** — it
+is now `test_the_owners_own_mailbox_with_no_credential_uses_the_environment`, which is the case
+the fallback was always for.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

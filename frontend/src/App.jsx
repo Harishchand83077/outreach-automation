@@ -2505,8 +2505,12 @@ function Settings({ campaign, onError, onToast, onChanged }) {
                 </td>
               </tr>
               <tr>
-                <td>Sending account</td>
-                <td className="mono">{config.sending_account}</td>
+                <td>{(config.sending_accounts || []).length > 1 ? 'Sending accounts' : 'Sending account'}</td>
+                <td className="mono">
+                  {(config.sending_accounts || []).length
+                    ? (config.sending_accounts || []).join(', ')
+                    : config.sending_account || 'none yet — add one when you create a campaign'}
+                </td>
               </tr>
               <tr>
                 <td>SMTP</td>
