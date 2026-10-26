@@ -122,10 +122,14 @@ jobs:
         env:
           # Fake values, shaped like real ones. The check prints variable NAMES only.
           GROQ_API_KEY: gsk_ci_placeholder_value_1234567890
-          SMTP_EMAIL: sender@example.com
-          SMTP_PASSWORD: not-a-real-password
+          # ADR-023: a deployment no longer needs a sending account, it needs to be able to let
+          # somebody connect their own. These four are what REQUIRED_KEYS now names.
+          CREDENTIAL_KEY: Y2ktb25seS1ub3QtYS1yZWFsLWZlcm5ldC1rZXktMDA9
+          GOOGLE_CLIENT_ID: 1234567890-ci.apps.googleusercontent.com
+          GOOGLE_CLIENT_SECRET: ci-only-not-a-real-client-secret
+          GOOGLE_REDIRECT_URI: https://api.example.com/api/v1/connect/google/callback
         run: |
-          docker run --rm -e GROQ_API_KEY -e SMTP_EMAIL -e SMTP_PASSWORD             outreach:ci python -m app.scripts.check_env
+          docker run --rm -e GROQ_API_KEY -e CREDENTIAL_KEY -e GOOGLE_CLIENT_ID             -e GOOGLE_CLIENT_SECRET -e GOOGLE_REDIRECT_URI             outreach:ci python -m app.scripts.check_env
 
       - name: The Compose files are valid
         env:

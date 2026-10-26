@@ -25,6 +25,11 @@ the sends. Everything below is the half a test cannot do.
 
 ## 1. The sending identity — do this first
 
+> **ADR-023 changed this.** There is no `SMTP_EMAIL` or `SMTP_PASSWORD` any more: every mailbox
+> authenticates with a credential its owner connected through Google, and the allowlist is each
+> workspace's own rows, edited in Settings. Read the paragraphs below as being about *the account
+> a person connects* rather than about anything in `.env`.
+
 **This is the one item that is currently wrong, and it is deliberate.** The mailbox row says
 `rahul@arkvane.in` while SMTP authenticates as a personal Gmail account. Gmail accepts the
 mismatched envelope, so nothing bounces — but **Gmail will not sign `arkvane.in` mail**, so the
@@ -32,9 +37,11 @@ SPF and DKIM records verified for that domain do not cover anything sent this wa
 
 For testing against your own inboxes that is harmless. Before mailing anybody else:
 
-- [ ] `SMTP_EMAIL` is an address on the sending domain, and the mailbox row's `from_email` is
-      **the same address**. A mismatch means unauthenticated mail against a domain that has
-      records, which scores worse than a domain with none.
+- [ ] The **connected Google account** is an address on the sending domain, and the mailbox
+      row's `from_email` is **the same address**. The callback already refuses a mismatch, so
+      this is now a question about which account was authorised rather than about `.env`. A
+      mismatch means unauthenticated mail against a domain that has records, which scores worse
+      than a domain with none.
 - [ ] Send one message to a Gmail address and open **Show original**. Require
       `SPF: PASS`, `DKIM: PASS`, `DMARC: PASS`. DNS cannot tell you this; only a received
       message can.
@@ -71,7 +78,7 @@ after a problem. See QUESTIONS.md Q4.
 Already done once: three leads went out, were delivered, and were recorded `SENT`. Repeat it
 after any change to the sending identity.
 
-- [ ] `SEND_ALLOWLIST` contains only addresses you own.
+- [ ] The workspace's allowlist (Settings -> Send mode) contains only addresses you own.
 - [ ] Send mode is `allowlist`. Check it on the Settings screen, not from memory.
 - [ ] Import a small sheet, let research and drafting run, and **read the drafts**. The point of
       the rehearsal is the content, not the plumbing.
