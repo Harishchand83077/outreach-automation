@@ -22,7 +22,6 @@ reasoning put `orgs.send_mode` in as a nullable column rather than one with a de
 from __future__ import annotations
 
 import logging
-
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -161,9 +160,7 @@ async def _accept(
     invited, with no membership, and a membership nobody can account for are both worse than
     either half failing.
     """
-    member = Member(
-        org_id=invitation.org_id, user_id=user_id, email=email, role=invitation.role
-    )
+    member = Member(org_id=invitation.org_id, user_id=user_id, email=email, role=invitation.role)
     session.add(member)
     invitation.accepted_at = datetime.now(tz=UTC)
     try:

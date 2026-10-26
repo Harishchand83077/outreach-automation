@@ -1023,3 +1023,83 @@ A latent bug surfaced while writing this and is fixed here: `MailLogin` was impo
 only under `TYPE_CHECKING`, so `send(login=None)` — the documented fallback to the environment
 account — raised `NameError` rather than taking it. Nothing reached it, because `login_for` never
 returns `None`, which is exactly why it went unnoticed.
+
+---
+
+## ADR-022 — An invitation, because the order mattered and should not have
+
+**Status.** Accepted, 2026-10-26.
+
+**Context.** Adding a teammate to an existing workspace meant one `INSERT` into `app.members`
+against production, and it had to happen **before** that person's first authenticated request.
+
+Afterwards, `provision()` sees no membership, creates them a workspace of their own and makes them
+its owner (ADR-017). Writing the `members` row at that point does not fail: `uq_members_org_user`
+is scoped per org, so the database accepts a **second** membership for the same `user_id` in a
+different org. `deps.current_user` then resolves them with `select(Member).where(user_id == sub)`
+and `scalar()`, which returns whichever row the database happens to hand back first.
+
+So the failure was not an error. It was a person seeing one workspace on Monday and a different
+one on Tuesday, with nothing on screen admitting that two existed — and before that, the much
+more ordinary symptom of signing in, landing in an empty org, and reporting that every campaign
+had vanished.
+
+An earlier note in this project's own documentation said the second insert would be refused by a
+unique constraint. It would not. There is no global unique index on `members.user_id`, and the
+absence of one is exactly what makes this worth a table rather than a warning in a runbook.
+
+**Decision.** `app.invitations` — org, address, role, who sent it, and when it was accepted or
+revoked. `provision()` consults it **before** anything else, and an address with a pending
+invitation joins that org with that role instead of getting a new one. Nothing has to happen in a
+particular order any more, which is the entire point: a rule that depends on somebody remembering
+a sequence is a rule that will be broken by whoever did not read the runbook.
+
+**An invitation overrides `SIGNUP_MODE=closed`.** An admin naming an address deliberately is a
+stronger statement than a global policy, and the default this project ships is `closed` — without
+the override, the safest configuration would also be the one in which nobody can add their own
+team. A stranger with no invitation is refused exactly as before; there is a test for each.
+
+**Matched on the email address, which is a stated limit rather than an oversight.** A Supabase
+`sub` does not exist until the first sign-in, so the address the identity provider reports is the
+only thing available. Whoever controls the invited address gets the seat — the same assumption
+every invitation email makes. It is not a bearer token and it is not secret: a pending invitation
+grants nothing until somebody authenticates as that address, so the security boundary is still
+Supabase.
+
+**One pending invitation per address across the whole deployment**, enforced by a partial unique
+index. Per-org would allow two workspaces to hold an invitation for the same person, and the
+winner would be decided by which of them signed in first. Refusing the second invitation is a
+sentence somebody can act on; losing a race is not. The index is partial so that a used or revoked
+row never blocks a fresh invitation — re-inviting somebody who left has to work.
+
+**Inviting somebody who already has a workspace is refused, not absorbed.** That is the failure
+this table exists to prevent, and silently accepting it at the invitation end would recreate it at
+the acceptance end. The way out is a decision — they keep their workspace, or an admin deletes
+their membership and their org and invites them fresh — and it destroys data, so nothing does it
+automatically.
+
+**You cannot invite above your own role.** Without it the door built to let people in is a
+privilege escalation: an admin invites an owner, who may then change the send mode (ADR-010).
+
+**Removal has two refusals**, both about leaving a workspace reachable: you cannot remove yourself,
+and the last `owner` cannot be removed, because an org with no owner has nobody who may change its
+send mode. A removed member's work stays — a member is a key, not a container, and deleting the
+campaigns and messages of somebody who left would destroy the record of what was sent to whom,
+which `PRIVACY.md` requires to stay attributable.
+
+**Alternatives rejected.**
+
+- **A signed invitation token in a link.** More moving parts (expiry, replay, a second place
+  secrets live) for no extra safety: the link would still be honoured only for whoever can
+  authenticate as the address, which is what the address match already says.
+- **Letting a person hold memberships in several orgs.** A larger change than it looks — every
+  request would need to know *which* org, and `deps.py` would have to take it from the caller,
+  which ADR-004 exists to forbid. One workspace per person stays.
+- **Making `members.user_id` globally unique instead.** It would turn the silent failure into a
+  loud one, which is better, but it would still leave no way to add a teammate who has already
+  signed in, and no way to add one without SQL. It is worth doing as well; it is not a substitute.
+
+**Consequences.** `docs/USERS.md` §B is now a dashboard flow rather than a `psql` session, and the
+by-hand escape hatch writes an invitation rather than a membership for the same reason. A
+deployment that never creates an invitation behaves exactly as it does today — the migration is
+one new table and reads nothing.

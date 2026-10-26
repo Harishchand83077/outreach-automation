@@ -96,20 +96,79 @@ ADR-020's whole subject, and `orgs.uses_environment_mailbox` is granted to the o
 
 ## B. A teammate inside your workspace
 
-No invite UI exists, so this is one row. The person must **not** have signed in yet — if they have,
-they already have their own org and the insert fails on `members.user_id`'s unique constraint.
+Settings -> **Team** -> *Invite by email*. That is the whole thing. There is no SQL, and **the
+order no longer matters** -- which it used to, silently and badly (ADR-022).
 
-### 1. Create them in Supabase
+### What an invitation does
 
-Supabase dashboard → **Authentication → Users → Add user**. Then open their row and copy the
-**UID** — that is the `sub` claim their token will carry, and it is what `members.user_id` holds.
+It holds a seat. When that address signs in for the first time, `provision()` finds the pending
+invitation and joins them to **your** org with **the role you chose**, instead of creating a
+workspace of their own.
 
-### 2. Insert the membership
+An invitation also **overrides `SIGNUP_MODE=closed`**. An admin naming an address deliberately is
+a stronger statement than a global policy, and a deployment kept closed so strangers cannot wander
+in still has to be able to add its own team.
+
+**It is not a token and it is not secret.** A pending invitation grants nothing by itself: it is
+consulted only when somebody authenticates *as that address* through Supabase, so the security
+boundary is still the identity provider. Matching on the address rather than on a user id is
+unavoidable -- a Supabase `sub` does not exist until the first sign-in -- and it is the same
+assumption every invitation email in existence makes.
+
+### The one case it cannot fix
+
+**If they have already signed in, they already have a workspace of their own**, and the invitation
+is refused with a sentence saying so.
+
+Quietly giving them a second membership would be worse than refusing. `uq_members_org_user` is
+scoped per org, so nothing in the database stops it, and `deps.current_user` resolves a person
+holding two memberships by taking whichever row comes back first -- so they would see one
+workspace on Monday and the other on Tuesday, with no pattern to it and nothing on screen
+admitting that two exist.
+
+The way out is a decision, not a button: they keep their own workspace, or an admin deletes their
+membership and their org and then invites them fresh. The second throws away everything they had
+created, so nothing does it automatically.
+
+### Roles
+
+Checked in `app/api/deps.py`; strongest first.
+
+| Role | May |
+|---|---|
+| `owner` | everything, **including setting the send mode** (ADR-010) |
+| `admin` | connect and disconnect mailboxes, edit sending rules, remove a suppression, invite and remove people, read `/admin/*` |
+| `member` | read the dashboard and approve or reject drafts -- and nothing that changes the rules underneath them |
+
+`member` is the right default for somebody who is there to review. The gate is on the rules, not on
+the work: a test asserts a member can still review.
+
+**You cannot invite somebody above your own role.** Otherwise the door built to let people in is a
+privilege escalation: an admin invites an owner, who may then change the send mode.
+
+Removing a suppression is `admin` on purpose -- it undoes somebody's opt-out, which is the one
+action in the dashboard that can lead to mailing a person who asked not to be. *Adding* one is
+protective and stays open to anyone.
+
+### Removing somebody
+
+Settings -> **Team** -> *Remove*. Two refusals, both about leaving the workspace reachable: you
+cannot remove yourself (an admin who does is locked out of the org they were administering), and
+the last `owner` cannot be removed (an org with no owner has nobody who may change its send mode).
+
+**Their work stays.** A member is a key, not a container: the campaigns, leads and drafts belong to
+the org, and deleting them because somebody left would destroy the record of what was sent to whom,
+which `PRIVACY.md` is explicit must stay attributable.
+
+Delete or ban them in Supabase too, or they can still sign in -- and with `SIGNUP_MODE=open` their
+next request provisions a brand-new empty workspace, which looks exactly like the data having
+vanished.
+
+### By hand, if the dashboard is not reachable
 
 ```bash
 cd /opt/outreach
-sudo docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres \
-    psql -U outreach -d outreach
+sudo docker compose --env-file .env -f deploy/compose.prod.yml exec -T postgres     psql -U outreach -d outreach
 ```
 
 The `sudo` matters: `docker compose` reads `.env`, which is root-only. Without it you get
@@ -119,36 +178,13 @@ permissions one.
 ```sql
 SELECT id, name FROM app.orgs ORDER BY created_at;   -- yours is the first row
 
-INSERT INTO app.members (id, org_id, user_id, email, role)
-VALUES (gen_random_uuid(), '<your org id>', '<their Supabase UID>', 'them@example.com', 'member');
+INSERT INTO app.invitations (org_id, email, role, invited_by)
+VALUES ('<your org id>', 'them@example.com', 'member', 'you@example.com');
 ```
 
-### 3. Roles
-
-Checked in `app/api/deps.py`; strongest first.
-
-| Role | May |
-|---|---|
-| `owner` | everything, **including setting the send mode** (ADR-010) |
-| `admin` | connect and disconnect mailboxes, edit sending rules, remove a suppression, read `/admin/*` |
-| `member` | read the dashboard and approve or reject drafts — and nothing that changes the rules underneath them |
-
-`member` is the right default for somebody who is there to review. The gate is on the rules, not on
-the work: a test asserts a member can still review.
-
-Removing a suppression is `admin` on purpose — it undoes somebody's opt-out, which is the one
-action in the dashboard that can lead to mailing a person who asked not to be. *Adding* one is
-protective and stays open to anyone.
-
-### 4. Removing them
-
-```sql
-DELETE FROM app.members WHERE user_id = '<their Supabase UID>';
-```
-
-Then delete or ban the user in Supabase, or they can still sign in — and with `SIGNUP_MODE=open`
-their next request would provision them a **brand-new empty workspace**, which looks exactly like
-the data having vanished. Remove the identity and the membership together, in that order.
+**Write an invitation, not a `members` row, even here.** The invitation works whether or not they
+have signed in yet; a `members` row written after they have already signed in is the
+double-membership failure above, and nothing will tell you it happened.
 
 ---
 
@@ -159,7 +195,8 @@ the data having vanished. Remove the identity and the membership together, in th
 | *"not a member of any organisation, and sign-up is closed"* | `SIGNUP_MODE=closed`. §A.1. |
 | *"Sign-up is restricted to approved email domains"* | `SIGNUP_MODE=allowlist` and their domain is not in `SIGNUP_ALLOWED_DOMAINS`. |
 | *"This deployment has reached its workspace limit"* | `MAX_ORGS`. Raise it in `.env` and redeploy. |
-| They sign in and see an **empty** workspace that should have your campaigns | They signed in before the `members` row was inserted, so they were provisioned their own org. Delete both rows and start §B again. |
+| They sign in and see an **empty** workspace that should have your campaigns | They signed in before being invited, so they were provisioned their own org. §B, "The one case it cannot fix". |
+| *"already has a workspace of their own"* when inviting | Exactly that, and refused rather than papered over. §B. |
 | The magic link never arrives | Supabase, not this system. Check **Authentication → Logs** there. |
 | A browser CORS error on the dashboard | `CORS_ALLOWED_ORIGINS` must be the exact origin, scheme included, no trailing slash. |
 

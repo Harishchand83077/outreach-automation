@@ -175,9 +175,7 @@ async def revoke(
     """
     invitation = await session.get(Invitation, invitation_id)
     if invitation is None or invitation.org_id != user.org_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found."
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found.")
     if invitation.accepted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

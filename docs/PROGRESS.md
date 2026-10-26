@@ -829,6 +829,7 @@ raised `NameError` instead of taking it. Nothing ever reached it, because `login
 returns `None`, which is exactly why it went unnoticed.
 
 1,647 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+
 **`docs/USERS.md` is new: how somebody actually gets access.** Asked for after the
 multi-user work landed, and the question turned out to have two different answers that were being
 confused for one.
@@ -849,6 +850,47 @@ Two smaller things are recorded because they cost time: `docker compose` on the 
 `sudo` (it reads the root-only `.env`, and without it fails with `open /opt/outreach/.env:
 permission denied`, which reads like a Docker fault), and `MAX_ORGS` defaults to 25 and is a
 ceiling on top of whichever `SIGNUP_MODE` is set.
+
+**Adding a teammate no longer depends on doing things in the right order (ADR-022).** The old way
+was one `INSERT` into `app.members` against production, and it had to happen *before* that person's
+first sign-in.
+
+**And what happens if you do it afterwards is worse than "the insert fails".** There is **no global
+unique index on `members.user_id`** — `uq_members_org_user` is scoped per org — so the second
+insert succeeds. `deps.current_user` then resolves that person with `scalar()`, taking whichever
+row the database returns first. The symptom is not an error: it is somebody seeing one workspace on
+Monday and a different one on Tuesday, with nothing on screen admitting that two exist. Before
+that, the ordinary symptom is signing in, landing in an empty org, and reporting that every
+campaign has vanished.
+
+`app.invitations` holds a seat. `provision()` consults it before anything else, so an invited
+address joins **that** org with **that** role instead of being given a new one, whenever they
+happen to sign in. **An invitation overrides `SIGNUP_MODE=closed`**, because the default this
+project ships is `closed` and without the override the safest configuration would also be the one
+where nobody can add their own team. A stranger with no invitation is refused exactly as before.
+
+**It is matched on the email address, and that is a stated limit rather than an oversight.** A
+Supabase `sub` does not exist until the first sign-in, so the address is the only thing available
+to match on. It is not a token and not secret: a pending invitation grants nothing until somebody
+authenticates as that address, so the boundary is still Supabase.
+
+**One pending invitation per address across the deployment**, by a partial unique index. Per-org
+would let two workspaces invite the same person and decide the winner by who signs in first —
+refusing the second is a sentence somebody can act on, losing a race is not. Partial, so a used or
+revoked row never blocks re-inviting somebody who left.
+
+**Inviting somebody who already has a workspace is refused rather than absorbed**, since that is
+the exact failure the table exists to prevent. And **you cannot invite above your own role**, or
+the door built to let people in is a privilege escalation: an admin invites an owner, who may then
+change the send mode.
+
+Removal has two refusals, both about leaving a workspace reachable — not yourself, and not the last
+owner — and a removed member's work stays, because a member is a key rather than a container and
+the record of what was sent to whom must remain attributable.
+
+Settings now has a **Team** panel, so none of this is SQL. `docs/USERS.md` §B was rewritten around
+it, and its by-hand escape hatch writes an *invitation* rather than a membership for the same
+reason.
 
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the

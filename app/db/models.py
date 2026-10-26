@@ -138,6 +138,18 @@ class Invitation(Base):
         CheckConstraint("role IN ('owner', 'admin', 'member')", name="ck_invitations_role"),
         Index("ix_invitations_email", "email"),
         Index("ix_invitations_org", "org_id"),
+        # **One pending invitation per address, across the whole deployment.** Per org would let
+        # two workspaces invite the same person and decide the winner by whoever signs in first;
+        # refusing the second is a sentence somebody can act on, losing a race is not.
+        #
+        # Partial, so a used or revoked row never blocks a fresh invitation -- re-inviting
+        # somebody who left has to work.
+        Index(
+            "uq_invitations_pending_email",
+            "email",
+            unique=True,
+            postgresql_where=text("accepted_at IS NULL AND revoked_at IS NULL"),
+        ),
     )
 
 
