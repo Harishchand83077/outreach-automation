@@ -908,6 +908,45 @@ Settings now has a **Team** panel, so none of this is SQL. `docs/USERS.md` §B w
 it, and its by-hand escape hatch writes an *invitation* rather than a membership for the same
 reason.
 
+**A campaign can be pointed at an account you already connected.** Asked for directly: *"he
+can change the email per campaign ... either send from what he has connected or connect new"*.
+
+Most of it already existed and nothing joined it up. `campaigns.mailbox_id` and
+`PATCH /campaigns/{id}` have accepted a choice since Phase 2, and `POST /mailboxes` could create
+one -- but nothing could **list** them, so the New campaign form asked for an address every time.
+Within one org `POST /mailboxes` is idempotent on the address, so typing the same one back
+quietly returned the same row; type a different one and you got a second mailbox that then had to
+be connected separately, with nothing on screen saying why the new campaign would not send. The
+signature defect once more: a correct producer, a correct consumer, nothing in between.
+
+`GET /mailboxes` returns every sending account the workspace holds **with whether each one
+actually works** -- connected, needs reconnecting, days left on the grant, and how many campaigns
+use it. The state travels with the row rather than being fetched per mailbox afterwards, because
+the choice is meaningless without it: an address that cannot authenticate is not an option, it is
+a thing to fix, and a picker that presents the two identically sends people down the dead end.
+
+It is **non-networked**. `grant_status` is arithmetic over a stored column, so a `GET` that
+anybody can fire by pressing F5 never calls Google.
+
+`invalid_reason` is deliberately not echoed -- it can quote a provider's reply and this reaches a
+browser and screenshots -- so each row carries a boolean `usable` instead, computed by the same
+`unavailable_reason()` the campaign blockers use. There is a test asserting the stored text does
+not appear in the response.
+
+The New campaign form now offers the list and preselects the single usable account when there is
+one, so the ordinary case has nothing to decide and nothing to type. The campaign screen gains a
+switcher when the workspace has more than one.
+
+**What was not built, and why it is not a shortcut.** Connecting Gmail *before* signing up is not
+possible: the OAuth callback carries no `Authorization` header, so the `state` nonce written by an
+authenticated request is what says whose workspace the credential belongs to. Without that,
+anybody could hand a signed-in user a crafted callback and attach their own mailbox to that user's
+org. The order is necessarily sign in, workspace, connect.
+
+And connecting at signup would not have prevented the double-membership failure, which is about
+*which org a teammate lands in* -- it would have added a mailbox to the wrong org as well.
+ADR-022 is the fix for that.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

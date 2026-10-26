@@ -1517,6 +1517,7 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
   // The last connection check. Cleared whenever the mailbox changes, because a result about a
   // different mailbox sitting under this one is worse than no result at all.
   const [checks, setChecks] = useState(null)
+  const [mailboxes, setMailboxes] = useState([])
   const [schedule, setSchedule] = useState({ starts_at: '', ends_at: '' })
   const [mailbox, setMailbox] = useState({ from_name: '', from_email: '' })
 
@@ -1557,6 +1558,11 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       .then(setConn)
       .catch(() => setConn({ configured: false, connected: false }))
     setChecks(null)
+    // Every sending account this workspace holds, so an existing campaign can be switched to one
+    // instead of its address being typed again into a second mailbox row.
+    getJson('/mailboxes')
+      .then((data) => setMailboxes(data.mailboxes))
+      .catch(() => setMailboxes([]))
     // A chart is a nicety, so a failure to load one must not put a red banner over a screen
     // whose numbers are all fine. It simply does not draw.
     getJson(`/campaigns/${campaign.id}/activity`)
@@ -1618,6 +1624,19 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
           ? 'This mailbox can send and be read.'
           : 'Something about this connection is not working. See the details below.'
       )
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const useMailbox = async (mailboxId) => {
+    setBusy(true)
+    try {
+      await patchJson(`/campaigns/${campaign.id}`, { json: { mailbox_id: mailboxId } })
+      onToast('This campaign now sends from that account.')
+      onChanged(false)
     } catch (err) {
       onError(err)
     } finally {
@@ -1992,6 +2011,23 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
               </button>
             </div>
           ) : null}
+          {mayAdminister && mailboxes.length > 1 ? (
+            <label className="field" style={{ marginTop: 12 }}>
+              <span>Send this campaign from</span>
+              <select
+                value={campaign.mailbox_id || ''}
+                disabled={busy}
+                onChange={(event) => useMailbox(event.target.value)}
+              >
+                {mailboxes.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.from_email}
+                    {row.usable ? '' : ' — not connected yet'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
           {checks ? (
             <ul className="muted" style={{ marginTop: 10, paddingLeft: 18 }}>
               {checks.checks.map((check) => (
@@ -2179,6 +2215,25 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   })
   const [busy, setBusy] = useState(false)
   const [fieldErrors, setFieldErrors] = useState([])
+  // The accounts this workspace has already connected. Before this the form asked for an address
+  // every time, so anybody who meant the account they had connected last week typed it again and
+  // got the same row back -- or, worse, a second row they then had to connect separately.
+  const [mailboxes, setMailboxes] = useState([])
+  const [chosen, setChosen] = useState('')
+
+  useEffect(() => {
+    getJson('/mailboxes')
+      .then((data) => {
+        setMailboxes(data.mailboxes)
+        // Preselect the one that can actually send. With exactly one usable account -- the
+        // ordinary case -- there is nothing to decide and nothing to type.
+        const usable = data.mailboxes.filter((row) => row.usable)
+        if (usable.length === 1) setChosen(usable[0].id)
+      })
+      // Degrades to the old behaviour rather than erroring: an older server without this route
+      // leaves the picker out and the address fields still work.
+      .catch(() => setMailboxes([]))
+  }, [])
 
   const set = (key) => (event) => setForm({ ...form, [key]: event.target.value })
   const setMode = (mode) => setForm({ ...form, mode })
@@ -2216,8 +2271,8 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
     try {
       // The mailbox first: a campaign can exist without one, but it could never send, and
       // creating them together means one less half-finished state to explain later.
-      let mailboxId = null
-      if (form.from_email.trim()) {
+      let mailboxId = chosen || null
+      if (!mailboxId && form.from_email.trim()) {
         const mailbox = await postJson('/mailboxes', {
           json: { from_name: form.from_name || form.sender_name, from_email: form.from_email },
         })
@@ -2454,20 +2509,41 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
           </>
         )}
 
-        <h2 className="section-title">Mailbox</h2>
+        <h2 className="section-title">Sending account</h2>
         <p className="muted">
-          Optional now, required before anything can send. It must be an address your SPF and
-          DKIM records cover.
+          Which address this campaign sends from. Pick one you have already connected, or add a
+          new one and connect it on the campaign screen afterwards.
         </p>
-        <div className="field-grid">
-          <Field label="Send from (email)" value={form.from_email} onChange={set('from_email')} />
-          <Field
-            label="Sender name recipients see"
-            value={form.from_name}
-            onChange={set('from_name')}
-            hint="Defaults to your name."
-          />
-        </div>
+        {mailboxes.length ? (
+          <label className="field">
+            <span>Send from</span>
+            <select value={chosen} onChange={(event) => setChosen(event.target.value)}>
+              <option value="">A new address…</option>
+              {mailboxes.map((row) => (
+                <option key={row.id} value={row.id} disabled={!row.usable}>
+                  {row.from_email}
+                  {row.usable ? '' : ' — not connected yet'}
+                  {row.campaigns ? ` · ${row.campaigns} campaign(s)` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+        {chosen ? null : (
+          <div className="field-grid">
+            <Field
+              label="Send from (email)"
+              value={form.from_email}
+              onChange={set('from_email')}
+            />
+            <Field
+              label="Sender name recipients see"
+              value={form.from_name}
+              onChange={set('from_name')}
+              hint="Defaults to your name."
+            />
+          </div>
+        )}
 
         {fieldErrors.length ? (
           <div className="banner" data-tone="bad" style={{ marginTop: 14 }}>
