@@ -932,3 +932,94 @@ the eighth time.
 send or receive — which is the product behaviour that was intended all along, and was previously
 achieved by accident in the worst possible way. The campaign screen names the reason, so "I
 approved a draft and nothing happened" stays answerable.
+
+---
+
+## ADR-021 — A mailbox says whether it works, and when it will stop
+
+**Status.** Accepted, 2026-10-26.
+
+**Context.** Two questions had no answer, and both were asked by somebody operating the system
+rather than reading it.
+
+*"Did Connect Gmail actually work?"* The only way to find out was to approve a draft and wait for
+the send loop — which, with `SEND_MODE=disabled`, answers nothing at all. A person signing up
+could connect their account, see a green tick, and have no way to distinguish a working connection
+from a broken one until their first campaign quietly did not go out. The request was phrased as
+*"a test email to his other address, just to check the connection is well established"*.
+
+*"When does this connection lapse?"* ADR-018 leaves the OAuth client **unpublished** on purpose —
+Google calls reading a mailbox a restricted scope, publishing needs an annual paid security
+assessment, and hard rule 5 says no — and the price is that refresh tokens expire **seven days**
+after consent. That was written down there and handled as a product state, but only *after* the
+fact: the first anybody knew was a paused mailbox, which in practice means a campaign that stopped
+on Friday and replies nobody fetched over the weekend.
+
+**Decision.**
+
+**1. Checking sends nothing, and therefore needs no exception.** `POST /connect/google/verify`
+authenticates over SMTP and stops before `MAIL FROM`, then authenticates over IMAP and opens INBOX
+`readonly=True`. No envelope, no recipient, no message — so `SEND_MODE` has nothing to decide and
+hard rule 1 is untouched. That is what makes it safe to put behind a button anybody may press, and
+it is why the check works on a deployment where sending is switched off, which is every deployment
+before go-live.
+
+**The two halves are checked separately rather than one inferred from the other.** A mailbox that
+cannot send says so within a cycle, because a campaign stops and somebody notices. A mailbox that
+cannot be *read* looks perfectly healthy: mail goes out, and replies, bounces and opt-outs simply
+never arrive. An opt-out nobody can read is one we will breach, so the receiving half is the half
+worth checking explicitly.
+
+**2. The test message is a real email and is gated like one.** `send_test=true` sends one message
+through `SmtpSender.send`, unchanged. With sending disabled it comes back `blocked` and the report
+says so in a sentence. **No exception is carved out**, because the value of hard rule 1 is that
+there are none — a "but this one is only a test" path is how a gate stops meaning anything, and
+the test message is worth strictly less than the rule.
+
+**It goes to the mailbox's own address and there is no parameter naming a recipient.** That needs
+no allowlist entry per person, cannot mail anybody who did not ask for it, and still proves what a
+self-test can prove. An authenticated endpoint that mails an arbitrary address on request is the
+prototype's worst route (issue C2) wearing a better name.
+
+**3. `mail_credentials.granted_at`, and warnings at one day and at zero.** Neither existing column
+could answer when the seven days started: `created_at` stops moving once the row exists, so a
+mailbox reconnected this morning looked as stale as it did yesterday, and `last_refreshed_at`
+moves every hour as access tokens are minted, so it describes a token that was never the one that
+expires. `granted_at` moves on consent and nowhere else.
+
+The sweep runs hourly in the `Scheduler`, never fatally, and raises **one alert per mailbox per
+threshold per day**. The mailbox id is in the alert *kind*, not only in its detail, because the
+cool-down dedupes by kind — without it the first mailbox warned would silence every other mailbox
+in the deployment for twenty hours, and the one that never got its warning is the one that stops.
+
+`days_left` rounds **up**, so a connection with eleven hours left reports 1 rather than 0. A
+countdown that reaches zero while the thing still works is one nobody believes the next time it
+says zero.
+
+**4. One calculation, read by both.** `grant_status()` is a pure function over a credential and a
+clock. The dashboard's sentence and the alert's threshold come from it, rather than from a rule
+implemented once for the screen and once for the sweep — which is this project's signature defect
+and would have been its ninth appearance.
+
+**Alternatives rejected.**
+
+- **Emailing the warning to the mailbox owner.** It is a real email, so it is gated, so on a
+  deployment with sending disabled the warning about the connection would itself not send. A
+  notification channel that fails in exactly the configuration where it is needed is not one.
+- **Letting the caller name the test recipient.** See above: that is C2.
+- **Inferring IMAP health from SMTP.** They are different servers and different failures, and the
+  silent one is the one that would have been inferred rather than checked.
+- **A `GET` for the check.** Resolving a login refreshes an expired access token and stores it, so
+  a `GET` would be a read path with a side effect fired by anybody pressing F5 — the mistake
+  `unavailable_reason()` exists to avoid.
+
+**Consequences.** `GOOGLE_GRANT_DAYS` defaults to 7 and `0` means "never expires", so the day the
+OAuth client is published the countdown and the warnings stop with a configuration change and no
+code change — which is the exit `MULTI_TENANT_PLAN.md` §4 promised. `check_env` reports the value
+in the Safety block, because an operator who does not know this number reads a weekly reconnect as
+a fault.
+
+A latent bug surfaced while writing this and is fixed here: `MailLogin` was imported in `smtp.py`
+only under `TYPE_CHECKING`, so `send(login=None)` — the documented fallback to the environment
+account — raised `NameError` rather than taking it. Nothing reached it, because `login_for` never
+returns `None`, which is exactly why it went unnoticed.

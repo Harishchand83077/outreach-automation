@@ -1498,6 +1498,14 @@ function formatBytes(bytes) {
 
 /* ---------------------------------------------------------------- campaign */
 
+// Named for the person reading them, not for the protocol. "imap" on screen is a reason to ask
+// somebody what IMAP is; "receiving replies" is the thing that actually stops working.
+const CHECK_LABELS = {
+  smtp: 'Sending',
+  imap: 'Receiving replies',
+  test_message: 'Test email',
+}
+
 function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [detail, setDetail] = useState(null)
@@ -1584,6 +1592,31 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
       window.location.href = authorize_url
     } catch (err) {
       onError(err)
+      setBusy(false)
+    }
+  }
+
+  const checkConnection = async (sendTest) => {
+    setBusy(true)
+    try {
+      const report = await postJson('/connect/google/verify', {
+        json: {
+          ...(campaign.mailbox_id ? { mailbox_id: campaign.mailbox_id } : {}),
+          send_test: Boolean(sendTest),
+        },
+      })
+      setChecks(report)
+      // The toast says the headline; the per-check detail stays on screen, because "it failed"
+      // without saying which half failed is the thing that sent people looking in the wrong
+      // place -- a mailbox that sends but cannot be read looks perfectly healthy.
+      onToast(
+        report.ok
+          ? 'This mailbox can send and be read.'
+          : 'Something about this connection is not working. See the details below.'
+      )
+    } catch (err) {
+      onError(err)
+    } finally {
       setBusy(false)
     }
   }
@@ -1927,6 +1960,43 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
               {conn.reason} Google expires these connections about once a week while this app is
               unverified, so reconnecting is expected rather than a sign something is broken.
             </p>
+          ) : null}
+          {!conn.needs_reconnect && conn.expiry_notice ? (
+            <p className="muted" data-tone="warn" style={{ marginTop: 10 }}>
+              {conn.expiry_notice}
+            </p>
+          ) : null}
+          {conn.connected && mayAdminister ? (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                disabled={busy}
+                onClick={() => checkConnection(false)}
+              >
+                Check connection
+              </button>
+              <button
+                type="button"
+                className="btn"
+                data-size="sm"
+                disabled={busy}
+                onClick={() => checkConnection(true)}
+              >
+                Send myself a test email
+              </button>
+            </div>
+          ) : null}
+          {checks ? (
+            <ul className="muted" style={{ marginTop: 10, paddingLeft: 18 }}>
+              {checks.checks.map((check) => (
+                <li key={check.name}>
+                  <strong>{CHECK_LABELS[check.name] || check.name}:</strong>{' '}
+                  {check.ok ? 'ok' : 'failed'} — {check.detail}
+                </li>
+              ))}
+            </ul>
           ) : null}
         </div>
       )}

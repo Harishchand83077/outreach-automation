@@ -858,6 +858,14 @@ class MailCredential(Base):
     scopes: Mapped[str | None] = mapped_column(Text)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_refreshed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the person last stood at Google's consent screen. **Not the same as
+    #: `last_refreshed_at`**, which moves every hour as access tokens are minted, and not the
+    #: same as `created_at`, which stops moving once the row exists and so would make a
+    #: reconnected mailbox look as stale as it was before somebody fixed it.
+    #:
+    #: It is the only column from which "this connection lapses on Friday" can be computed, and
+    #: the whole point of warning anybody is to say that before Friday rather than after.
+    granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Set when a refresh fails. An OAuth client in Testing status expires refresh tokens after
     #: 7 days, so this is an expected state with a known fix, not an exception.
     invalid_reason: Mapped[str | None] = mapped_column(Text)

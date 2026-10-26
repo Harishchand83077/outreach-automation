@@ -210,6 +210,47 @@ class ImapPoller:
     def __init__(self, settings: Settings | None = None) -> None:
         self._settings = settings or config
 
+    async def verify(self, *, login: MailLogin | None = None) -> tuple[bool, str]:
+        """Log in and select INBOX read-only, then hang up. Returns (ok, what happened).
+
+        **The receiving half is the half that fails quietly.** A mailbox that cannot send says so
+        within a cycle, because a campaign stops and somebody notices. A mailbox that cannot be
+        *read* looks perfectly healthy: mail goes out, and replies, bounces and opt-outs simply
+        never arrive. An opt-out nobody can read is one we will breach, so this is checked
+        separately rather than inferred from SMTP working.
+
+        `readonly=True` keeps the module's first rule: nothing is ever marked read, not even by
+        the button that checks whether reading works.
+        """
+        return await asyncio.to_thread(self._verify_sync, login)
+
+    def _verify_sync(self, login: MailLogin | None = None) -> tuple[bool, str]:
+        settings = self._settings
+        if not _can_authenticate(login, settings):
+            return False, "there are no credentials for this mailbox to authenticate with"
+
+        try:
+            connection = imaplib.IMAP4_SSL(settings.IMAP_HOST, settings.IMAP_PORT)
+        except Exception as exc:
+            # The type, not the text: a connection error from a driver is as likely to quote a
+            # host and a port back at the caller as anything useful, and this reaches a browser.
+            return False, f"could not reach {settings.IMAP_HOST}: {type(exc).__name__}"
+
+        try:
+            try:
+                _authenticate(connection, login, settings)
+            except imaplib.IMAP4.error as exc:
+                return False, f"{settings.IMAP_HOST} refused the credentials: {str(exc)[:200]}"
+
+            status, _ = connection.select("INBOX", readonly=True)
+            if status != "OK":
+                return False, "signed in, but INBOX could not be opened"
+            who = login.username if login else settings.IMAP_EMAIL
+            return True, f"{settings.IMAP_HOST} accepted the credentials for {who}"
+        finally:
+            with contextlib.suppress(Exception):
+                connection.logout()
+
     async def folders(self, *, login: MailLogin | None = None) -> tuple[str, ...]:
         """INBOX plus this server's junk folder, discovered rather than guessed at.
 

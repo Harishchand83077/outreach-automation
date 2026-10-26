@@ -169,6 +169,14 @@ class Settings(BaseSettings):
     #: Where Google sends the user back. Must match the Cloud console exactly, including scheme
     #: and trailing path -- a mismatch here is the commonest OAuth setup failure there is.
     GOOGLE_REDIRECT_URI: str = ""
+    #: How many days a refresh token issued by this OAuth client survives. **Seven** for a client
+    #: in Testing status, which is where ADR-018 deliberately leaves it: publishing a client that
+    #: asks for a restricted scope needs an annual paid security assessment, and hard rule 5 says
+    #: no. So a connection lapsing weekly is a product state with a known fix, not an incident.
+    #:
+    #: `0` means "never expires", which is what a published client gets. Set it the day the
+    #: client is published and the warnings stop, with no code change.
+    GOOGLE_GRANT_DAYS: int = 7
 
     # === Database (ADR-001: our own Postgres, not Supabase) ===
     #: Async SQLAlchemy URL. `docker compose -f deploy/compose.yml up -d` serves this default.

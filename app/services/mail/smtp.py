@@ -170,6 +170,12 @@ class SmtpSender:
         except ImportError as exc:  # pragma: no cover - dependency is pinned
             raise RuntimeError("aiosmtplib is not installed") from exc
 
+        # Imported here rather than at the top because the annotation above is lazy and this is
+        # not: `MailLogin` lived only under `TYPE_CHECKING`, so the documented `login=None`
+        # fallback to the environment account raised `NameError` instead of taking it. Nothing
+        # reached it -- `login_for` never returns None -- which is exactly why it went unnoticed.
+        from app.services.mail.connection import MailLogin
+
         login = login or MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
 
         try:
@@ -202,6 +208,75 @@ class SmtpSender:
         return SendReport(
             outcome=SmtpOutcome.SENT,
             response=str(response[1] if isinstance(response, tuple) else response)[:1000],
+        )
+
+    async def verify(self, login: MailLogin | None = None) -> SendReport:
+        """Authenticate as this mailbox and hang up. **Sends nothing.**
+
+        The conversation stops before `MAIL FROM`, so no envelope is offered, no recipient is
+        named and no message exists to be delivered. That is what makes this safe to expose as a
+        button: `SEND_MODE` is not consulted because there is nothing for it to decide, and hard
+        rule 1 is untouched — this cannot put mail in anybody's inbox under any configuration.
+
+        It answers the question somebody actually has after clicking Connect Gmail: *did that
+        work?* Until now the only way to find out was to approve a draft and wait for the send
+        loop, which with sending disabled answers nothing at all.
+
+        Returns `SENT` for "authenticated", because the outcome vocabulary is shared with the
+        send path and inventing a fourth meaning for success would make the two reports hard to
+        compare. `detail` says what actually happened.
+        """
+        settings = self._settings
+        try:
+            import aiosmtplib
+        except ImportError as exc:  # pragma: no cover - dependency is pinned
+            raise RuntimeError("aiosmtplib is not installed") from exc
+
+        from app.services.mail.connection import MailLogin
+
+        login = login or MailLogin(username=settings.SMTP_EMAIL, password=settings.SMTP_PASSWORD)
+        if not login.username or not (login.access_token or login.password):
+            return SendReport(
+                outcome=SmtpOutcome.AUTH_FAILED,
+                detail="there are no credentials for this mailbox to authenticate with",
+            )
+
+        client = aiosmtplib.SMTP(
+            hostname=settings.SMTP_HOST,
+            port=settings.SMTP_PORT,
+            use_tls=settings.SMTP_USE_TLS,
+            start_tls=False,
+            timeout=settings.SMTP_TIMEOUT,
+        )
+        try:
+            await client.connect()
+            if settings.SMTP_START_TLS and not settings.SMTP_USE_TLS:
+                await client.starttls()
+            if login.uses_oauth:
+                assert login.access_token is not None
+                encoded = base64.b64encode(
+                    xoauth2_string(login.username, login.access_token).encode("utf-8")
+                ).decode("ascii")
+                code, message = await client.execute_command(
+                    b"AUTH", b"XOAUTH2", encoded.encode("ascii")
+                )
+                if code == 334:
+                    code, message = await client.execute_command(b"")
+                if code not in (235, 250):
+                    raise aiosmtplib.SMTPAuthenticationError(code, message)
+            else:
+                await client.login(login.username, login.password or "")
+        except Exception as exc:
+            return self._classify(exc)
+        finally:
+            try:
+                await client.quit()
+            except Exception as exc:  # pragma: no cover - best effort teardown
+                logger.debug("closing the SMTP session failed", extra={"error": type(exc).__name__})
+
+        return SendReport(
+            outcome=SmtpOutcome.SENT,
+            detail=f"{settings.SMTP_HOST} accepted the credentials for {login.username}",
         )
 
     @staticmethod

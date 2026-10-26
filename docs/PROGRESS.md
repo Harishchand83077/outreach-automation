@@ -770,6 +770,66 @@ pre-existing `test_a_mailbox_with_no_credential_uses_the_environment` **asserted
 is now `test_the_owners_own_mailbox_with_no_credential_uses_the_environment`, which is the case
 the fallback was always for.
 
+**A mailbox can now say whether it works, and when it will stop (ADR-021).** Both halves were
+asked for by somebody operating the system, and both were questions it had no way to answer.
+
+**"Did Connect Gmail work?"** The only way to find out was to approve a draft and wait for the
+send loop -- which, with `SEND_MODE=disabled`, answers nothing at all. Somebody signing up could
+connect their account, see a green tick, and have no way to tell a working connection from a
+broken one until their first campaign quietly did not go out.
+
+`POST /connect/google/verify` authenticates over SMTP and stops **before `MAIL FROM`**, then
+authenticates over IMAP and opens INBOX `readonly=True`. No envelope, no recipient, no message --
+so `SEND_MODE` has nothing to decide, hard rule 1 is untouched, and the check works on a
+deployment where sending is off, which is every deployment before go-live.
+
+**The two halves are checked separately rather than one inferred from the other**, and that is the
+part worth keeping. A mailbox that cannot send says so within a cycle, because a campaign stops
+and somebody notices. A mailbox that cannot be *read* looks perfectly healthy: mail goes out, and
+replies, bounces and opt-outs simply never arrive. An opt-out nobody can read is one we will
+breach.
+
+**The test email was asked for and is gated like the real email it is.** `send_test=true` goes
+through `SmtpSender.send` unchanged; with sending disabled it comes back `blocked` and the report
+says so in a sentence instead of failing. **No exception is carved out**, because the value of
+hard rule 1 is that there are none -- a "but this one is only a test" path is how a gate stops
+meaning anything. It goes to the mailbox's **own** address and there is no parameter naming a
+recipient: an authenticated endpoint that mails an arbitrary address on request is the prototype's
+worst route (C2) wearing a better name.
+
+**"When does this lapse?"** ADR-018 leaves the OAuth client unpublished on purpose, and the price
+is refresh tokens that expire seven days after consent. That was handled as a product state but
+only *after* the fact: the first anybody knew was a paused mailbox, which in practice is a campaign
+that stopped on Friday and replies nobody fetched over the weekend.
+
+`mail_credentials.granted_at` is the new column, and neither existing one could have done the job:
+`created_at` stops moving once the row exists, so a mailbox reconnected this morning looked as
+stale as it did yesterday, and `last_refreshed_at` moves every hour as access tokens are minted,
+so it describes a token that was never the one that expires. The `Scheduler` sweeps hourly, never
+fatally, and warns at **one day left and at zero** -- the day 6 and day 7 the owner asked for.
+
+**The mailbox id is in the alert *kind*, not only in its detail.** The cool-down dedupes by kind,
+so without it the first mailbox warned would silence every other mailbox in the deployment for
+twenty hours -- and the one that never got its warning is the one that stops. Three tests fail if
+it is taken out, which is how it was checked.
+
+`days_left` rounds **up**: a connection with eleven hours left reports 1, not 0. A countdown that
+reaches zero while the thing still works is one nobody believes the next time it says zero. And
+`grant_status()` is one pure function that both the dashboard sentence and the alert threshold
+read, rather than a rule implemented once for the screen and once for the sweep -- which would
+have been this project's signature defect for the ninth time.
+
+`GOOGLE_GRANT_DAYS` defaults to 7 and `0` means never; publishing the OAuth client stops the
+countdown with a configuration change and no code change. `check_env` reports it in the Safety
+block, because an operator who does not know that number reads a weekly reconnect as a fault.
+
+**A latent bug came out of writing it.** `MailLogin` was imported in `smtp.py` only under
+`TYPE_CHECKING`, so `send(login=None)` -- the documented fallback to the environment account --
+raised `NameError` instead of taking it. Nothing ever reached it, because `login_for` never
+returns `None`, which is exactly why it went unnoticed.
+
+1,647 tests, ruff and mypy strict clean, frontend builds, 14 frontend tests pass.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
