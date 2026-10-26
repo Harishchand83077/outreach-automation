@@ -35,6 +35,8 @@ from app.db.state import record_event
 from app.services import credentials as credential_store
 from app.services.mail import google_oauth
 from app.services.mail.connection import connection_status
+from app.services.mail.expiry import grant_status
+from app.services.mail.verify import verify_mailbox
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +68,22 @@ async def google_status(
     }
     if mailbox is None:
         return {**base, "connected": False, "needs_reconnect": False}
-    return {**base, **await connection_status(session, mailbox_id=mailbox.id)}
+
+    status_fields = await connection_status(session, mailbox_id=mailbox.id)
+    credential = await session.scalar(
+        select(MailCredential).where(MailCredential.mailbox_id == mailbox.id)
+    )
+    # **When it lapses, said before it does.** An unpublished OAuth client expires refresh tokens
+    # after seven days (ADR-018), which the dashboard previously could only report as a Reconnect
+    # button *after* the send loop had already failed on it.
+    grant = grant_status(credential)
+    return {
+        **base,
+        **status_fields,
+        "expires_at": grant.expires_at.isoformat() if grant.expires_at else None,
+        "days_left": grant.days_left,
+        "expiry_notice": grant.notice,
+    }
 
 
 @router.post("/connect/google/start", dependencies=[Depends(require_role("admin"))])
@@ -116,6 +133,47 @@ async def start_google(
     )
     await session.commit()
     return {"authorize_url": url}
+
+
+@router.post("/connect/google/verify", dependencies=[Depends(require_role("admin"))])
+async def verify_connection(
+    user: CurrentUserDep,
+    session: SessionDep,
+    mailbox_id: Annotated[uuid.UUID | None, Body(embed=True)] = None,
+    send_test: Annotated[bool, Body(embed=True)] = False,
+) -> dict[str, Any]:
+    """Check that this mailbox can actually send and be read. Optionally mail itself.
+
+    **A `POST` because it writes**, not because it changes anything a person asked to change:
+    resolving the login refreshes an expired access token and stores it, which is the same write
+    the send loop performs. A `GET` that calls Google and writes to the database is a read path
+    with a side effect, fired by anybody pressing F5 -- the mistake `unavailable_reason` exists
+    to avoid.
+
+    `send_test` sends **one message, to the mailbox's own address, through the ordinary send
+    gate**. There is no parameter naming a recipient: an authenticated endpoint that mails an
+    arbitrary address on request is the prototype's worst route wearing a better name (C2).
+    """
+    mailbox = await _mailbox_for(session, user, mailbox_id)
+    if mailbox is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Add a mailbox to this campaign first, then check it.",
+        )
+
+    report = await verify_mailbox(session, mailbox=mailbox, send_test=send_test)
+    await record_event(
+        session,
+        org_id=user.org_id,
+        type="mailbox.verified",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        # The outcome and nothing else. `detail` strings quote a provider's reply, and an event
+        # payload is read back into the dashboard timeline.
+        data={"mailbox_id": str(mailbox.id), "ok": report.ok},
+    )
+    await session.commit()
+    return {"mailbox_id": str(mailbox.id), "from_email": mailbox.from_email, **report.as_dict()}
 
 
 @router.get("/connect/google/callback")
@@ -196,6 +254,10 @@ async def google_callback(
     existing.scopes = tokens.scopes
     existing.expires_at = tokens.expires_at
     existing.last_refreshed_at = datetime.now(tz=UTC)
+    # **The consent, not the refresh.** This is the only moment a grant is issued, so it is the
+    # only moment this column moves -- `last_refreshed_at` above moves every hour as access
+    # tokens are minted and says nothing about when the seven days started.
+    existing.granted_at = datetime.now(tz=UTC)
     # Reconnecting is the fix for an expired token, so clearing this is the whole point.
     existing.invalid_reason = None
     existing.connected_by = row.user_id

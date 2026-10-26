@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from app.db import queue
 from app.services.campaign_clock import run_campaign_clock
 from app.services.lifecycle import run_lifecycle
+from app.services.mail.expiry import warn_about_expiring_grants
 from app.services.privacy import run_retention
 from app.services.reply.recovery import recover_stuck_sends
 from app.worker.base import WorkerTask
@@ -45,6 +46,9 @@ STUCK_AFTER = timedelta(minutes=15)
 #: Retention runs hourly, not on every tick. Nothing about it is urgent — a lead a minute past
 #: its retention date is not a problem — and each pass cascades deletes across five tables.
 RETENTION_EVERY = timedelta(hours=1)
+#: The grant-expiry sweep, likewise hourly: its thresholds are whole days, so a warning an hour
+#: late on a seven-day deadline is not late.
+GRANT_WATCH_EVERY = timedelta(hours=1)
 #: Roughly a month per 30 days; retention is expressed in months and nobody means 30.44 days.
 _DAYS_PER_MONTH = 30
 
@@ -62,6 +66,7 @@ class SchedulerReport:
     evidence_cleared: int = 0
     campaigns_started: int = 0
     campaigns_completed: int = 0
+    grants_warned: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -74,6 +79,8 @@ class Scheduler(WorkerTask):
         #: When retention last ran. None means "not yet this process", and the first cycle does
         #: it — a worker that restarts hourly would otherwise never retain anything.
         self._retention_last: datetime | None = None
+        #: When the grant-expiry sweep last ran. Same shape and the same reasoning.
+        self._grants_last: datetime | None = None
 
     async def tick(self, now: datetime) -> timedelta:
         await self.run_cycle(now)
@@ -142,12 +149,40 @@ class Scheduler(WorkerTask):
             logger.exception("campaign clock failed")
             report.alerts.append(f"the campaign schedule pass failed: {type(exc).__name__}")
 
+        await self._maybe_warn_about_grants(report, now)
         await self._maybe_retain(report, now)
 
         for alert in report.alerts:
             logger.warning("scheduler alert", extra={"alert": alert})
 
         return report
+
+    async def _maybe_warn_about_grants(self, report: SchedulerReport, now: datetime | None) -> None:
+        """Warn about Gmail connections about to lapse. Hourly, and never fatal.
+
+        **The failure this prevents is a silent one.** An unpublished OAuth client expires its
+        refresh tokens after seven days (ADR-018), and until now the first anybody knew was a
+        paused mailbox: a campaign that stopped on Friday, replies nobody fetched over the
+        weekend, and a dashboard that said nothing until somebody happened to open it.
+
+        Hourly rather than per-minute because the thresholds are whole days, and a warning that
+        is up to an hour late on a seven-day deadline is on time.
+        """
+        moment = now or datetime.now(tz=UTC)
+        if self._grants_last is not None and moment - self._grants_last < GRANT_WATCH_EVERY:
+            return
+        self._grants_last = moment
+
+        try:
+            async with self.ctx.session_factory() as session, session.begin():
+                raised = await warn_about_expiring_grants(
+                    session, now=now, settings=self.ctx.settings
+                )
+            report.grants_warned = len(raised)
+        except Exception as exc:
+            # Never fatal, for the same reason retention is not: this keeps people informed,
+            # and the reaper and send recovery above keep the system working.
+            logger.warning("the grant expiry sweep failed", extra={"error": type(exc).__name__})
 
     async def _maybe_retain(self, report: SchedulerReport, now: datetime | None) -> None:
         """Run the retention sweep at most hourly. Never fails the cycle.

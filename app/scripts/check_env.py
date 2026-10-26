@@ -163,6 +163,15 @@ def main(settings: Settings | None = None) -> int:
     else:
         print("                 OPEN: anyone with a Supabase login gets their own workspace")
 
+    # How long a connected Gmail lasts. Reported here rather than in the set/unset groups above
+    # for the same reason as SIGNUP_MODE: it always has a value, and the question is which one.
+    # An operator who does not know this number reads a weekly reconnect as a fault.
+    if settings.GOOGLE_GRANT_DAYS > 0:
+        print(f"  GMAIL GRANT  = {settings.GOOGLE_GRANT_DAYS} days, then each mailbox reconnects")
+        print("                 expected: the OAuth client is unpublished on purpose (ADR-018)")
+    else:
+        print("  GMAIL GRANT  = does not expire (the OAuth client is published)")
+
     # A Google App Password is exactly 16 characters. Saying so costs one line and saves the
     # confusing failure it causes: SMTP closes the connection without a reason, and IMAP answers
     # a flat "Invalid credentials", neither of which points at the length.
