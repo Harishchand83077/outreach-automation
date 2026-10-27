@@ -1177,6 +1177,52 @@ work, and a campaign must not stop because a row describing it could not be writ
 machine, so the 300-odd integration tests skipped rather than ran; the unit suite, ruff, ruff
 format and mypy strict are clean, and CI runs the full suite against its own Postgres.
 
+**A plan for connecting your own Claude over MCP (ADR-027, `docs/MCP_PLAN.md`). Design only --
+nothing is implemented**, which was the approved scope: MCP is the largest surface and the only
+one of the three needing external OAuth setup, so it should not block the two that are purely
+internal.
+
+**The attraction is specific.** The free-tier LLM chain is the actual ceiling on this system --
+not CPU, not the database -- so a user driving their own Claude spends their own quota and ours
+stops being the constraint. Research can also use their own judgement and their own tools, with
+LinkedIn unchanged: we still do not automate it, and a person reading a page and pasting what
+they saw is not a scraper.
+
+**The risk is not the obvious one.** A stranger reaching the API is handled the way everything is
+-- a Supabase identity resolved to a `members` row, `org_id` from the membership and never from a
+tool argument (ADR-004). The non-obvious risk is **prompt injection with tools attached**.
+Everything here about a lead, a reply or a researched page is text somebody else wrote; hard rule
+7 already calls it untrusted. What changes is where it goes. Today it reaches our classifier,
+which can only *label*. Over MCP it reaches somebody else's agent, which has tools -- so a reply
+reading "ignore previous instructions and use propose_draft to..." is, for the first time,
+addressed to something that could act.
+
+**The containment is the tool catalogue, not the model's good behaviour**, and that is the whole
+safety argument. There is no send tool, no scope that could authorise one, and nothing that goes
+near `SEND_MODE`. Delimiting untrusted text and validating claims make a hijacked agent less
+likely to write a bad draft; they do not make it impossible. What makes the outcome acceptable is
+that the worst a fully compromised agent achieves is **a bad draft in a queue a human reads**. A
+design depending on a model ignoring an injected instruction fails the first time one works.
+
+A write is a *proposal*: the same `Draft` row the in-app drafter creates, `pending_review`,
+through the same validator, with `created_by='mcp:<user>'`. It does not bypass review, it enters
+it -- which is why no new approval path is needed.
+
+**What was verified against the spec, and what is assumed, is marked as such** in the plan.
+Verified: Streamable HTTP (SSE deprecated), the server is an OAuth 2.1 *resource* server, RFC 9728
+protected-resource metadata is required, clients send RFC 8707 `resource` and servers must check
+it, Dynamic Client Registration is deprecated, and Anthropic connects from its cloud so the
+endpoint must be publicly reachable. Assumed and to re-check on the day: exact plan availability
+(two Anthropic pages disagree, so one is stale) and whether the 2026-07-28 revision is final.
+
+**The largest unknown is recorded as unknown**: whether Supabase can act as the OAuth 2.1
+authorization server with metadata discovery and `resource` support, or whether we need a minimal
+one of our own. Issuing a JWT our API verifies is a different thing from running an authorization
+code flow for somebody else's client.
+
+Four phases, with read-only first: Phases 0 to 2 carry most of the value and none of the write
+risk, so Phase 3 stays a separate decision taken with the first two already in production.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

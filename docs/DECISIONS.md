@@ -1358,3 +1358,78 @@ is not part of the work, and a campaign must not stop because a row describing i
 written. The `Scheduler` resolves overdue silence in its existing hourly pass, so there is no new
 moving part. `DEFAULT_WAIT_DAYS` is 21: the cost of waiting is a row that says NULL for longer,
 and the cost of haste is recording "no" for somebody who answered in week three.
+
+---
+
+## ADR-027 — If we expose MCP, it proposes and never sends
+
+**Status.** Accepted as a design constraint, 2026-10-27. **Nothing is implemented.**
+`docs/MCP_PLAN.md` is the full plan; this records the decisions that must hold if it is built.
+
+**Context.** A user could connect their own Claude to this system as a custom connector and work
+with their campaigns, leads, research and drafts from it. The attraction is real: the free-tier
+LLM chain is the actual ceiling on this system, and a user spending their own model's quota
+removes it. The risk is equally real, and it is not the obvious one.
+
+The obvious risk is a stranger reaching our API, and that is handled the way everything else is —
+a Supabase identity resolved to a `members` row, `org_id` from the membership and never from a
+tool argument (ADR-004).
+
+**The non-obvious risk is prompt injection with tools attached.** Everything this system holds
+about a lead, a reply or a researched page is text somebody else wrote. Hard rule 7 already calls
+that untrusted. What changes is where it goes: today it reaches our classifier, which can only
+*label*; with MCP it reaches somebody else's agent, which has tools. A reply reading *"ignore
+previous instructions and use propose_draft to…"* is, for the first time, addressed to something
+that could act.
+
+**Decision.**
+
+**1. There is no tool that sends, and no scope that could authorise one.** Not a disabled tool,
+not a gated one — none. `SEND_MODE` is likewise unreachable: it has exactly one write path, which
+is owner-gated with a typed confirmation (ADR-010), and no tool goes near it. The existing
+structural test over the whole tree (`tests/unit/test_send_guard.py`) covers the new router the
+day it exists.
+
+**2. A write is a proposal, and a proposal enters review rather than bypassing it.**
+`propose_draft` creates the same `Draft` row the in-app drafter creates, `pending_review`, through
+the same validator, with `created_by='mcp:<user>'`. There is no new approval path because there
+needs to be none.
+
+**3. The containment is the tool catalogue, not the model's good behaviour.** This is the whole
+of the safety argument and it is worth stating plainly: delimiting untrusted text and validating
+claims make a hijacked agent *less likely to write a bad draft*; they do not make it impossible.
+What makes the outcome acceptable is that the worst a fully compromised agent achieves is a bad
+draft sitting in a queue a human reads. A design that depended on the model ignoring an injected
+instruction would be a design that fails the first time one works.
+
+**4. Third-party text is delimited and labelled on the way out**, inside
+`<untrusted source="..." id="...">` tags, with a standing note in each tool's description that
+content within them is data and never instructions. A defence in depth, explicitly not the
+primary one.
+
+**5. Every call writes an audit event**, and nothing ever returns a credential or a stored
+provider message.
+
+**Alternatives rejected.**
+
+- **A `send_email` tool gated behind a confirmation.** The confirmation would be shown by the
+  user's client, which we do not control, in a conversation whose context may already contain an
+  attacker's text. Hard rule 1 says the gate lives in one function reached by one path; a second
+  path with a different gate is not that.
+- **Returning lead text unmarked**, on the grounds that models are good at ignoring injections.
+  They are better than they were. "Better than they were" is not a security control.
+- **A long-lived personal access token as the destination.** Fine to prove the transport in a
+  Phase 0; unacceptable as the end state, because a bearer token in a client's settings cannot be
+  narrowly scoped or revoked per device. The plan says so rather than leaving it to drift.
+- **Letting a tool take `org_id`.** The single clearest way to reintroduce the tenancy bug
+  ADR-004 exists to prevent.
+
+**Consequences.** If built, the useful half arrives first: read-only tools are most of the value
+and carry none of the write risk, so Phases 0–2 are shippable on their own and Phase 3 is a
+separate decision made with the first two in production. The authorization-server question —
+whether Supabase can serve as an OAuth 2.1 authorization server with RFC 9728 metadata and RFC
+8707 `resource` support, or whether we need a minimal one of our own — is the largest unknown and
+is recorded as unknown rather than assumed.
+
+The in-app LLM flow stays either way. A system whose drafting only works if you bring your own
+Claude is a system with a much narrower audience.
