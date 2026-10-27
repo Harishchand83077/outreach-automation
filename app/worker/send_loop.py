@@ -20,6 +20,7 @@ cannot drift (§9.2).
 
 from __future__ import annotations
 
+import logging
 import random
 import uuid
 from dataclasses import dataclass, field
@@ -44,7 +45,9 @@ from app.domain.scheduling import (
     pacing_gap,
     remaining_capacity,
     warmup_cap,
+    warmup_day_number,
 )
+from app.services import outcomes
 from app.services.mail.allowlist import allowed_for
 from app.services.mail.connection import MailboxUnavailable, login_for, mark_unavailable
 from app.services.mail.message import Attachment as OutgoingAttachment
@@ -56,6 +59,9 @@ from app.services.mail.smtp import SmtpOutcome, SmtpSender
 #: a due follow-up, then a new lead. Ignoring someone who replied is the worst outcome
 #: available, so replies win.
 KIND_PRIORITY = {outbox.KIND_REPLY: 0, outbox.KIND_FOLLOWUP: 1, outbox.KIND_INITIAL: 2}
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -474,6 +480,32 @@ async def send_one(
             now=now,
         )
         chosen.draft.status = "sent"
+
+        # **Start the outcome clock on the first email to this lead**, and record the two facts
+        # about this send that cannot be reconstructed later: which A/B arm it used, and which
+        # warm-up day it went out on (`warmup_started_on` can be reset, so the same `sent_at`
+        # would compute a different answer next month).
+        #
+        # Here rather than inside `outbox.mark_sent`, which is the data layer and must not call
+        # a service. Never fatal: the dataset is a record of the work, not part of it, and a
+        # campaign must not stop because a row describing it could not be written.
+        try:
+            message_row.warmup_day = warmup_day_number(
+                today=now.date(),
+                warmup_started_on=(
+                    mailbox.warmup_started_on.date() if mailbox.warmup_started_on else None
+                ),
+            )
+            if chosen.kind == outbox.KIND_INITIAL and await outcomes.message_is_first_outbound(
+                session, message=message_row
+            ):
+                await outcomes.record_first_send(session, lead=chosen.lead, sent_at=now)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "could not record the send for the dataset",
+                extra={"lead_id": str(chosen.lead.id), "error": type(exc).__name__},
+            )
+
         await session.commit()
         return SendDecision(
             sent=True,
