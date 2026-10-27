@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.db import queue
+from app.services import outcomes
 from app.services.campaign_clock import run_campaign_clock
 from app.services.lifecycle import run_lifecycle
 from app.services.mail.expiry import warn_about_expiring_grants
@@ -67,6 +68,7 @@ class SchedulerReport:
     campaigns_started: int = 0
     campaigns_completed: int = 0
     grants_warned: int = 0
+    outcomes_resolved: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -148,6 +150,18 @@ class Scheduler(WorkerTask):
         except Exception as exc:
             logger.exception("campaign clock failed")
             report.alerts.append(f"the campaign schedule pass failed: {type(exc).__name__}")
+
+        # **Silence, once we have watched long enough.** In its own transaction and never
+        # fatal, like the passes above it: a campaign must not stop because a row describing it
+        # could not be written. What it writes is a *censored* outcome -- "we asked and heard
+        # nothing", which is not the same as "they said no" and must never be stored as one.
+        try:
+            async with self.ctx.session_factory() as session, session.begin():
+                report.outcomes_resolved = await outcomes.resolve_overdue(session, now=now)
+        except Exception as exc:
+            logger.warning(
+                "the outcome resolution pass failed", extra={"error": type(exc).__name__}
+            )
 
         await self._maybe_warn_about_grants(report, now)
         await self._maybe_retain(report, now)

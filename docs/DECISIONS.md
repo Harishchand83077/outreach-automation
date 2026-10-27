@@ -1192,3 +1192,91 @@ saying where to look.
   `extra="ignore"` means a stale `.env` starts fine anyway.
 - **Per-org `SMTP_HOST`/`PORT`.** Only needed for a non-Google provider, which nothing supports
   yet. Adding the columns now would be configuration nobody can use.
+
+---
+
+## ADR-026 — An outcome is not a reply label, and silence is censored
+
+**Status.** Accepted, 2026-10-27.
+
+**Context.** We want to learn later what actually worked. Nothing has been sent from the current
+schema, so the evidence has to start being kept now — a dataset cannot be backfilled from rows
+that were never written.
+
+Two ways of getting this wrong are much more likely than any others, and both produce a dataset
+that *looks* healthy:
+
+**Recording silence as rejection.** Most cold emails get no reply. If "no reply" is stored as a
+negative class, anything learning from it concludes that every email without a prompt answer was
+a bad email — when the commonest reason for silence is that somebody was busy on Tuesday. The
+dataset would be full, well-populated, and systematically wrong in its largest class.
+
+**Collapsing replies onto one axis.** "We already have an agency", "not this quarter", "wrong
+person, talk to Priya" and "this is irrelevant" are four different results and two of them are
+good news. A positive/negative column throws away exactly the distinctions worth having.
+
+**Decision.**
+
+**1. `lead_outcomes` is a separate table from `classifications`.** A classification records what
+*one message* said, is written before anything acts on it, and drives suppressions (B17). An
+outcome is the lead's standing result: slower, revisable, and sometimes set by no message at all.
+Overloading `classifications` would have meant either rewriting an audit row — which the
+append-only trigger correctly forbids — or inventing a classification for an event that had no
+message.
+
+**2. Silence is censored, and the database enforces it.** `outcome` is NULL while we are still
+watching, becomes `no_reply_after_window` once the window passes, and `censored` is true exactly
+then. `ck_lead_outcomes_censoring` makes `(outcome = 'no_reply_after_window') = censored` a
+constraint rather than a convention, because the entire dataset rests on that one distinction and
+a stray `UPDATE` would quietly destroy it.
+
+**NULL rather than a `pending` enum member**, deliberately: a `pending` value would reach exports
+and be counted as a class. "We have not decided" is not a kind of outcome.
+
+**3. The existing `ReplyLabel` enum is extended, not replaced.** Two labels added — `has_vendor`
+(budget and problem present, somebody else serving it: a displacement signal, not a rejection) and
+`hostile` (suppressed, and never drafted for, because a machine-written reply to somebody
+threatening to report us as spam is how a complaint becomes a listing). `objection` gains a
+*sub-type* rather than splitting into labels, because separate labels would have changed `POLICY`,
+which decides suppressions; a sub-type cannot. A parallel taxonomy would have been a second source
+of truth about the same email.
+
+**4. `MEETING_BOOKED` remains unreachable from any label.** A locked product rule since Phase 1,
+now with a test asserting no label maps to it. A warm reply is not a meeting, and a system that
+inferred one would inflate every funnel it ever reported.
+
+**5. Extend, do not duplicate.** Almost everything needed already existed: `messages` holds the
+text as sent, `drafts` already creates a **new version** on an edit rather than mutating — so the
+AI draft and the human rewrite both survive, which is the preference data, and it was free —
+`drafts.claims` holds the evidence ids, `classifications` the label and confidence, `events` the
+audit spine. Only three things were genuinely missing and only those were added: the outcome, the
+A/B arm plus warm-up day, and an explicit link from a human edit back to the AI draft it came
+from. A warehouse beside the application would have started drifting from it immediately.
+
+**6. Weekday and hour are derived at export, not stored.** They follow from `sent_at` and the
+campaign's timezone. `warmup_day` *is* stored, because `warmup_started_on` can be reset and the
+same `sent_at` would then compute a different answer — the one piece of this that is genuinely
+unrecoverable later.
+
+**7. Pooling is opt-in and ships unused.** `orgs.dataset_pooling_opt_in` defaults to false and no
+code reads it. The flag had to predate the data: added later, pooling could be switched on
+retroactively over results gathered while nobody had been asked.
+
+**Alternatives rejected.**
+
+- **A `pending` or `unknown` outcome value.** It would be exported and counted. Absence is better
+  modelled as absence.
+- **Storing silence as `not_interested` after a window.** The single most damaging option, and the
+  easiest to write by accident.
+- **A separate analytics database.** The data is small, and a second store is a second place for
+  personal data to live and a second thing to keep in sync.
+- **Parquet export.** Would mean `pyarrow` — tens of megabytes of dependency — for tens of
+  thousands of rows. JSONL is readable by everything and diffable.
+- **Open and click tracking**, which would be the easiest engagement signal to add. Still banned:
+  it hurts deliverability and privacy, and an open is the signal most often mistaken for interest.
+
+**Consequences.** Both new writes are wrapped and never fatal — the dataset records the work, it
+is not part of the work, and a campaign must not stop because a row describing it could not be
+written. The `Scheduler` resolves overdue silence in its existing hourly pass, so there is no new
+moving part. `DEFAULT_WAIT_DAYS` is 21: the cost of waiting is a row that says NULL for longer,
+and the cost of haste is recording "no" for somebody who answered in week three.

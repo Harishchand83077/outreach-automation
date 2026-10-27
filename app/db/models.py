@@ -69,6 +69,14 @@ class Org(Base):
     #: did this"; the `events` table cannot hold it because every row there is keyed to a lead.
     send_mode_set_by: Mapped[str | None] = mapped_column(String(320))
     send_mode_set_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: May this org's outcomes be pooled with other orgs' for analysis?
+    #:
+    #: **Shipped now and read by nothing**, deliberately. The flag has to predate the data: if it
+    #: were added later, pooling could be switched on retroactively over results gathered while
+    #: nobody had been asked. Defaulting to false means adding it changes nothing.
+    dataset_pooling_opt_in: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
@@ -380,6 +388,15 @@ class Draft(Base):
     #: expressed an opinion, so the campaign's setting decides; `False` is a reviewer who
     #: unticked the box, and that has to survive. See `app/domain/attachment.should_attach`.
     attach: Mapped[bool | None] = mapped_column(Boolean)
+    #: The draft this one was edited from, when a reviewer approved with changes.
+    #:
+    #: Versions alone cannot express this: a regeneration after a rejection also makes a new
+    #: version, and that is a *different* event from a human rewriting the model's words. The
+    #: pair (AI draft, human edit) is the preference data this dataset is most interested in, so
+    #: the link is explicit rather than inferred from adjacent version numbers.
+    derived_from_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.drafts.id", ondelete="SET NULL")
+    )
     created_by: Mapped[str | None] = mapped_column(String(200))
     approved_by: Mapped[str | None] = mapped_column(String(200))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -430,6 +447,13 @@ class Message(Base):
     kind: Mapped[str | None] = mapped_column(String(20))
 
     #: RFC 5322 threading headers, so replies match on identity rather than guesswork (B11).
+    #: Which A/B arm this send used, or NULL when the campaign has no experiment running.
+    variant: Mapped[str | None] = mapped_column(String(40))
+    #: Which day of the mailbox's warm-up ramp this went out on. Stored rather than derived:
+    #: `warmup_started_on` can be reset, so the same `sent_at` would compute a different answer
+    #: later. Weekday and hour are *not* stored -- those are derivable from `sent_at` and the
+    #: campaign's timezone, and a denormalised copy is one that can disagree.
+    warmup_day: Mapped[int | None] = mapped_column(Integer)
     message_id_hdr: Mapped[str | None] = mapped_column(String(998))
     in_reply_to: Mapped[str | None] = mapped_column(String(998))
     references_hdr: Mapped[str | None] = mapped_column(Text)
@@ -991,4 +1015,106 @@ class OAuthState(Base):
     __table_args__ = (
         UniqueConstraint("state", name="uq_oauth_states_state"),
         Index("ix_oauth_states_created", "created_at"),
+    )
+
+
+class LeadOutcome(Base):
+    """What happened to one lead, as distinct from what any one reply said.
+
+    `docs/DATASET_DESIGN.md` is the reasoning. The short version: `classifications.label` records
+    what a *message* said and drives suppressions; this records the lead's standing **result**,
+    which is slower, revisable, and sometimes set by no message at all — silence past a wait
+    window is an outcome, and a booked meeting is one that no reply can produce.
+
+    **One row per lead, updated in place.** `events` remains the append-only history of how it got
+    here; a second append-only table beside it would duplicate the audit spine and the two would
+    eventually disagree.
+
+    **`outcome` is nullable and that is the design.** NULL means "still watching" — a state that
+    is genuinely different from every member of the enum. A `pending` value would end up in
+    exports and be counted as a class, which is exactly the mistake this table exists to avoid.
+    """
+
+    __tablename__ = "lead_outcomes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Nullable so an erasure can detach the person and keep the anonymised features. A deletion
+    #: request must not silently destroy the fact that *an* email of this shape got this result.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="SET NULL")
+    )
+    #: Denormalised **on purpose**: a campaign can be deleted, and an exported row must still be
+    #: able to say what kind of campaign produced it.
+    campaign_kind: Mapped[str] = mapped_column(String(20), nullable=False, default="outreach")
+    #: `app.domain.outcome.Outcome`, or NULL while still being watched.
+    outcome: Mapped[str | None] = mapped_column(String(30))
+    #: True means "nothing had happened by `observed_until`". **Not a negative result.**
+    censored: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: `app.domain.outcome.Stage`, validated against the campaign's kind.
+    stage: Mapped[str] = mapped_column(String(20), nullable=False, default="sent")
+    #: Only meaningful for `objection`: price | timing | trust | fit | other.
+    objection_kind: Mapped[str | None] = mapped_column(String(20))
+    #: What makes "revisit in March" actionable rather than merely recorded.
+    not_now_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: `system`, or a person's address. A human confirmation outranks a model's, and the two have
+    #: to be distinguishable or the dataset cannot be weighted.
+    confirmed_by: Mapped[str | None] = mapped_column(String(320))
+    #: The survival triple: when the clock started, when the event happened, how long we watched.
+    first_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    updated_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("lead_id", name="uq_lead_outcomes_lead"),
+        Index("ix_lead_outcomes_org_outcome", "org_id", "outcome"),
+        # Only a censored row may be `no_reply_after_window`, and nothing else may be censored.
+        # Enforced here rather than trusted to the writer, because the whole dataset rests on
+        # that distinction and a stray UPDATE would quietly destroy it.
+        CheckConstraint(
+            "(outcome = 'no_reply_after_window') = censored",
+            name="ck_lead_outcomes_censoring",
+        ),
+    )
+
+
+class Experiment(Base):
+    """An A/B arm definition, so a result can be attributed rather than merely observed.
+
+    Assignment is a deterministic hash of (lead, experiment) so a lead stays in its arm across a
+    whole sequence — an A first email followed by a B follow-up makes the result uninterpretable.
+    `exploration_share` is the slice assigned at random instead, which is what makes any of this
+    causal rather than correlational.
+    """
+
+    __tablename__ = "experiments"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: `["a", "b"]` — the arm names this experiment may assign.
+    arms: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: 0.0 to 1.0. The fraction assigned at random rather than by the deterministic hash.
+    exploration_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "exploration_share >= 0 AND exploration_share <= 1",
+            name="ck_experiments_exploration_share",
+        ),
     )

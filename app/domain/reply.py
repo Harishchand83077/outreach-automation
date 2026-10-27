@@ -20,17 +20,31 @@ from enum import StrEnum
 
 
 class ReplyLabel(StrEnum):
-    """The ten labels from §10.3. The prototype had three."""
+    """The labels from §10.3. The prototype had three; this started at ten.
+
+    Two were added for the outcome dataset (`docs/DATASET_DESIGN.md`), because folding them into
+    a neighbour destroyed the distinction worth recording. Adding a label is a change to the
+    action table below, which decides suppressions -- so every one must have a policy, and a test
+    asserts that none is missing.
+    """
 
     INTERESTED = "interested"
     QUESTION = "question"
     OBJECTION = "objection"
     NOT_NOW = "not_now"
     NOT_INTERESTED = "not_interested"
+    #: They have the budget and the problem, and somebody else is serving it. **Not the same
+    #: as `not_interested`**: it is a displacement and timing signal, and the two would be
+    #: indistinguishable if merged -- which is precisely the thing a dataset is for.
+    HAS_VENDOR = "has_vendor"
     OPT_OUT = "opt_out"
     OUT_OF_OFFICE = "out_of_office"
     BOUNCE = "bounce"
     WRONG_PERSON_REFERRAL = "wrong_person_referral"
+    #: Angry, abusive, or threatening to report us as spam. Separated from `not_interested`
+    #: because the right response is different in kind: stop, suppress, and never let a
+    #: machine write back.
+    HOSTILE = "hostile"
     OTHER = "other"
 
 
@@ -66,10 +80,18 @@ POLICY: dict[ReplyLabel, LabelPolicy] = {
     ReplyLabel.WRONG_PERSON_REFERRAL: LabelPolicy(ReplyAction.NEEDS_HUMAN, True, True),
     # A clear no. Closed, and a human can reopen it if they disagree.
     ReplyLabel.NOT_INTERESTED: LabelPolicy(ReplyAction.CLOSE, False, False),
+    # Served by somebody else. Closed rather than suppressed -- they are a legitimate
+    # prospect whose circumstances may change, and the cool-down already stops us pestering
+    # them. No draft: "what about when your contract ends?" is a human's judgement call.
+    ReplyLabel.HAS_VENDOR: LabelPolicy(ReplyAction.CLOSE, False, False),
     # Asked to stop. Suppressed immediately, and we send nothing further — not even an
     # acknowledgement, which would itself be another unwanted email.
     ReplyLabel.OPT_OUT: LabelPolicy(ReplyAction.SUPPRESS, False, True),
     ReplyLabel.BOUNCE: LabelPolicy(ReplyAction.SUPPRESS, False, False),
+    # Angry. Suppressed like an opt-out, and **never** drafted for: a machine-written reply
+    # to somebody threatening to report us as spam is how a complaint becomes a listing.
+    # Notified, because a person should know promptly.
+    ReplyLabel.HOSTILE: LabelPolicy(ReplyAction.SUPPRESS, False, True),
     # A robot. Nobody read the email, so wait rather than treating it as engagement.
     ReplyLabel.OUT_OF_OFFICE: LabelPolicy(ReplyAction.DEFER, False, False),
     # Unclear. A person decides, because guessing is how the prototype went wrong.

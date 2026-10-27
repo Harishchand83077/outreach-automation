@@ -245,6 +245,11 @@ async def approve(
             status="approved",
             prompt_version=draft.prompt_version,
             created_by=approved_by,
+            # **The pair this points at is the most valuable thing in the dataset**: what a model
+            # wrote, and what a person decided it should have said. Version numbers cannot
+            # express it -- a regeneration after a rejection also makes a new version, and that
+            # is a different event from a human rewriting the model's words.
+            derived_from_id=draft.id,
         )
         session.add(target)
         await session.flush()
