@@ -1192,3 +1192,84 @@ saying where to look.
   `extra="ignore"` means a stale `.env` starts fine anyway.
 - **Per-org `SMTP_HOST`/`PORT`.** Only needed for a non-Google provider, which nothing supports
   yet. Adding the columns now would be configuration nobody can use.
+
+---
+
+## ADR-025 — A campaign kind, orthogonal to its mode
+
+**Status.** Accepted, 2026-10-27. `docs/CAMPAIGN_KINDS.md` is the analysis behind it.
+
+**Context.** The owner's second use for this system is job hunting: one person writing to
+founders, hiring managers and recruiters. Mechanically that is the same thing as agency outreach
+— import people, find something true, write, get a human to approve, send on a safe schedule,
+handle replies and follow-ups — and the temptation is to fork the pipeline, which would double
+every future bug in a system whose signature defect is already two correct halves that disagree.
+
+**Decision.** `campaigns.kind` ∈ `outreach` | `job_hunt`, defaulting to `outreach`, with one small
+registry (`app/domain/kinds.py`) holding the differences that are genuine. Everything else is
+shared: import, research, the review queue, the state machine, the window and cap and pacing,
+threading, suppression, the reply taxonomy and its action table, follow-ups, the outcome dataset,
+and every safety gate.
+
+**`kind` is orthogonal to `mode`, and that is the load-bearing choice.** `mode` (ADR-012) already
+decides *who writes the email*: `research` reads the company and asks a model for a grounded
+draft, `template` renders the operator's own text with merge fields. That **is** "researched
+draft" versus "fixed draft", and both kinds get both. Four combinations, one pipeline, and no
+third concept to explain. Adding a separate content-mode axis for job hunting would have been a
+second way of saying something already said.
+
+**The sender is a different input form, not a different contract.** `CandidateProfile` compiles,
+via `as_persona()`, into the same `Persona` the drafter, validator, footer and claim check already
+take. The candidate's facts become proof points carrying the same `pp\d+` ids, so
+`evidence_corpus`, `resolve_evidence` and `_check_claims_resolve` work **untouched** — which means
+a `job_hunt` draft inventing experience fails the same check, with the same message, as an
+`outreach` draft inventing a statistic. One rule, enforced in one place, for two kinds.
+
+That mapping is the whole design. Without it, "the drafter may only claim what is in the profile"
+would have needed a second validator, and a second validator is a second thing to keep honest.
+
+**Drafting requirements belong to the sender, not to the data.** ADR-013 already moved them off
+`Persona` as model validators precisely because a `template` campaign — which never calls a model
+— was being refused for not naming an agency it does not have. A candidate is the same case, more
+sharply: requiring an agency from somebody who has none forces them to type something that
+passes, and a field filled in to satisfy a validator is a field the drafter will go on to quote.
+So `_refuse_if_undraftable` takes the *sender* and asks it, rather than taking a `Persona`.
+
+**The cap differs and the reason is not ambition.** 25 a day for `job_hunt`. A candidate sends
+from a personal Gmail with no domain reputation, no SPF/DKIM alignment of their own and no warm-up
+history; 25 is the volume at which such an account does not look compromised. It is a *default*,
+editable like every other setting — a kind that enforced a cap would be a second place sending
+limits are decided, and `CampaignSettings` is the first.
+
+**Different register, identical obligation.** The opt-out sentence differs because a job enquiry
+borrowing commercial sales language reads as insincere. Everything else about compliance is
+unchanged: both kinds carry an honest sender identity and a working opt-out, both go through the
+suppression list, neither uses tracking. The system deliberately does **not** claim a lighter
+obligation for job hunting on the grounds that it may not be a commercial communication — the one
+time that classification was wrong, nothing would have protected the recipient.
+
+**Alternatives rejected.**
+
+- **A separate pipeline, drafter or validator per kind.** The difference is configuration and a
+  prompt fragment. Anything more doubles every future bug.
+- **Résumé parsing.** The candidate writes their own facts. That is the only version in which the
+  grounding rule means anything: a parser inventing a fact would be inventing it on behalf of the
+  person who then gets asked about it in an interview.
+- **Reusing `mode` for the kind**, e.g. a third mode `job_hunt`. It would make two unrelated
+  questions share one column, and immediately prevent a job hunt from using templates.
+- **Subclassing `Persona`.** Inheritance would have carried `agency_name` and `offer` into the
+  candidate's schema as optional fields, which is exactly the "type something that passes"
+  pressure ADR-013 removed.
+- **A third kind now** (fundraising, partnerships). Two is enough to prove the seam is in the
+  right place; a third should wait until somebody wants it.
+
+**Consequences.** The migration adds one column with a default, and `outreach`'s defaults are
+today's values copied rather than re-decided — so an existing campaign is unchanged, and
+`tests/integration/test_campaign_kind_migration.py` asserts that against a campaign built the old
+way, including that the outreach footer is byte-identical. The check constraint refuses an
+unimplemented kind at the database, because a kind nobody built would otherwise silently inherit
+outreach's cap, four times what a candidate should send at.
+
+The downgrade drops the column, after which a `job_hunt` campaign's `persona` would be read as an
+agency persona and fail validation. That is safe only while no job-hunt campaign exists — which
+is the situation whenever this is reverted in anger, and is written down rather than discovered.

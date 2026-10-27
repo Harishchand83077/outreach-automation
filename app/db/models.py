@@ -260,6 +260,14 @@ class Campaign(Base):
     #: for a first email or a follow-up. Replies use a model in both modes -- a reply has to
     #: answer what the person actually said. See `app/domain/template.py`.
     mode: Mapped[str] = mapped_column(String(20), nullable=False, default="research")
+    #: What this campaign is *for*: `outreach` (an agency selling) or `job_hunt` (a candidate
+    #: looking for work). **Orthogonal to `mode`**, which decides who writes the email -- four
+    #: combinations, one pipeline. See `app/domain/kinds.py` and `docs/CAMPAIGN_KINDS.md`.
+    #:
+    #: The kind also decides which schema validates `persona`: today's `Persona` for outreach, a
+    #: `CandidateProfile` for a job hunt, which compiles into the same `Persona` so that nothing
+    #: downstream has to know either exists.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="outreach")
     persona: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     settings: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     #: `CampaignTemplates` for a `template`-mode campaign; `{}` for a `research` one.
@@ -279,6 +287,7 @@ class Campaign(Base):
             name="ck_campaigns_status",
         ),
         CheckConstraint("mode IN ('research','template')", name="ck_campaigns_mode"),
+        CheckConstraint("kind IN ('outreach','job_hunt')", name="ck_campaigns_kind"),
         CheckConstraint(
             "starts_at IS NULL OR ends_at IS NULL OR ends_at > starts_at",
             name="ck_campaigns_schedule_order",

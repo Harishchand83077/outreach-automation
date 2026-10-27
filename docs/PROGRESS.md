@@ -1056,6 +1056,61 @@ reaches a browser and screenshots.
 4. `ImapLoop._login_for` was still typed and documented as returning `None` for the environment
    account. There is no environment account; it raises now.
 
+**A campaign now knows what it is for: `outreach` or `job_hunt` (ADR-025,
+`docs/CAMPAIGN_KINDS.md`).** An agency selling projects and a candidate looking for work are doing
+the same mechanical thing, so the analysis was written first and its job was to find what is
+*genuinely* different — because everything else had to stay shared. A forked pipeline would double
+every future bug in a system whose signature defect is already two correct halves that disagree.
+
+**`kind` is orthogonal to `mode`, and that is the load-bearing choice.** `mode` (ADR-012) already
+decides who writes the email — `research` reads the company and asks a model, `template` renders
+the operator's own text. That **is** "researched draft" versus "fixed draft", so both kinds get
+both: four combinations, one pipeline, no third concept. A separate content-mode axis for job
+hunting would have been a second way of saying something already said.
+
+**The sender is a different input form, not a different contract.** `CandidateProfile` compiles
+into the same `Persona` the drafter, validator, footer and claim check already take, with the
+candidate's facts becoming proof points under the same `pp\d+` ids. So `evidence_corpus`,
+`resolve_evidence` and `_check_claims_resolve` work **untouched**, and a job-hunt draft inventing
+experience fails the same check, with the same message, as an outreach draft inventing a
+statistic. That mapping is the whole design: without it, "may claim only what is in the profile"
+would have needed a second validator, and a second validator is a second thing to keep honest.
+
+**The grounding rule bites harder here and that is deliberate.** Hard rule 6 already forbids
+inventing facts about the sender. For a candidate the failure is worse: an email claiming three
+years of Kubernetes they do not have is not a weak email, it is a lie told in their name that
+they will be asked about in an interview. So no résumé parsing — the candidate writes their own
+facts, which is the only version in which the rule means anything.
+
+**Drafting requirements belong to the sender, not the data.** ADR-013 moved them off `Persona` as
+model validators precisely because a `template` campaign was being refused for not naming an
+agency it does not have. A candidate is the same case more sharply, so `_refuse_if_undraftable`
+now takes the *sender* and asks it.
+
+**25 a day for a job hunt, and not as an opinion about ambition.** A candidate sends from a
+personal Gmail with no domain reputation, no SPF/DKIM alignment of their own and no warm-up
+history; 25 is the volume at which such an account does not look compromised. A default, editable
+like every other — a kind that *enforced* a cap would be a second place sending limits are
+decided, and `CampaignSettings` is the first.
+
+**Different register, identical obligation.** The opt-out sentence differs, because a job enquiry
+borrowing commercial sales language reads as insincere. Nothing else about compliance changes:
+both kinds carry an honest identity and a working opt-out, both go through the suppression list,
+neither tracks. The system deliberately does *not* claim a lighter obligation for job hunting on
+the grounds that it may not be a commercial communication — the one time that classification was
+wrong, nothing would have protected the recipient.
+
+**Nothing changes for an existing campaign, and that is tested rather than asserted.** The column
+defaults to `outreach`, whose defaults are today's values copied rather than re-decided, and
+`tests/integration/test_campaign_kind_migration.py` builds a campaign the old way — no `kind`, a
+plain `Persona` — and checks the whole read path, including that the outreach footer is
+byte-identical. Every email already sent carries that sentence, and a quiet change would make the
+archive inconsistent.
+
+**One sharp edge caught while writing it.** `DRAFTING_REQUIREMENTS` as a bare class attribute on
+a Pydantic model becomes a *field*, not a constant — it would have serialised into
+`campaigns.persona` and been accepted back from a caller. It is a method now.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
