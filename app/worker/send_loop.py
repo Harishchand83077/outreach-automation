@@ -35,6 +35,7 @@ from app.db import outbox
 from app.db.models import Campaign, Draft, Lead, Mailbox, Message, Org
 from app.db.state import record_event
 from app.domain.campaign import CampaignSettings
+from app.domain.kinds import opt_out_line_for
 from app.domain.persona import Persona
 from app.domain.scheduling import (
     followup_due_at,
@@ -420,6 +421,11 @@ async def send_one(
             agency_name=persona.agency_name,
             agency_url=str(persona.agency_url) if persona.agency_url else None,
             postal_address=persona.postal_address or None,
+            # Different register, identical obligation. Both kinds carry a working opt-out and
+            # the suppression list treats them the same; a job enquiry borrowing commercial
+            # sales language simply reads as insincere, because it is one person asking another
+            # for a conversation.
+            opt_out_line=opt_out_line_for(chosen.campaign.kind),
         ),
         message_id=message_row.message_id_hdr,
         in_reply_to=message_row.in_reply_to,

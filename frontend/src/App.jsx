@@ -2204,7 +2204,12 @@ function CampaignScreen({ campaign, mayAdminister, onError, onToast, onChanged }
 function NewCampaign({ onError, onToast, onCreated, onCancel }) {
   const [form, setForm] = useState({
     name: '',
+    kind: 'outreach',
     mode: 'research',
+    headline: '',
+    target_role: '',
+    facts: '',
+    profile_link: '',
     initial_subject: '',
     initial_body: '',
     followup_subject: '',
@@ -2311,10 +2316,28 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
       await postJson('/campaigns', {
         json: {
           name: form.name,
+          kind: form.kind,
           mode: form.mode,
           ...(templates ? { templates } : {}),
           mailbox_id: mailboxId,
-          persona: {
+          // A job hunt sends a *candidate profile*, not a persona: a different input form for
+          // the same contract. Its facts carry the same `pp1`-style ids, so the claim checker
+          // refuses an invented skill exactly as it refuses an invented statistic.
+          persona: form.kind === 'job_hunt' ? {
+            kind: 'job_hunt',
+            full_name: form.sender_name,
+            headline: form.headline,
+            target_role: form.target_role,
+            facts: form.facts
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((text, index) => ({ id: `pp${index + 1}`, text })),
+            ...(form.profile_link.trim() ? { links: [form.profile_link.trim()] } : {}),
+            goal: form.goal,
+            cta_text: form.cta_text,
+            ...(form.booking_url.trim() ? { booking_url: form.booking_url.trim() } : {}),
+          } : {
             sender_name: form.sender_name,
             // The rest are what the *research* drafter needs in order to write on your behalf.
             // A template campaign has no use for them -- you wrote the email -- and somebody
@@ -2361,6 +2384,27 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
 
       <form className="card" onSubmit={submit}>
         <Field label="Campaign name" value={form.name} onChange={set('name')} required />
+
+        <h2 className="section-title">What this campaign is for</h2>
+        <div className="mode-choice">
+          <ModeOption
+            value="outreach"
+            active={form.kind === 'outreach'}
+            onChange={(kind) => setForm({ ...form, kind })}
+            title="Business outreach"
+            note="An agency or team writing to people who could buy. Up to 100 a day, and the
+              draft may cite your services and proof points."
+          />
+          <ModeOption
+            value="job_hunt"
+            active={form.kind === 'job_hunt'}
+            onChange={(kind) => setForm({ ...form, kind })}
+            title="Job hunting"
+            note="One person writing to founders, hiring managers or recruiters. 25 a day by
+              default, because a personal Gmail has no domain reputation to spend — and a draft
+              may claim nothing that is not in your profile below."
+          />
+        </div>
 
         <h2 className="section-title">How the emails get written</h2>
         <div className="mode-choice">
@@ -2440,30 +2484,84 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
             who wrote to them. Nothing else here is needed — you wrote the email yourself.
           </p>
         ) : null}
-        <div className="field-grid">
-          <Field
-            label="Your name"
-            value={form.sender_name}
-            onChange={set('sender_name')}
-            required
-          />
-          <Field
-            label="Your role"
-            value={form.sender_role}
-            onChange={set('sender_role')}
-            required={form.mode === 'research'}
-            hint="e.g. Founder"
-          />
-          <Field
-            label="Agency name"
-            value={form.agency_name}
-            onChange={set('agency_name')}
-            required={form.mode === 'research'}
-            hint={form.mode === 'template' ? 'Leave blank if you are writing as yourself.' : ''}
-          />
-        </div>
+        {form.kind === 'job_hunt' ? (
+          <>
+            <div className="field-grid">
+              <Field
+                label="Your name"
+                value={form.sender_name}
+                onChange={set('sender_name')}
+                required
+              />
+              <Field
+                label="One line about you"
+                value={form.headline}
+                onChange={set('headline')}
+                required={form.mode === 'research'}
+                hint="e.g. Backend engineer, 4 years"
+              />
+              <Field
+                label="Portfolio or CV link"
+                value={form.profile_link}
+                onChange={set('profile_link')}
+                hint="A link, not an attachment — cold mail carrying a file lands in spam far
+                  more often, and a link costs the reader nothing."
+              />
+            </div>
+            {form.mode === 'research' ? (
+              <>
+                <h2 className="section-title">What you have actually done</h2>
+                <p className="muted">
+                  One per line. <strong>A draft may claim nothing that is not here</strong> — no
+                  inference, no rounding two years up to three. An email claiming experience you
+                  do not have is not a weak email, it is something you will be asked about in an
+                  interview.
+                </p>
+                <TextArea
+                  label="Your facts"
+                  value={form.facts}
+                  onChange={set('facts')}
+                  rows={5}
+                  required
+                  hint="e.g. Four years building Django services at Globex"
+                />
+                <Field
+                  label="What you are looking for"
+                  value={form.target_role}
+                  onChange={set('target_role')}
+                  required
+                  hint="e.g. backend roles at early-stage startups"
+                />
+                <Field label="Goal" value={form.goal} onChange={set('goal')} required />
+              </>
+            ) : null}
+          </>
+        ) : (
+          <div className="field-grid">
+            <Field
+              label="Your name"
+              value={form.sender_name}
+              onChange={set('sender_name')}
+              required
+            />
+            <Field
+              label="Your role"
+              value={form.sender_role}
+              onChange={set('sender_role')}
+              required={form.mode === 'research'}
+              hint="e.g. Founder"
+            />
+            <Field
+              label="Agency name"
+              value={form.agency_name}
+              onChange={set('agency_name')}
+              required={form.mode === 'research'}
+              hint={form.mode === 'template' ? 'Leave blank if you are writing as yourself.' : ''}
+            />
+          </div>
+        )}
 
-        {form.mode === 'research' ? (
+        {form.mode === 'research' && form.kind === 'outreach' ? (
           <>
             <h2 className="section-title">What you are offering</h2>
             <p className="muted">

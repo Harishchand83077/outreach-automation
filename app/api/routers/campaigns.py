@@ -52,6 +52,7 @@ from app.domain.attachment import MAX_BYTES, AttachmentRejected
 from app.domain.attachment import check as check_attachment
 from app.domain.campaign import CampaignSettings
 from app.domain.campaign_schedule import schedule_note, scheduled_status
+from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
 from app.services.mail.connection import unavailable_reason
@@ -955,15 +956,31 @@ def _mailbox_summary(mailbox: Mailbox, *, created: bool) -> dict[str, Any]:
     }
 
 
-def _refuse_if_undraftable(persona: Persona) -> None:
-    """Refuse a research campaign whose persona a model could not write from.
+def _kind_settings(kind: str) -> dict[str, Any]:
+    """The settings a campaign of this kind starts with.
+
+    Only the values that actually differ. Everything else comes from `CampaignSettings`'
+    defaults, which stay the single definition of what a campaign setting means -- this chooses
+    among them, it does not add a second set.
+    """
+    defaults = defaults_for(kind)
+    return {"daily_cap": defaults.daily_cap, "max_followups": defaults.max_followups}
+
+
+def _refuse_if_undraftable(sender: Any) -> None:
+    """Refuse a research campaign whose sender a model could not write from.
+
+    Takes the *sender* rather than a `Persona`, because the requirements differ by kind and only
+    the sender knows which it is: an agency must name itself and its offer, a candidate must list
+    at least one thing they have actually done. Asking a job seeker to name their agency is
+    ADR-013's bug, and it would come straight back if this took the compiled persona.
 
     The fields are reported with *why each one matters*, not merely named. "agency_name is
     required" sends somebody back to a form to type anything that passes; "name the company you
     are writing on behalf of -- it signs the email" tells them what the field is for, and a
     persona filled in to get past a validator is a persona the drafter will quote.
     """
-    missing = persona.missing_for_drafting()
+    missing = sender.missing_for_drafting()
     if not missing:
         return
     raise HTTPException(
@@ -1054,9 +1071,22 @@ async def create_campaign(
             "'template' (render your own text with merge fields).",
         )
 
+    # What the campaign is *for*. Orthogonal to `mode`: four combinations, one pipeline.
+    kind = str(payload.get("kind") or "outreach").strip().lower()
+    if kind not in {k.value for k in KINDS}:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "kind must be 'outreach' (an agency or team selling) or 'job_hunt' (a candidate "
+            "looking for work).",
+        )
+
     persona_in = payload.get("persona") or {}
     try:
-        persona = Persona.model_validate(persona_in)
+        # The kind decides which schema applies: today's `Persona` for outreach, a
+        # `CandidateProfile` for a job hunt -- which compiles into the same `Persona`, so
+        # nothing downstream has to know either exists.
+        sender = load_sender(persona_in, kind=kind)
+        persona = sender if isinstance(sender, Persona) else sender.persona
     except ValidationError as exc:
         # The field errors are returned: this is the owner's own form, and "persona is invalid"
         # with no indication of which field would make it unusable.
@@ -1077,7 +1107,7 @@ async def create_campaign(
     # a model and may legitimately have no agency and no offer, because somebody job-hunting has
     # neither. The requirement belongs to the drafter that has it (ADR-013).
     if mode == "research":
-        _refuse_if_undraftable(persona)
+        _refuse_if_undraftable(sender)
 
     mailbox_id: uuid.UUID | None = None
     if raw_mailbox := payload.get("mailbox_id"):
@@ -1105,8 +1135,18 @@ async def create_campaign(
         status="draft",
         mode=mode,
         mailbox_id=mailbox_id,
-        persona=persona.model_dump(mode="json"),
-        settings=dict(payload.get("settings") or {}),
+        kind=kind,
+        # Stored as given, so a candidate profile round-trips as a candidate profile. The
+        # compiled persona is a read-time view, never what is written back.
+        persona=(
+            persona.model_dump(mode="json")
+            if isinstance(sender, Persona)
+            else CandidateProfile.model_validate(persona_in).model_dump(mode="json")
+        ),
+        # The kind's defaults underneath whatever the caller sent, so a job hunt starts at 25
+        # a day without anybody having to know to ask for it -- and an explicit value still
+        # wins, because these are defaults rather than a second place caps are decided.
+        settings={**_kind_settings(kind), **dict(payload.get("settings") or {})},
         templates=templates,
         paused=False,
     )
