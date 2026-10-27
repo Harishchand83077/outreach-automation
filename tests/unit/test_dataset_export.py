@@ -40,9 +40,7 @@ def _row(**over):
             sector="saas",
         ),
         "campaign": SimpleNamespace(mode="research"),
-        "first_message": SimpleNamespace(
-            sent_at=SENT, warmup_day=9, variant="b", status="sent"
-        ),
+        "first_message": SimpleNamespace(sent_at=SENT, warmup_day=9, variant="b", status="sent"),
         "ai_draft": SimpleNamespace(subject="AI wrote this"),
         "approved_draft": SimpleNamespace(
             subject="A human fixed this", claims=[{"id": "pp1"}], prompt_version="v3"
@@ -82,9 +80,9 @@ class TestNothingIdentifyingLeavesInTheClear:
 
     def test_the_manifest_says_it_is_still_personal_data(self):
         """`PRIVACY.md`'s honesty rule: a hash of an email address is pseudonymisation."""
-        assert "personal data" in manifest_for(
-            org_id="org", rows=1, salt=SALT, started=SENT
-        )["note"]
+        assert (
+            "personal data" in manifest_for(org_id="org", rows=1, salt=SALT, started=SENT)["note"]
+        )
 
 
 class TestCensoringSurvivesTheExport:
