@@ -19,6 +19,7 @@ Matching deliberately ignores the lead's state, so a late reply to a lead alread
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -35,6 +36,7 @@ from app.domain.campaign import CampaignSettings
 from app.domain.reply import ReplyAction, ReplyLabel, policy_for, reconcile
 from app.domain.scheduling import next_window_open
 from app.domain.state import TERMINAL, IllegalTransition, LeadState
+from app.services import outcomes
 from app.services.mail.parse import MessageType, ParsedMessage, normalised_subject
 
 #: How far back the sender+subject fallback will look. Beyond this a coincidental match is more
@@ -61,6 +63,9 @@ class ReplyOutcome:
     duplicate: bool = False
     #: True when nothing could be matched; the message is stored as an orphan.
     orphan: bool = False
+
+
+logger = logging.getLogger(__name__)
 
 
 async def already_stored(
@@ -224,6 +229,22 @@ async def record_classification(
     )
     session.add(row)
     await session.flush()
+
+    # The lead's standing outcome, in **this** transaction, beside the classification that
+    # justifies it. An outcome recorded while its classification rolled back would be a result
+    # with no cause -- and the pairing is the same rule every other write here follows.
+    #
+    # Never fatal: the dataset is a record of the work, not part of it. A campaign must not stop
+    # because a row describing it could not be written.
+    if lead is not None:
+        try:
+            await outcomes.record_reply(session, lead=lead, label=label, confidence=confidence)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "could not record the lead outcome",
+                extra={"lead_id": str(lead.id), "error": type(exc).__name__},
+            )
+
     return row
 
 

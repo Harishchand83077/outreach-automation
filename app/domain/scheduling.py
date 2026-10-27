@@ -123,6 +123,23 @@ def warmup_cap(
     return min(warmup_start + steps * warmup_step, ceiling)
 
 
+def warmup_day_number(*, today: date, warmup_started_on: date | None) -> int | None:
+    """Which calendar day of the warm-up ramp `today` is, counting from 1. None when not warming.
+
+    Recorded on each sent message because it cannot be reconstructed afterwards:
+    `warmup_started_on` can be reset, and then the same `sent_at` computes a different answer.
+    Deliverability questions are mostly questions about *when in the ramp* something went out, so
+    losing it would make the one dimension hardest to reason about also the one unrecoverable.
+
+    Calendar days rather than the business days `warmup_cap` steps on: this is a label for an
+    observation, not an allowance, and "day 9" should mean the same thing to a person reading a
+    row as it does on a calendar.
+    """
+    if warmup_started_on is None:
+        return None
+    return max(1, (today - warmup_started_on).days + 1)
+
+
 def remaining_capacity(*, effective_cap: int, sent_today: int) -> int:
     """What is left of today's allowance. Never negative."""
     return max(effective_cap - sent_today, 0)

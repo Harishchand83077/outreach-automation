@@ -1056,6 +1056,73 @@ reaches a browser and screenshots.
 4. `ImapLoop._login_for` was still typed and documented as returning `None` for the environment
    account. There is no environment account; it raises now.
 
+**The system now records what happened, so it can later be learned from (ADR-026,
+`docs/DATASET_DESIGN.md`).** Built first of the three because nothing has been sent from the
+current schema — a dataset cannot be backfilled out of rows nobody wrote, so this was the cheapest
+it will ever be, and it makes the job-hunt kind measurable from its first send rather than
+retrofitted.
+
+**The design is mostly a decision about what *not* to build.** Almost everything needed already
+existed and is joined to rather than copied: `messages` holds the text as sent, `drafts` already
+creates a **new version** on an edit instead of mutating — so the model's draft and the human
+rewrite both survive, which is the preference data, and it cost nothing — `drafts.claims` holds
+the evidence ids behind each assertion, `classifications` the label and confidence, `events` the
+append-only spine, `llm_usage` the provider and tokens. A warehouse beside the application would
+have started drifting from it immediately.
+
+Three things were genuinely missing, and only those were added: the lead's **outcome**, the A/B
+**variant** and warm-up day, and an explicit link from a human edit back to the AI draft it came
+from (`drafts.derived_from_id` — version numbers cannot express it, because a regeneration after
+a rejection also makes a new version and that is a different event).
+
+**Silence is censored, not negative, and the database enforces it.** Most cold email gets no
+reply. Storing that as a negative class would teach anything reading this that every email without
+a prompt answer was a bad email — when the commonest reason is that somebody was busy on Tuesday.
+So `outcome` is NULL while we are still watching, becomes `no_reply_after_window` when the window
+passes, and `ck_lead_outcomes_censoring` makes `(outcome = 'no_reply_after_window') = censored` a
+constraint rather than a convention. The whole dataset rests on that one distinction and a stray
+`UPDATE` would quietly destroy it.
+
+**NULL rather than a `pending` member**, deliberately: a `pending` value would reach exports and
+be counted as a class. "We have not decided yet" is not a kind of outcome.
+
+**An outcome is not a reply label.** A classification says what *one message* said, is written
+before anything acts on it, and drives suppressions (B17). An outcome is the lead's standing
+result — slower, revisable, and sometimes set by no message at all. Overloading `classifications`
+would have meant rewriting an audit row, which the append-only trigger correctly forbids.
+
+**The reply taxonomy was extended, not replaced.** Two labels: `has_vendor` (they have the budget
+and the problem and somebody else is serving it — a displacement signal that folding into
+`not_interested` would have deleted) and `hostile` (suppressed, and **never** drafted for: a
+machine-written reply to somebody threatening to report us as spam is how a complaint becomes a
+listing). `objection` gained a *sub-type* rather than splitting, because separate labels would
+have changed `POLICY`, which decides suppressions. A test asserts every label still has an action.
+
+**`MEETING_BOOKED` stays unreachable from any label**, now with a test saying so. A warm reply is
+not a meeting, and a system that inferred one would inflate every funnel it ever reported.
+
+**Weekday and hour are derived at export, not stored** — they follow from `sent_at` and the
+campaign timezone, and a stored copy of a derived value can disagree with its source. `warmup_day`
+*is* stored, because `warmup_started_on` can be reset and the same `sent_at` would then compute a
+different answer; it is the one piece here that is genuinely unrecoverable later.
+
+**The export is pseudonymisation and says so.** Salted SHA-256 over addresses and company names, a
+fresh salt per run so two exports cannot be joined, and the manifest carries only a *fingerprint*
+of the salt — writing the salt beside the hashes would make the hashing decorative. The manifest
+states plainly that the file is still personal data, which is the same honesty `PRIVACY.md`
+already applies to the suppression hashes. One org per run; there is no "all orgs" flag, because
+pooling is a consent decision rather than a command-line argument.
+`orgs.dataset_pooling_opt_in` ships defaulted to false and read by nothing: the flag had to
+predate the data, or consent could be applied retroactively.
+
+Both new writes are wrapped and never fatal. The dataset records the work; it is not part of the
+work, and a campaign must not stop because a row describing it could not be written. The
+`Scheduler` resolves overdue silence in its existing hourly pass, so there is no new moving part.
+
+**A note on what could not be verified locally.** Docker Desktop is paused on the development
+machine, so the 300-odd integration tests skipped rather than ran; the unit suite, ruff, ruff
+format and mypy strict are clean, and CI runs the full suite against its own Postgres.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
