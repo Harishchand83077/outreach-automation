@@ -33,6 +33,7 @@ from app.api.routers import (
     connect,
     health,
     imports,
+    mcp,
     me,
     operations,
     platform,
@@ -55,9 +56,13 @@ PUBLIC_PATHS = frozenset({"/health", "/ready"})
 
 
 def allowed_origins(settings: Settings) -> list[str]:
-    """The Pages origin(s), from configuration. Never `*`."""
-    raw = settings.CORS_ALLOWED_ORIGINS or ""
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    """The Pages origin(s), from configuration. Never `*`.
+
+    Kept as a module-level function because callers import it by this name; the rule itself
+    lives on `Settings`, so the MCP endpoint's `Origin` check and the CORS middleware cannot
+    disagree about what an allowed origin is.
+    """
+    return settings.allowed_origins()
 
 
 def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = None) -> FastAPI:
@@ -187,6 +192,9 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
     application.include_router(platform.router, prefix="/api/v1")
+    # Mounted at the root, not under /api/v1: this URL is typed into a person's MCP client,
+    # and `https://api.arkvane.in/mcp` is the address docs/MCP_PLAN.md promises.
+    application.include_router(mcp.router)
     return application
 
 

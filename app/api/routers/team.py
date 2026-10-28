@@ -29,6 +29,7 @@ from app.api.deps import ROLE_ORDER, CurrentUserDep, SessionDep, require_role
 from app.core.settings import config
 from app.db.models import Invitation, Mailbox, MailCredential, Member
 from app.db.state import record_event
+from app.services import api_tokens
 from app.services.mail.expiry import grant_status
 
 router = APIRouter(tags=["team"], dependencies=[Depends(require_role("admin"))])
@@ -389,3 +390,106 @@ def _as_dict(invitation: Invitation, *, already: bool) -> dict[str, Any]:
         "created_at": invitation.created_at.isoformat(),
         "already_invited": already,
     }
+
+
+# --------------------------------------------------------------- MCP tokens (ADR-028)
+#
+# `admin`, like everything else in this router. A token reads the workspace's leads and replies,
+# which a `member` can already do in the dashboard -- but a credential that leaves the browser
+# and lives in somebody's MCP client for ninety days is a *rule* rather than the work, and the
+# rule across this API is that the gate goes on the rules.
+
+
+@router.get("/mcp-tokens")
+async def list_mcp_tokens(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """The live tokens for this workspace. Never a secret -- only the hash is stored."""
+    rows = await api_tokens.list_tokens(session, org_id=user.org_id)
+    return {
+        "tokens": [
+            {
+                "id": str(row.id),
+                "name": row.name,
+                # Enough to recognise the row when revoking it, useless as a credential.
+                "prefix": f"{row.token_prefix}\u2026",
+                "scopes": row.scopes,
+                "created_at": row.created_at.isoformat(),
+                "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+                "last_used_at": row.last_used_at.isoformat() if row.last_used_at else None,
+                "created_by_you": row.user_id == user.user_id,
+            }
+            for row in rows
+        ],
+        "endpoint": "/mcp",
+        "default_ttl_days": api_tokens.DEFAULT_TTL_DAYS,
+    }
+
+
+@router.post("/mcp-tokens", status_code=status.HTTP_201_CREATED)
+async def create_mcp_token(
+    user: CurrentUserDep,
+    session: SessionDep,
+    name: Annotated[str, Body(embed=True)] = "My Claude",
+    ttl_days: Annotated[int | None, Body(embed=True)] = api_tokens.DEFAULT_TTL_DAYS,
+) -> dict[str, Any]:
+    """Mint a read-only token and return it **once**.
+
+    The secret is not stored and there is no route that reads one back: a credential a route can
+    return is a credential a stolen session can return. If it is lost, revoke it and mint another
+    -- which is cheap, and is the behaviour that keeps the stored form useless.
+    """
+    if ttl_days is not None and (ttl_days < 1 or ttl_days > 365):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="ttl_days must be between 1 and 365, or null for no expiry.",
+        )
+
+    minted = await api_tokens.create_token(
+        session,
+        org_id=user.org_id,
+        user_id=user.user_id,
+        name=name,
+        ttl_days=ttl_days,
+    )
+    await record_event(
+        session,
+        org_id=user.org_id,
+        type="mcp.token_created",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        # The name and the prefix, never the secret.
+        data={"token_id": str(minted.id), "name": minted.name, "prefix": minted.prefix},
+    )
+    await session.commit()
+
+    return {
+        "id": str(minted.id),
+        "name": minted.name,
+        # Shown once. The dashboard says so beside it.
+        "token": minted.secret,
+        "expires_at": minted.expires_at.isoformat() if minted.expires_at else None,
+        "scopes": [api_tokens.READ_SCOPE],
+    }
+
+
+@router.delete("/mcp-tokens/{token_id}")
+async def revoke_mcp_token(
+    token_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Revoke a token. Takes effect on the next call, because verification reads the row."""
+    revoked = await api_tokens.revoke_token(session, org_id=user.org_id, token_id=token_id)
+    if not revoked:
+        # A token id from another workspace resolves to nothing rather than to a 403 that would
+        # confirm it exists.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No such token in this workspace."
+        )
+    await record_event(
+        session,
+        org_id=user.org_id,
+        type="mcp.token_revoked",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={"token_id": str(token_id)},
+    )
+    await session.commit()
+    return {"revoked": True}
