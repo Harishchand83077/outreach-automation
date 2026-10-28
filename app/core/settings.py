@@ -210,6 +210,7 @@ class Settings(BaseSettings):
     #: Comma-separated browser origins allowed to call the api. Replaces the prototype's
     #: `allow_origins=["*"]` with credentials enabled (issue C3).
     CORS_ALLOWED_ORIGINS: str = ""
+
     #: Where to send a browser after an OAuth round trip. Its own setting rather than
     #: "the first CORS origin", because a redirect target chosen by position in a list
     #: is one somebody reorders by accident. Empty means the API's own root.
@@ -316,6 +317,19 @@ class Settings(BaseSettings):
             for part in self.SIGNUP_ALLOWED_DOMAINS.split(",")
             if part.strip()
         )
+
+    def allowed_origins(self) -> list[str]:
+        """The browser origins allowed to call the api. Never `*` (issue C3).
+
+        Here rather than in the app factory because two readers now need it: the CORS middleware,
+        and the MCP endpoint's `Origin` check, which the transport spec requires. A second copy of
+        this `split` is the shape of defect this project keeps finding.
+
+        Not a `computed_field`: it would serialise into any dump of the settings object, and the
+        list is configuration rather than something to report.
+        """
+        raw = self.CORS_ALLOWED_ORIGINS or ""
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
     @computed_field  # type: ignore[prop-decorator]
     @property

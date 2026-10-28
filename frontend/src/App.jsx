@@ -24,6 +24,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { SignIn, useSession } from './Auth'
 import {
+  API,
   ApiUnreachable,
   NotAuthenticated,
   deleteJson,
@@ -3316,8 +3317,147 @@ function Settings({ campaign, onError, onToast, onChanged }) {
       <h2 className="section-title">Team</h2>
       <Team onError={onError} onToast={onToast} />
 
+      <h2 className="section-title">Connect your own Claude</h2>
+      <McpTokens onError={onError} onToast={onToast} />
+
       <h2 className="section-title">Suppression list</h2>
       <Suppressions onError={onError} onToast={onToast} />
+    </>
+  )
+}
+
+function McpTokens({ onError, onToast }) {
+  const [data, setData] = useState(null)
+  const [name, setName] = useState('My Claude')
+  const [busy, setBusy] = useState(false)
+  // The minted secret, held in memory only and shown once. Never put in localStorage: a
+  // credential that outlives the page it was shown on is one nobody remembers is there.
+  const [minted, setMinted] = useState(null)
+
+  const load = useCallback(() => {
+    getJson('/mcp-tokens').then(setData).catch(onError)
+  }, [onError])
+
+  useEffect(load, [load])
+
+  const mint = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    try {
+      const created = await postJson('/mcp-tokens', { json: { name } })
+      setMinted(created)
+      onToast('Token created. Copy it now \u2014 it is not shown again.', 'success')
+      load()
+    } catch (err) {
+      onError(err)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const revoke = async (id) => {
+    try {
+      await deleteJson(`/mcp-tokens/${id}`)
+      onToast('Token revoked.', 'success')
+      load()
+    } catch (err) {
+      onError(err)
+    }
+  }
+
+  const endpoint = `${API.replace(/\/api\/v1$/, '')}/mcp`
+
+  return (
+    <>
+      <p className="muted">
+        Add this workspace to your own Claude as a custom connector, and ask it about your
+        campaigns, leads, research and replies. It spends your model quota rather than ours.
+      </p>
+      <p className="muted">
+        <strong>Read-only.</strong> There is no tool that sends mail, approves a draft or changes
+        a sending setting, and no permission that could grant one. The worst a confused or
+        hijacked agent can do here is read your own data back to you.
+      </p>
+
+      <dl className="kv">
+        <dt>Server URL</dt>
+        <dd className="mono">{endpoint}</dd>
+        <dt>Where to add it</dt>
+        <dd>In Claude: Customize &rarr; Connectors &rarr; Add custom connector.</dd>
+        <dt>Authentication</dt>
+        <dd>
+          A request header: <span className="mono">Authorization: Bearer &lt;token&gt;</span>
+        </dd>
+      </dl>
+
+      {minted ? (
+        <div className="banner" data-tone="warn" role="alert">
+          <p>
+            <strong>Copy this now.</strong> It is not stored and cannot be shown again. If you
+            lose it, revoke it and make another.
+          </p>
+          <p className="mono" style={{ wordBreak: 'break-all' }}>
+            {minted.token}
+          </p>
+          <button type="button" className="btn" onClick={() => setMinted(null)}>
+            I have copied it
+          </button>
+        </div>
+      ) : null}
+
+      <form onSubmit={mint} className="field-row">
+        <label className="field">
+          <span>Name this token</span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={80}
+            placeholder="My Claude"
+          />
+        </label>
+        <button type="submit" className="btn" disabled={busy || !name.trim()}>
+          {busy ? 'Creating\u2026' : 'Create token'}
+        </button>
+      </form>
+
+      {data?.tokens?.length ? (
+        <div className="table-wrap">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Token</th>
+                <th>Created</th>
+                <th>Expires</th>
+                <th>Last used</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {data.tokens.map((row) => (
+                <tr key={row.id}>
+                  <td>{row.name}</td>
+                  <td className="mono">{row.prefix}</td>
+                  <td className="muted">{row.created_at.slice(0, 10)}</td>
+                  <td className="muted">
+                    {row.expires_at ? row.expires_at.slice(0, 10) : 'never'}
+                  </td>
+                  <td className="muted">
+                    {row.last_used_at ? row.last_used_at.slice(0, 10) : 'never used'}
+                  </td>
+                  <td>
+                    <button type="button" className="btn" onClick={() => revoke(row.id)}>
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <p className="muted">No tokens yet.</p>
+      )}
     </>
   )
 }

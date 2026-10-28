@@ -1543,3 +1543,101 @@ is recorded as unknown rather than assumed.
 
 The in-app LLM flow stays either way. A system whose drafting only works if you bring your own
 Claude is a system with a much narrower audience.
+
+---
+
+## ADR-028 — The MCP endpoint has its own credential, and is stateless
+
+**Status.** Accepted and implemented, 2026-10-28. Supersedes the authentication half of ADR-027,
+whose safety argument is otherwise unchanged and now enforced in code. `docs/MCP_PLAN.md` is the
+built design.
+
+**Context.** ADR-027 planned the MCP surface and left two things open. Building it answered both,
+and both answers were different from what the plan assumed — so this records them rather than
+editing the plan as though it had always said so.
+
+**1. The protocol got simpler.** Revision 2026-07-28 is final and removes the `initialize`
+handshake, protocol-level sessions and `Mcp-Session-Id`, the standalone GET stream, and SSE
+resumability. What a server that only answers requests must provide is a single POST endpoint
+plus `server/discover`. The older shape — sessions, a second endpoint, resumable streams — would
+have been most of the work, and none of it is required.
+
+What the revision adds instead is validation, and for a real reason rather than tidiness:
+selected body fields are mirrored into HTTP headers so intermediaries can route without parsing
+the body, so a server that trusted one while executing the other would let a caller show a load
+balancer one thing and us another. Hence `MCP-Protocol-Version`, `Mcp-Method` and `Mcp-Name` are
+compared against the body and a mismatch is `-32020`.
+
+**2. Supabase cannot be the authorization server.** ADR-027 called this "the largest unknown" and
+preferred it if true. It is not true. [supabase/auth#2610](https://github.com/supabase/auth/issues/2610)
+is open: the OAuth 2.1 server accepts the RFC 8707 `resource` parameter and **ignores** it,
+issuing `aud: "authenticated"` whatever was asked for, confirmed on hosted projects in October
+2026. A commenter on that issue raises the consequence plainly — with dynamic client
+registration, a malicious MCP server could obtain a token another resource server would accept.
+
+**Decision.**
+
+**1. The endpoint takes this system's own tokens, and refuses Supabase JWTs.** This is the part
+worth stating as a positive choice rather than a fallback. A Supabase token's audience is a
+constant, so it cannot be shown to have been minted *for* this endpoint — accepting one would
+mean accepting a credential obtained for something else, which is the confused-deputy problem
+resource indicators exist to solve. So there are two doors and each takes one kind of key: a
+Supabase JWT is refused by `/mcp`, and an `oa_` token is refused everywhere else. A test asserts
+the dashboard's own working token gets a 401 here.
+
+**2. The token carries no authority of its own.** `api_tokens` stores `org_id` for display, and
+authorisation **re-resolves the `members` row on every call**. Removing somebody from a workspace
+takes their tokens with it. Without that, a token would outlive the membership that justified it
+— an ex-colleague holding a key to the leads, while the Team panel shows them gone.
+
+**3. Only the hash is stored, and the secret is returned once.** `sha256`, not a password hash:
+this is 32 bytes of `secrets` output, so there is no dictionary to slow an attacker down and the
+lookup must be deterministic to be a lookup. Stretching a 256-bit random value buys nothing and
+would cost a table scan. No route reads a token back, because a credential a route can return is
+a credential a stolen session can return.
+
+**4. `mcp:read` is the only scope, and the database enforces it.**
+`CHECK (scopes <@ ARRAY['mcp:read'])`, the same device as `ck_orgs_send_mode`. There is no write
+scope, so one cannot be invented by a hand-written `INSERT` — which would not make a tool appear,
+but would make the catalogue's story false.
+
+**5. ADR-027's containment is unchanged and now asserted.** No send tool, no approve tool,
+nothing near `SEND_MODE`, and `tests/unit/test_mcp_safety.py` reads the catalogue and the package
+source to say so. The untrusted-text wrapper additionally **escapes its own closing tag**: a
+reply containing `</untrusted>` would otherwise close the block early and have the remainder read
+as our instructions — the injection succeeding *because* of the delimiter meant to expose it.
+
+**6. Phases 2 and 3 are not built, and the sequencing is the reason.** Phase 3 (proposing drafts)
+is by ADR-027's own gate a decision taken with the read-only phases **in production**, and nothing
+is in production yet; shipping it in the same change would be ignoring the staging that made the
+first part safe. Phase 2 (OAuth) now means writing and operating an authorization server of our
+own, since Supabase cannot be one — a larger change than the endpoint it would protect.
+
+**Alternatives rejected.**
+
+- **Accepting the dashboard's Supabase JWT**, which would have meant no new table and no new UI.
+  Refused for the audience reason above; convenience is not a reason to accept a credential we
+  cannot attribute to this endpoint.
+- **A shared static secret in the environment.** One credential for every workspace, revocable
+  only by redeploying, and unattributable in an audit trail. The whole point of ADR-023 was
+  removing the last identity that belonged to the deployment rather than to a person.
+- **`bcrypt`/`argon2` for the token hash.** Appropriate for human-chosen passwords and pointless
+  for 256 bits of entropy, and it would make verification a table scan.
+- **Storing the token's org as the authority.** One fewer query per call, and a token that
+  survives the membership that justified it.
+- **Serving the legacy handshake era as well**, for older clients. It would reintroduce sessions,
+  a GET stream and resumability — the exact machinery 2026-07-28 removed — for clients the
+  connector we are building this for does not use.
+- **Implementing `resources` and `prompts` because the protocol has them.** We would be
+  advertising capabilities with nothing behind them.
+
+**Consequences.** The migration adds one empty table; `/mcp` refuses every caller until somebody
+mints a token, so the deploy changes nobody's behaviour. A leaked token reads one workspace's data
+and can write nothing — bounded by the catalogue rather than by the credential, which is why the
+read-only phase was safe to ship on header auth at all. The default 90-day expiry, one-click
+revocation and `last_used_at` are the mitigations.
+
+The spec is somebody else's release cadence, and this is now a dependency on it: 2026-07-28 broke
+compatibility with the revision before it, and the next one may too. The wire rules are isolated
+in `app/services/mcp/protocol.py` as pure functions so that the next revision is an edit to one
+module with its own tests, rather than a hunt through a router.

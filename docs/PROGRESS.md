@@ -1326,6 +1326,77 @@ the whole defect; where no enum exists, the constraint is the authority and is o
 The migration is one empty table with no foreign key, so adding it changed nobody's behaviour —
 the route 403s for everybody until the first row exists.
 
+**You can now connect your own Claude, and it can only read (ADR-028, `docs/MCP_PLAN.md`).**
+`POST /mcp`, seven read-only tools, tokens minted in **Settings → Connect your own Claude**. The
+attraction is specific: the free-tier model chain is the real ceiling on this system, so a user
+driving their own Claude spends their own quota and ours stops being the constraint.
+
+**Building it corrected two things the plan had assumed, and both made the work smaller.**
+
+**The protocol got simpler.** Revision 2026-07-28 is final and removes the `initialize`
+handshake, protocol-level sessions and `Mcp-Session-Id`, the standalone GET stream, and SSE
+resumability. A server that only answers requests is now a single stateless POST route plus
+`server/discover`. The older shape — sessions, a second endpoint, resumable streams — would have
+been most of the work and none of it is required. What the revision adds is validation, for a
+real reason: selected body fields are mirrored into HTTP headers so intermediaries can route
+without parsing the body, so a server trusting one while executing the other would let a caller
+show a load balancer one thing and us another. Hence `MCP-Protocol-Version`, `Mcp-Method` and
+`Mcp-Name` are compared with the body, and a mismatch is `-32020`.
+
+**And the plan's "largest unknown" is answered: Supabase cannot be the authorization server.**
+supabase/auth#2610 is open — its OAuth 2.1 server accepts the RFC 8707 `resource` parameter and
+**ignores** it, issuing `aud: "authenticated"` whatever was requested, confirmed on hosted
+projects in October 2026. A commenter raises the consequence plainly: with dynamic client
+registration a malicious MCP server could obtain a token another resource server would accept.
+
+**That turned the authentication choice from a fallback into a positive refusal.** A Supabase
+token's audience is a constant, so it cannot be shown to have been minted *for* this endpoint —
+accepting one would mean accepting a credential obtained for something else, which is the
+confused-deputy problem resource indicators exist to prevent. So there are two doors and each
+takes one kind of key: a Supabase JWT is refused by `/mcp`, an `oa_` token is refused everywhere
+else, and **a test asserts the dashboard's own perfectly valid token gets a 401 here.**
+
+**The token carries no authority of its own.** `api_tokens` stores `org_id` for display and
+authorisation **re-resolves the `members` row on every call**, so removing somebody from a
+workspace takes their tokens with it. Without that a token outlives the membership that justified
+it — an ex-colleague holding a key to the leads while the Team panel shows them gone. That test
+was run against a version that trusted the token's own org, to watch it fail.
+
+Only the `sha256` hash is stored and the secret is returned once; `sha256` rather than a password
+hash deliberately, because 32 bytes of `secrets` output has no dictionary to slow down and the
+lookup must be deterministic to be a lookup. `mcp:read` is the only scope and
+`CHECK (scopes <@ ARRAY['mcp:read'])` makes a write scope unexpressible by hand — the same device
+as `ck_orgs_send_mode`.
+
+**The containment is the tool catalogue, exactly as ADR-027 argued, and it is now asserted rather
+than intended.** No send tool, no approve tool, nothing near `SEND_MODE`; `test_mcp_safety.py`
+reads the catalogue and the package source to say so, and the existing tree-wide send guard covers
+the new package for free. The worst a fully hijacked agent achieves is reading one workspace's own
+data back to its owner.
+
+**One subtlety worth keeping.** The untrusted-text wrapper **escapes its own closing tag**. A
+reply containing `</untrusted>` would otherwise close the block early and have everything after it
+read as *our* instructions — the injection succeeding *because* of the delimiter meant to expose
+it. That is a one-line fix and it is the difference between a defence and a decoration.
+
+**And a test of my own that proved nothing.** `tools/list` ordering was asserted with
+`sorted(names, key=lambda _: 0)`, which compares a list with itself and passes for any input. The
+spec's actual requirement is that the order is *stable across calls*, which needs two calls to
+observe; it is now written that way.
+
+**Phases 2 and 3 are deliberately not built.** Phase 3 (proposing drafts into the review queue) is
+by ADR-027's own gate a decision taken with the read-only phases **in production**, and nothing is
+in production yet — shipping it in the same change would ignore the staging that made the first
+part safe. Phase 2 (OAuth 2.1) now means writing and operating an authorization server of our own,
+since Supabase cannot be one: a larger change than the endpoint it would protect. Meanwhile the
+exposure is bounded by the catalogue rather than by the credential, which is what made shipping
+the read-only phase on header auth defensible at all.
+
+**One small piece of tidying the work forced, and it was the right kind.** The MCP endpoint has to
+validate `Origin`, and the CORS middleware already parsed the same setting. Rather than a second
+`split`, the rule moved onto `Settings.allowed_origins()` and the app factory's helper delegates to
+it — so the two cannot disagree about what an allowed origin is.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

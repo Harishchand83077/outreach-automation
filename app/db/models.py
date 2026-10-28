@@ -1160,3 +1160,66 @@ class PlatformOperator(Base):
     #: or in a year nobody can tell a deliberate grant from a forgotten one.
     note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _now_col(nullable=False)
+
+
+class ApiToken(Base):
+    """A credential for the MCP endpoint, and for nothing else (ADR-028).
+
+    **Why this exists rather than reusing the Supabase token the dashboard already holds.** An
+    MCP client needs a credential it can store and send on every call. The obvious candidate is
+    a Supabase JWT, and it is the wrong one: Supabase accepts the RFC 8707 `resource` parameter
+    and ignores it, issuing `aud: "authenticated"` whatever was requested (supabase/auth#2610).
+    So a Supabase token cannot be shown to have been minted *for* this endpoint -- which is
+    precisely the confused-deputy problem resource indicators exist to prevent. A token minted
+    for anything would work here.
+
+    So the MCP endpoint has its own credential, and the two doors each take one kind of key: a
+    Supabase JWT is refused by `/mcp`, and one of these is refused everywhere else.
+
+    **Only the hash is stored.** `sha256` rather than a password hash on purpose: this is 32
+    bytes of `secrets` output, not a human-chosen password, so there is no dictionary to slow an
+    attacker down and the lookup has to be deterministic to be a lookup at all. Stretching a
+    256-bit random value buys nothing and would cost a table scan.
+
+    **`org_id` is stored for display and is not the authority.** Authorisation re-resolves the
+    `members` row on every call, so removing somebody from a workspace stops their tokens
+    working in the same breath -- a token that outlived its membership would be an ex-colleague
+    with a key. There is a test for exactly that.
+    """
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The Supabase `sub` of whoever minted it. The token acts as that person.
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    #: What the person called it, so a list of three tokens can be told apart when revoking one.
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    #: The first few characters, kept in clear so the UI can identify a row without holding the
+    #: secret. Shown as `oa_1a2b3c4d…`; useless on its own.
+    token_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    #: `sha256` hex of the whole token. Unique, because two rows matching one secret would make
+    #: "whose token is this?" depend on which came back first.
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    #: NULL means no expiry. An expiring token is the default the UI offers.
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Updated at most once a minute, so an idle token does not write a row per call. The point
+    #: is answering "is this still in use?" before revoking it, which needs the day not the second.
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # The database refuses a scope the code has never heard of, as `ck_orgs_send_mode` does
+        # for send modes. It is what makes a *write* scope unexpressible by hand: there is no
+        # `mcp:propose` today, and inventing one in SQL would not make a tool appear, but it
+        # would make the catalogue's story false.
+        CheckConstraint("scopes <@ ARRAY['mcp:read']::text[]", name="ck_api_tokens_scopes"),
+        CheckConstraint("cardinality(scopes) > 0", name="ck_api_tokens_scopes_not_empty"),
+        Index("ix_api_tokens_org", "org_id"),
+        # The verification query: one row by hash, on every call.
+        Index("ix_api_tokens_hash", "token_hash"),
+    )
