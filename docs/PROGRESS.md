@@ -2102,3 +2102,94 @@ viewBox stretches to whatever box it is given — so `height: auto` derived the 
 100×34 viewBox and produced a chart about 370px tall on a desktop, for two bars. A fixed 120px
 is what that attribute was always implying. Caught by looking at it after the backend deploy
 made it draw for the first time.
+
+**Deliverability monitoring, and a smoke check for the live MCP endpoint (ADR-029,
+`docs/POSTMASTER.md`).**
+
+**First, the thing that was reported as missing and turns out not to be.** "I can't see any token
+or anything in our website related to the Claude connector" — it is there, and it is live. The
+panel is **Settings → Connect your own Claude**, between Team and the suppression list. Verified
+rather than assumed, from outside: the published dashboard bundle contains the panel and its
+`/mcp-tokens` calls, `GET /mcp` on the live API answers **405** and an unauthenticated `POST`
+answers **401**, so both halves of PR #116 are deployed. What it needs is an owner or admin role,
+because the whole Settings screen is gated — a `member` does not see the nav item.
+
+**Postmaster Tools is set up by hand and deliberately not integrated.** Reputation attaches to
+the **sending domain**, and after ADR-023 this deployment has no mailbox of its own — every
+workspace sends from an account its owner connected, under its own domain. So there is no
+deployment-wide view of deliverability and there cannot be one: reading a tenant's reputation
+would need credentials for their domain. The product change is therefore **one sentence and a
+link** beside the sending account, naming the workspace's own domains, rather than a panel whose
+numbers would require holding an OAuth credential for every tenant's Google account to redraw a
+dashboard Google already draws for them.
+
+**Two findings that change what to expect of it, which is more useful than the setup steps.**
+
+1. **It will show nothing at our volume, probably for months.** Google withholds low-volume data
+   by design, and counts only mail to `@gmail.com` — a founder on their own Workspace domain does
+   not appear at all. Against the locked 100/day/mailbox, warming up from 20, the qualifying
+   subset is tens of messages a day against an unofficial threshold in the hundreds. **The reason
+   to do it today is that it has no backfill**: verify after the first campaign and the first
+   campaign is the one you cannot see. Precisely ADR-026's argument for the outcome dataset.
+   Worth knowing for a second reason too — Google says data may also be withheld when reputation
+   is *particularly bad*, so "no data" and "bad data" look alike from outside.
+2. **The signal that works at any volume is already configured and read by nobody.** DMARC
+   aggregate reports arrive daily from every participating receiver and are not volume-gated.
+   They would show the `From`-versus-authenticated-account mismatch this repo has warned about
+   since Phase 9 — mail sent as `rahul@arkvane.in` while SMTP authenticates as an unrelated
+   personal Gmail — immediately and unmistakably, as a source failing both SPF and DKIM for our
+   own domain. And `rua` points at `rahul@arkvane.in`, an address this system both **sends from**
+   and **polls**, so the reports are ingested as orphaned inbound messages until the hourly sweep
+   deletes them at 45 days. Harmless, because nothing matches a lead and no model is ever called
+   on them, and still the owner's correspondence sitting in application data for no reason.
+   `p=none` stays until the reports are clean: tightening first would have receivers quarantine
+   our own real mail.
+
+**`app/scripts/mcp_smoke.py` exercises the deployed endpoint over the public URL.** The 24
+integration tests drive a `TestClient` against a test database in the same process, so they
+cannot see TLS, Caddy, a forwarded `Origin`, or a route mounted at the root rather than under
+`/api/v1`. Six defects surfaced on this project's first real deploy; every one was invisible
+locally and in CI and four lived in exactly that gap. The check covers the half a happy path
+never looks at — no credential, a garbage one, a **Supabase-shaped** one (ADR-028's two-doors
+rule, asserted against the live deployment), a disallowed `Origin`, the legacy `GET` and
+`DELETE` — then breaks each 2026-07-28 validation rule on purpose (`-32020` on a header that
+disagrees with the body, `-32022` on an old version, `404`/`-32601` on an unknown method), then
+`server/discover`, the catalogue and every tool in it. It also asserts on the wire that **no
+tool's schema takes an `org_id`**, which is the one tenancy mistake invisible from inside a
+single workspace, and that `tools/list` is ordered stably **across two calls** — the property
+that replaced the assertion which compared a list with itself.
+
+**It mints a real credential against the real database, which is the one dangerous thing about
+it.** So two properties are enforced by `tests/unit/test_mcp_smoke_script.py` rather than left to
+care: the secret is **never printed**, because this output is pasted into terminals and chat
+windows and hard rule 2 has already been breached once here by a failing assertion; and the token
+is **revoked in a `finally` block**, because the run this matters for is the one that fails, and a
+check that cleans up only on success leaves a live key behind exactly when nobody is reading the
+output. A one-day expiry is the third defence, for a process killed between the two. The guard
+was run against the absent script first, to watch all six assertions error.
+
+**And the tool list is read from the catalogue rather than restated**, asserted by that same
+guard. A hand-written list inside the checker is a second copy of the thing being checked, which
+is this project's signature defect wearing a lab coat.
+
+**And it was run, which is the only reason any of the above is a claim rather than a hope.**
+Against a local API on the dev database: **29 checks, all passing, exit 0, token revoked.** Two
+things came out of running it that reading it would not have given:
+
+- **The audit assertion was added because of what the run showed.** It is the only check here
+  that reads the database rather than the response, and it exists because writing the audit row
+  is deliberately wrapped and non-fatal — so a trail that has quietly stopped being written looks
+  exactly like one that is working. It reports **7 events for 7 calls**, and three consecutive
+  runs each reported 7 against a table holding 21, which is how the time window was shown to
+  discriminate rather than to count everything.
+- **mypy caught a column that does not exist.** The audit query was written against
+  `Event.created_at`; the column is `Event.at`. The signature defect again — a literal that has
+  to match the schema — caught by the type checker before commit this time rather than by a
+  screen reporting zero for ever. Worth noting only because the previous two instances of it, in
+  the platform router eleven lines apart, were found by reading a check constraint, and a tool
+  that finds this class automatically is cheaper than the discipline that was needed last time.
+
+The cosmetic finding: the minted token's prefix was printed with a Unicode ellipsis, which a
+Windows console renders as a replacement character in the middle of a credential prefix. Plain
+ASCII now — this output is read in a container shell and in a terminal, and a credential prefix
+that looks corrupted is one somebody will think they mistyped.

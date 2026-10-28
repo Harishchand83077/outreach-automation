@@ -2901,6 +2901,18 @@ function Admin({ onError, onToast }) {
 
   const { totals, workspace, google_test_users: google } = data
 
+  // The distinct domains this workspace sends from. Reputation attaches to the domain rather
+  // than to the address, so two mailboxes on one domain share one answer and naming both would
+  // imply they do not.
+  const sendingDomains = [
+    ...new Set(
+      (data.mailboxes || [])
+        .map((row) => (row.from_email || '').split('@')[1])
+        .filter(Boolean)
+        .map((domain) => domain.toLowerCase())
+    ),
+  ]
+
   return (
     <>
       <h1>Admin</h1>
@@ -3021,6 +3033,28 @@ function Admin({ onError, onToast }) {
       ) : (
         <p className="muted">No mailbox yet. One is created when a campaign is made.</p>
       )}
+
+      {/* Deliverability belongs to the sending domain, not to this deployment (ADR-023 left us
+          with no mailbox of our own), so this is the only honest place to say it: beside the
+          address that actually has the reputation. A link rather than a panel — showing the
+          numbers here would mean holding OAuth credentials for every tenant's Google account to
+          redraw a dashboard Google already draws for them. See docs/POSTMASTER.md. */}
+      {sendingDomains.length ? (
+        <p className="muted" style={{ marginTop: 8 }}>
+          Whether your mail reaches inboxes is a property of{' '}
+          {sendingDomains.length > 1 ? 'your sending domains' : 'your sending domain'} (
+          <span className="mono">{sendingDomains.join(', ')}</span>), not of this system — so it
+          is yours to watch.{' '}
+          <a href="https://postmaster.google.com" target="_blank" rel="noreferrer">
+            Google Postmaster Tools
+          </a>{' '}
+          is free and shows spam rate, reputation and whether SPF and DKIM are passing, for mail
+          to <span className="mono">@gmail.com</span> addresses. It has no history before you
+          verify the domain, so it is worth doing before your first campaign rather than after a
+          problem. Expect it to be sparse at low volume — Google withholds data when a day&apos;s
+          volume is small.
+        </p>
+      ) : null}
 
       {google.required_while_unpublished ? (
         <>

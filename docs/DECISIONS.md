@@ -1641,3 +1641,88 @@ The spec is somebody else's release cadence, and this is now a dependency on it:
 compatibility with the revision before it, and the next one may too. The wire rules are isolated
 in `app/services/mcp/protocol.py` as pure functions so that the next revision is an edit to one
 module with its own tests, rather than a hunt through a router.
+
+---
+
+## ADR-029 — Deliverability is watched per sending domain, and the live endpoint is smoke-tested
+
+**Date.** 2026-10-29. **Status.** Accepted.
+
+Two decisions that arrived together because both are about the same gap: things that are true
+only on the real deployment, which no test in this repository can observe.
+
+### Part 1 — monitoring belongs to the sending domain, so we link rather than integrate
+
+**Context.** There has never been a way to tell whether our mail is being filtered. The one time
+it mattered, the first reply this system ever received was in Spam and we learned it because a
+person looked in a mailbox. Google Postmaster Tools is the obvious answer and is free.
+
+**Decision.** Set up Postmaster Tools for `arkvane.in` by hand, document it in
+`docs/POSTMASTER.md`, and in the product ship **one sentence and a link** beside the sending
+account — not a panel of numbers.
+
+**Why not integrate the Postmaster API.** It exists and is free, and using it would mean holding
+an OAuth credential for *every tenant's* Google account in order to redraw a dashboard Google
+already draws for them. After ADR-023 this deployment has no mailbox of its own: every workspace
+sends from an account its own owner connected, under its own domain. Reputation attaches to that
+domain. So there is no deployment-wide view of deliverability and there cannot be one — we could
+not read a tenant's reputation without credentials for their domain, which we neither have nor
+want. A link in the place where somebody is already looking at the address that has the
+reputation is the whole of the correct product change.
+
+**Two findings recorded because they change what to expect, not just how to set it up.**
+
+1. **Postmaster will show nothing at our volume, probably for months.** Google withholds
+   low-volume data by design, and counts only mail to `@gmail.com`. Against a locked rule of 100
+   a day per mailbox, warming up from 20, the qualifying subset is tens of messages against an
+   unofficial threshold in the hundreds. The reason to do it today is that it has **no backfill**:
+   verifying the day before the first campaign means the first campaign is the one we cannot see.
+   The same argument ADR-026 made for the outcome dataset.
+2. **The signal that works at any volume is the one already configured and ignored.** DMARC
+   aggregate reports arrive daily from every participating receiver, are not volume-gated, and
+   would show the `From`-versus-authenticated-account mismatch the deploy runbook already warns
+   about — immediately, as a source failing both SPF and DKIM for our own domain. `rua` currently
+   points at `rahul@arkvane.in`, which is an address this system both **sends from** and
+   **polls**, so the reports are ingested as orphaned inbound messages. Harmless (nothing matches
+   a lead, so no model is ever called on them) and still wrong: it is the owner's correspondence
+   in application data for no reason. `p=none` stays until the reports are clean — tightening
+   first would have receivers quarantine our own real mail.
+
+### Part 2 — the deployed endpoint gets a smoke check that revokes its own key
+
+**Context.** `/mcp` has 24 integration tests, and they drive a `TestClient` against a test
+database in the same process. They cannot see TLS, Caddy, a forwarded `Origin`, or a route
+mounted at the root rather than under `/api/v1`. Six defects surfaced on this project's first
+real deploy and every one was invisible locally and in CI; four lived in exactly that gap.
+
+**Decision.** `app/scripts/mcp_smoke.py` exercises the live endpoint over the public URL:
+the refusals (no credential, a garbage one, a **Supabase-shaped** one, a disallowed `Origin`, the
+legacy `GET` and `DELETE`), each 2026-07-28 validation rule broken on purpose, `server/discover`,
+the catalogue, and every tool in it.
+
+**It mints a real credential against the real database, which is the one dangerous thing about
+it**, so two properties are enforced by `tests/unit/test_mcp_smoke_script.py` rather than left to
+care: the secret is **never printed** — this output gets pasted into terminals and chat windows,
+and hard rule 2 has already been breached once in this project by a failing assertion — and the
+token is **revoked in a `finally` block**, because the run this matters for is the one that fails,
+and a smoke check that cleans up only on success leaves a live key behind precisely when nobody
+is reading the output. A one-day expiry is the third line of defence, for a process killed
+between the two.
+
+**The tool list is read from the catalogue, not restated.** A hand-written list in the checker is
+a second copy of the thing being checked, and two correct halves that disagree is this project's
+signature defect. A tool added later is exercised without anybody remembering the file exists.
+
+**Rejected.**
+
+- **A Postmaster API integration** (above): per-tenant OAuth credentials to redraw somebody
+  else's dashboard.
+- **Pointing `rua` at a third-party analyser by default.** Aggregate reports carry no message
+  content but do carry our sending sources and per-receiver volumes, so an analyser is a third
+  party learning the shape of our mail programme. Documented as the owner's choice; nothing in
+  this repo sends them anywhere.
+- **Making the smoke check a CI job.** It needs production credentials and writes to the
+  production database. It is a command run deliberately after a deploy, which is also when its
+  answer is worth anything.
+- **Letting the check use a long-lived token kept in the environment.** That is the credential
+  nobody remembers exists, which is what ADR-028's expiry and revocation were for.
