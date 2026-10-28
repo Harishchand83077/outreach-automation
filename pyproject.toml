@@ -58,13 +58,13 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "aiosmtpd==1.4.6",       # in-process fake SMTP; no test may touch the network
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "mypy==2.4.0",
     "types-openpyxl==3.1.5.20261017",
     "respx==0.23.1",
     # Property-based tests for the scheduling maths: §22 asks for them there specifically,
     # because window edges, weekends and warm-up are where hand-picked examples miss cases.
-    "hypothesis==6.170.1",
+    "hypothesis==6.170.9",
 ]
 
 [tool.uv]
