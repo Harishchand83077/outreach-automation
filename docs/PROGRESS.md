@@ -1308,10 +1308,16 @@ screen would have looked perfectly healthy with both of them in place.
    reads `Outcome.SUCCESS.value` now: one import, and it cannot drift from the enum.
 
 A correct table and a correct caller with nothing checking that they agreed — twice, eleven lines
-apart, in the newest file in the repository. `test_a_sent_message_is_counted`,
-`test_a_message_still_sending_is_not_counted_as_sent` and
-`test_only_failed_llm_calls_count_as_failures` exist because of them, and each was run against
-the broken line to watch it fail first.
+apart, in the newest file in the repository. `test_a_sent_message_is_counted` and
+`test_only_failed_llm_calls_count_as_failures` exist because of them, and both were run against
+the broken lines to watch them fail: `assert 0 >= 1` on the send count, and `assert 2 == (0 + 1)`
+on the failure count.
+
+`test_a_message_still_sending_is_not_counted_as_sent` was written alongside them and **does not
+discriminate the bug** — with the broken filter every count was zero, so it passed trivially. It
+guards a different property (ADR-002: a message mid-flight may still fail, so `sending` must not
+be reported as `sent`), and saying it proved the fix would have been a claim the run does not
+support.
 
 The lesson is narrower than "be careful": **a literal that has to match a database constraint
 should be read from the thing that defines it.** Where an enum existed, copying the string was
