@@ -845,9 +845,9 @@ class WorkerHeartbeat(Base):
     dead worker looks perfectly healthy and sends nothing, which is the failure this exists to
     make visible.
 
-    No `org_id`, deliberately, and the only table besides `orgs` without one: a process is not
-    tenant data, it serves every org, and inventing an org for it would make `/ready` pick one
-    arbitrarily. See ADR-009.
+    No `org_id`, deliberately: a process is not tenant data, it serves every org, and inventing
+    an org for it would make `/ready` pick one arbitrarily. See ADR-009. `platform_operators` is
+    the only other table without the column, for the same kind of reason (ADR-024).
     """
 
     __tablename__ = "worker_heartbeats"
@@ -1127,3 +1127,36 @@ class Experiment(Base):
             name="ck_experiments_exploration_share",
         ),
     )
+
+
+class PlatformOperator(Base):
+    """Somebody who may see that the workspaces exist, and nothing inside them (ADR-024).
+
+    **The only table here with no `org_id`, and the reason is the point.** ADR-004 puts that
+    column on everything because everything else *belongs* to one tenant; this row belongs to the
+    deployment. `worker_heartbeats` and `alerts.org_id` are the two existing deviations and the
+    argument is the same one -- a process is not tenant data.
+
+    `user_id` is Supabase's `sub`, as in `members`, and kept deliberately separate from it: a role
+    is a position *inside* one workspace, so reusing `members.role` for a scope that sits above
+    every workspace would make the word mean two different things depending on which row you were
+    looking at. It also means an operator needs no membership anywhere, which is what lets the
+    dependency resolve them without ever touching `provision()`.
+
+    **Written by an `INSERT` and by nothing else.** No route creates one, and
+    `tests/unit/test_platform_scope_structure.py` asserts that over the whole api and services
+    tree. There is no role that could legitimately grant a scope above every org, so the only
+    person who can create an operator is somebody who already has the database.
+    """
+
+    __tablename__ = "platform_operators"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: Supabase `sub`. Opaque to us, exactly as in `members`.
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    #: For the audit trail and the screen. Not used to match on -- the `sub` is the identity.
+    email: Mapped[str | None] = mapped_column(String(320))
+    #: Why this person has it. A scope granted by hand deserves a sentence saying who and why,
+    #: or in a year nobody can tell a deliberate grant from a forgotten one.
+    note: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now_col(nullable=False)

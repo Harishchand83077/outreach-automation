@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.security import AuthError, TokenClaims, TokenVerifier, bearer_token
 from app.core.settings import Settings, config
 from app.db.engine import get_sessionmaker
-from app.db.models import Member
+from app.db.models import Member, PlatformOperator
 from app.db.repo import OrgContext
 from app.services.signup import SignupRefused, provision
 
@@ -54,6 +54,27 @@ class CurrentUser:
 
     def may(self, role: str) -> bool:
         return ROLE_ORDER.get(self.role, 0) >= ROLE_ORDER.get(role, 99)
+
+
+@dataclass(frozen=True)
+class CurrentOperator:
+    """A platform operator: the scope *above* orgs (ADR-024).
+
+    **It deliberately has no `org_id` and no `ctx`.** `CurrentUser.ctx` is how every org-scoped
+    route obtains the `OrgContext` that every repository call demands, so an identity without one
+    cannot reach a repository call at all -- a route that tried to pass an operator where a user
+    belongs fails on the missing attribute rather than quietly querying somebody's leads with an
+    org taken from who-knows-where.
+
+    That is the whole reason this is a separate type instead of a boolean on `CurrentUser`. A flag
+    would have left `ctx` sitting right there, and the first convenient `if user.is_operator`
+    inside an org-scoped route would have made the scope a superuser key into one workspace.
+
+    It is not a subclass of `CurrentUser` for the same reason, and a test asserts both.
+    """
+
+    user_id: str
+    email: str | None
 
 
 _verifier: TokenVerifier | None = None
@@ -135,6 +156,49 @@ async def current_user(
     )
 
 
+async def platform_operator_flag(
+    claims: Annotated[TokenClaims, Depends(current_claims)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> bool:
+    """Does this verified subject hold the platform scope?
+
+    Reported on `/me` so the dashboard can decide whether to draw the screen, rather than
+    discovering it by calling the route and seeing whether it refuses -- a UI that learns what it
+    may do from failed requests logs an error on every load for every ordinary user.
+    """
+    found = await session.scalar(
+        select(PlatformOperator.id).where(PlatformOperator.user_id == claims.subject)
+    )
+    return found is not None
+
+
+async def current_platform_operator(
+    claims: Annotated[TokenClaims, Depends(current_claims)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> CurrentOperator:
+    """Resolve the verified subject against `platform_operators`, or refuse.
+
+    **This never calls `current_user`**, and that is the design rather than a shortcut. Going
+    through it would mean an operator had to hold a membership somewhere -- so the scope above
+    orgs would depend on being inside one, `provision()` could create a workspace for somebody
+    who only ever wanted to read the dashboard, and `SIGNUP_MODE=closed` would lock out the
+    person who runs the deployment. The two questions are genuinely separate, so they are two
+    lookups against two tables.
+    """
+    operator = await session.scalar(
+        select(PlatformOperator).where(PlatformOperator.user_id == claims.subject)
+    )
+    if operator is None:
+        # The same 403 an authenticated stranger gets anywhere else. Deliberately not 404: the
+        # route exists, and pretending otherwise to the people who legitimately hold the scope
+        # would make "is it deployed yet?" unanswerable.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This is the platform view, and it is granted by hand.",
+        )
+    return CurrentOperator(user_id=operator.user_id, email=operator.email or claims.email)
+
+
 def require_role(role: str) -> Callable[..., Awaitable[CurrentUser]]:
     """Dependency factory: refuse anyone below `role`."""
 
@@ -150,6 +214,7 @@ def require_role(role: str) -> Callable[..., Awaitable[CurrentUser]]:
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(current_user)]
+OperatorDep = Annotated[CurrentOperator, Depends(current_platform_operator)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
