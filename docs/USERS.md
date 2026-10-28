@@ -14,7 +14,7 @@ Access is a row.
 
 ---
 
-## Which of the two things do you want?
+## Which of the three things do you want?
 
 **A. Their own workspace.** They sign up with their own email, see only their own campaigns, leads
 and drafts, connect their own Gmail, and send as themselves. They cannot see yours and you cannot
@@ -23,8 +23,14 @@ see theirs. This is the ordinary case, and it is the one that needs no SQL.
 **B. A teammate inside *your* workspace.** They see your campaigns and your review queue, and the
 point is usually to share the reviewing. This is a row you insert.
 
-They are not a progression: a person is either in your org or in their own. Moving them later means
-deleting one `members` row and writing another, and their own campaigns do not come with them.
+**C. The platform screen**, for whoever runs the deployment. Not a role and not a workspace: a
+separate scope *above* the orgs that reports counts and health for all of them and can read
+nothing inside any of them. Almost nobody should have it. One `INSERT`, §C.
+
+A and B are not a progression: a person is either in your org or in their own. Moving them later
+means deleting one `members` row and writing another, and their own campaigns do not come with
+them. C is orthogonal to both — it is held *as well as* a membership, or instead of having one at
+all.
 
 ---
 
@@ -185,6 +191,68 @@ VALUES ('<your org id>', 'them@example.com', 'member', 'you@example.com');
 **Write an invitation, not a `members` row, even here.** The invitation works whether or not they
 have signed in yet; a `members` row written after they have already signed in is the
 double-membership failure above, and nothing will tell you it happened.
+
+---
+
+---
+
+## C. The platform screen, for whoever runs the deployment
+
+There is a **third** scope, and it is not a role (ADR-024).
+
+`SIGNUP_MODE=open` means every sign-up owns its own workspace, which is the point of the product
+— so "I am the owner, I should see everything" cannot mean one shared workspace with everybody
+inside it. It would put every user's leads in the same tenant. What it means instead is a scope
+*above* the workspaces:
+
+| Audience | Sees |
+|---|---|
+| **Platform operator** | every workspace in aggregate: how many there are, who joined when, whether their mailboxes still authenticate, send mode, quota burn, dead jobs, alerts, worker liveness |
+| **Org owner / admin** | their own workspace only: Team, mailboxes, send mode, allowlist |
+| **Member** | no admin screen: the review queue and the leads |
+
+**It shows no leads, drafts, replies or campaign names, and that is enforced rather than
+intended.** A workspace owner agreed to this system sending their mail, not to its operator
+reading their pipeline. The operator identity has no `org_id` and no `OrgContext`, so nothing
+behind that screen can make a repository call at all; a structural test greps the router for the
+column names that would carry somebody's content; and an integration test writes a lead, a draft
+and a campaign with random strings and asserts none of them appears in the response.
+
+**The number worth opening it for** is mailboxes connected. A workspace whose Google grant lapsed
+has silently stopped sending *and* stopped fetching replies, and from inside that workspace
+everything looks normal. The screen names the workspaces in that state, because the next action is
+to tell those people to press Reconnect — and a count gives you nobody to tell.
+
+### Granting it
+
+**There is no button, and there will not be one.** The scope sits above every org, so no role
+could legitimately hand it out; a route that granted it would be an escalation with no ceiling. It
+is one `INSERT`, run by somebody who already has the database:
+
+```sql
+-- The `sub` of the Supabase user, which is the same value `members.user_id` holds.
+-- If they have already signed in at least once, read it from there rather than from Supabase:
+SELECT user_id, email FROM app.members WHERE email = 'you@example.com';
+
+INSERT INTO app.platform_operators (user_id, email, note)
+VALUES ('<supabase-sub>', 'you@example.com', 'runs the deployment');
+```
+
+Then reload the dashboard: **Platform** appears in the sidebar. Taking it away is a `DELETE` of the
+same row, and it removes nothing else — the scope was never a role inside a workspace, so their own
+workspace and role are untouched either way.
+
+Fill in `note`. In a year it is the only thing that distinguishes a deliberate grant from one
+nobody remembers making.
+
+```sql
+-- Who holds it today.
+SELECT email, note, created_at FROM app.platform_operators ORDER BY created_at;
+```
+
+**It is not an admin key into any workspace.** An operator who is not a member of a given org
+still gets a 403 from that org's admin routes, and a test asserts it. If you want both, you need
+both rows — the membership for your own workspace, and this one for the view above them.
 
 ---
 

@@ -1223,6 +1223,103 @@ code flow for somebody else's client.
 Four phases, with read-only first: Phases 0 to 2 carry most of the value and none of the write
 risk, so Phase 3 stays a separate decision taken with the first two already in production.
 
+**There is a scope above the workspaces now, and it can read nothing inside them (ADR-024,
+`docs/USERS.md` §C).** Asked as a roles question — the owner of the deployment is one person,
+everybody else is a member, so why can the owner not see everything?
+
+**The premise does not survive `SIGNUP_MODE=open`.** A sign-up provisions its own workspace and
+owns it (ADR-017), which is the product: one user must not see another's leads. So "the owner sees
+everything" cannot mean one shared org with everybody in it — that deletes the isolation the whole
+schema is built around and puts every future customer's campaigns in the same tenant as ours.
+
+But the person running the deployment genuinely had **no screen at all**. Every admin route
+answers for exactly one org, correctly, and the questions an operator actually has cannot be asked
+of any of them. `GET /platform/overview` and a **Platform** item in the sidebar answer them:
+workspaces with their counts, mailbox connection health, send mode, quota burn, dead jobs,
+unacknowledged alerts, worker liveness.
+
+**The number worth opening it for is mailboxes connected.** A workspace whose OAuth grant lapsed
+has silently stopped sending *and* stopped fetching replies, and from inside that workspace
+everything looks completely normal — so the screen **names** the affected workspaces rather than
+counting them, because the next action is to tell those people to press Reconnect and a count
+gives you nobody to tell.
+
+**It is not a role on `members`, and that is the load-bearing choice.** A role is a position
+*inside* one workspace — `uq_members_org_user` is per org and `deps.current_user` resolves exactly
+one membership. Reusing `role` for a scope above every workspace would make the word mean two
+things depending on which row you read, and it would require the operator to hold a membership
+somewhere: the scope above orgs would depend on being inside one, `provision()` could hand a
+workspace to somebody who only wanted to read the dashboard, and `SIGNUP_MODE=closed` would lock
+out the person who runs the deployment. Two questions, two tables, two lookups.
+
+**The containment is the type rather than the route's good manners.** `CurrentOperator` has **no
+`org_id` and no `ctx`**. `CurrentUser.ctx` is how every org-scoped route obtains the `OrgContext`
+that every repository call demands, so an identity without one cannot reach a repository call —
+a route that passed an operator where a user belongs fails on the missing attribute instead of
+quietly querying somebody's leads with an org from who knows where. It is not a subclass of
+`CurrentUser`, which would hand it `ctx` by the back door, and it is frozen. A boolean on
+`CurrentUser` would have left `ctx` sitting right there, and the first convenient
+`if user.is_operator` inside an org-scoped route would have turned the scope into a superuser key
+into one workspace.
+
+**ADR-004 keeps holding because the one deliberate exception is enforced from three sides.** The
+router does not import `app.db.repo`; a structural test greps it for the column names that would
+carry somebody's content and fails if one appears; and an integration test writes a lead, a draft
+and a campaign with random strings and asserts **none of them appears anywhere in the response
+text**. The third is the one that matters, because it catches a field somebody adds later in a
+place nobody thought to look — a test that inspects only the keys it knows about cannot see a new
+one.
+
+**`invalid_reason` is read and never returned**, and that distinction is deliberate rather than
+sloppy. A mailbox counts as connected when its credential has not been refused, so the one number
+this screen exists for cannot be computed without reading that column — while returning it would
+put a provider's quoted reply into a browser and a screenshot, as everywhere else. So it is absent
+from the structural grep and asserted against the real response body instead, which is the only
+place the real rule can be checked.
+
+**Granted by an `INSERT` and by nothing else.** No route creates an operator, and a structural
+test asserts that over the whole api and services tree — including `provision()`, the one place
+that already creates memberships. There is no role that could legitimately hand out a scope with
+nothing above it, so the only person who can create one is somebody who already has the database.
+The `note` column exists because in a year it is the only thing distinguishing a deliberate grant
+from one nobody remembers making.
+
+**And it is explicitly not an admin key into any workspace.** An operator who is not a member of a
+given org still gets 403 from that org's own admin routes, `/team` and `/campaigns`, and a test
+says so. A superuser that could also use the ordinary routes would be a second path to a
+workspace's settings — including, eventually, its send mode, which hard rule 1 keeps to one.
+
+Two things it still refuses to pretend to know, unchanged: it cannot read Supabase, so "has this
+person signed in?" remains the shadow a `members` row casts, and it cannot read Google's test-user
+list (ADR-018).
+
+**Two defects in the new query, both mine, both the signature shape, and both found by reading
+the check constraint rather than by running anything.** They are worth recording because the
+screen would have looked perfectly healthy with both of them in place.
+
+1. The sent-mail count filtered `direction == "outbound"`. The column holds `'out'` —
+   `ck_messages_direction` is the authority. So `emails_sent` was **zero for every workspace, for
+   ever**, which is indistinguishable from a deployment that has sent nothing, and none of the
+   tests I had already written would have noticed: every other assertion in that file is a
+   `>= 1` on a count that happened to be right.
+2. The failure count compared `outcome != "ok"`, and `Outcome` has no such value — success is
+   `"success"`. So **every successful model call was counted as a failure**, and the quota panel
+   would have reported a model chain in permanent trouble while it was working perfectly. It
+   reads `Outcome.SUCCESS.value` now: one import, and it cannot drift from the enum.
+
+A correct table and a correct caller with nothing checking that they agreed — twice, eleven lines
+apart, in the newest file in the repository. `test_a_sent_message_is_counted`,
+`test_a_message_still_sending_is_not_counted_as_sent` and
+`test_only_failed_llm_calls_count_as_failures` exist because of them, and each was run against
+the broken line to watch it fail first.
+
+The lesson is narrower than "be careful": **a literal that has to match a database constraint
+should be read from the thing that defines it.** Where an enum existed, copying the string was
+the whole defect; where no enum exists, the constraint is the authority and is one grep away.
+
+The migration is one empty table with no foreign key, so adding it changed nobody's behaviour —
+the route 403s for everybody until the first row exists.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

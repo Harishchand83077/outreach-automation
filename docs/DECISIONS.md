@@ -1195,6 +1195,116 @@ saying where to look.
 
 ---
 
+## ADR-024 — A platform scope above orgs, read-only and aggregates only
+
+**Status.** Accepted, 2026-10-28.
+
+**Context.** Asked as a roles question: the owner of the deployment is one person, everybody else
+is a member, so why can the owner not see everything?
+
+The answer is that the premise does not survive `SIGNUP_MODE=open`. A sign-up provisions its own
+workspace and owns it (ADR-017), which is the product — one user must not see another's leads. So
+"the owner sees everything" cannot mean one shared org with everybody in it; that would delete
+the isolation the whole schema is built around, and it would mean every future customer's
+campaigns sat in the same tenant as ours.
+
+But the person running the deployment genuinely has no screen. Every admin route answers for
+exactly one org, correctly, and the questions that actually matter to an operator — how many
+workspaces exist, whether their mailboxes still authenticate, whether the worker is wedged, how
+much of the free-tier model quota is gone — cannot be asked of any of them. The last one is not
+hypothetical: a workspace whose OAuth grant lapsed has silently stopped sending **and** stopped
+fetching replies, and looks completely healthy from inside.
+
+**Decision.** A third scope, above orgs rather than inside one.
+
+| Audience | Sees |
+|---|---|
+| **Platform operator** — `app.platform_operators`, granted by SQL | every workspace in aggregate: counts, mailbox connection health, send mode, quota burn, dead jobs, unacknowledged alerts, worker liveness |
+| **Org owner / admin** | their own workspace: team, invitations, mailboxes, send mode, allowlist |
+| **Member** | no admin screen at all: the review queue and the leads |
+
+One route, `GET /platform/overview`, and it is read-only. There is no write route in the module
+and no route anywhere that takes an org from its caller.
+
+**Not a role on `members`, and that is the load-bearing choice.** A role is a position *inside*
+one workspace — `uq_members_org_user` is per org, and `deps.current_user` resolves exactly one
+membership. Reusing `role` for a scope that sits above every workspace would make the word mean
+two different things depending on which row you were reading, and it would require the operator to
+hold a membership somewhere: so the scope above orgs would depend on being inside one,
+`provision()` could hand a workspace to somebody who only ever wanted to read the dashboard, and
+`SIGNUP_MODE=closed` would lock out the person who runs the deployment. Two separate questions,
+two tables, two lookups.
+
+**The containment is the type, not the route's good manners.** `CurrentOperator` has **no
+`org_id` and no `ctx`**. `CurrentUser.ctx` is how every org-scoped route obtains the `OrgContext`
+that every repository call demands, so an identity that has none cannot reach a repository call at
+all — a route that tried to pass an operator where a user belongs fails on the missing attribute
+rather than quietly querying somebody's leads with an org from who knows where. It is not a
+subclass of `CurrentUser` either, which would hand it `ctx` by the back door, and it is frozen so
+nothing can write an org onto it mid-request. Three tests assert exactly that, because it is a
+property of the shape rather than of any response.
+
+**ADR-004 keeps holding because the exception is narrow and enforced from three sides.** The
+platform router is the only code in the tree that deliberately reads across orgs. So: it does not
+import `app.db.repo`; a structural test greps it for the column names that would carry somebody's
+content (`email_norm`, `company_name`, `.body`, `.subject`, `persona`, `pause_reason`) and fails if
+one appears; and an integration test writes a lead, a draft and a campaign with distinctive random
+strings and asserts none of them appears anywhere in the response text. The third is the one that
+catches a field somebody adds later in a place nobody thought to look — a test that inspects only
+the keys it knows about cannot see a new one.
+
+**`invalid_reason` is read and never returned**, and the distinction is deliberate rather than
+sloppy: a mailbox counts as connected when its credential has not been refused, so the count this
+screen exists for cannot be computed without reading that column. What must not happen is
+returning it, because the text can quote a provider's reply and this response reaches a browser
+and a screenshot. So it is absent from the structural grep and asserted against the real response
+body instead, which is where it can actually be checked.
+
+**Granted by an `INSERT` and by nothing else.** No route creates an operator, and a structural
+test asserts that over the whole api and services tree — including `provision()`, which is the one
+place that already creates memberships. There is no role that could legitimately hand out a scope
+sitting above every org, so the only person who can create one is somebody who already has the
+database. `docs/USERS.md` §C carries the statement, and the `note` column exists so that in a year
+nobody has to guess whether a grant was deliberate or forgotten.
+
+**No `org_id` on the table**, which is the third documented deviation from ADR-004 after
+`worker_heartbeats` and `alerts.org_id`, and the same argument: the row describes the deployment,
+not a tenant.
+
+**`user_id` is unique across the deployment**, unlike `members.user_id`. There is nothing a second
+row could mean, and two rows would make "is this person an operator?" depend on which came back
+first — the precise silent failure ADR-022 was written about.
+
+**Alternatives rejected.**
+
+- **One shared org with everybody as members.** Deletes the isolation the schema exists for, and
+  puts every user's leads in one tenant. It is also not what the owner wants on inspection: they
+  asked to see the workspaces, not to work inside them.
+- **A boolean on `CurrentUser`.** It leaves `ctx` sitting right there, and the first convenient
+  `if user.is_operator` inside an org-scoped route turns the scope into a superuser key into one
+  workspace. A separate type makes that unexpressible rather than discouraged.
+- **A separate admin application or a second deployment.** More infrastructure, a second auth
+  surface, and the data it needs is in this database anyway.
+- **Showing lead counts *and* a sample of leads**, so an operator can "see it working". That is
+  the whole boundary. Health is answerable without content, and the first exception is the one
+  that makes every later one arguable.
+- **Granting it through the API to an `owner`.** There is no ceiling above this scope, so there is
+  no role that could authorise issuing it.
+
+**Consequences.** The platform screen is a nav item almost nobody sees, drawn from a
+`platform_operator` flag on `/me` rather than by calling the route and reading a 403 — a UI that
+learns what it may do from failed requests logs an error on every load for every ordinary user.
+
+What it deliberately cannot answer stays unanswerable from here: it still cannot read Supabase
+(so "has this person signed in?" remains the shadow a `members` row casts), and it still cannot
+read Google's test-user list (ADR-018). Reporting either as a fact would be a guess in a screen
+whose whole value is being trustworthy about what it knows.
+
+Adding the table changes nobody's behaviour: it is empty, and the route 403s for everybody until
+the first `INSERT`.
+
+---
+
 ## ADR-025 — A campaign kind, orthogonal to its mode
 
 **Status.** Accepted, 2026-10-27. `docs/CAMPAIGN_KINDS.md` is the analysis behind it.

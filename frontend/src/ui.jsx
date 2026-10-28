@@ -125,6 +125,13 @@ export const Icons = {
       <path d="M21 11.5l-8.8 8.8a5 5 0 0 1-7.1-7.1l9-9a3.5 3.5 0 0 1 5 5l-9 9a2 2 0 0 1-2.8-2.8l8.1-8.1" />
     </Icon>
   ),
+  // Stacked layers: many workspaces seen from above, which is what the platform scope is.
+  platform: (p) => (
+    <Icon {...p}>
+      <path d="M12 3l9 5-9 5-9-5 9-5z" />
+      <path d="M3 13l9 5 9-5" />
+    </Icon>
+  ),
 }
 
 /* ------------------------------------------------------------------ theme */

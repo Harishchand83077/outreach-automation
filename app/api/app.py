@@ -35,6 +35,7 @@ from app.api.routers import (
     imports,
     me,
     operations,
+    platform,
     review,
     team,
 )
@@ -185,6 +186,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
+    application.include_router(platform.router, prefix="/api/v1")
     return application
 
 
