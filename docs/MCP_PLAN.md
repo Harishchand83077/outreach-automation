@@ -173,6 +173,25 @@ worked. This one does not.
    event is a bug, not a detail.
 5. **Try to break it.** Ask Claude to send an email. It should find no tool that can, and say so.
 
+### Checking the deployment itself, before wiring a client to it
+
+The integration suite drives a `TestClient` against a test database in the same process, so it
+cannot see TLS, Caddy, a forwarded `Origin`, or a route mounted at the root rather than under
+`/api/v1` — the gap four of this project's first six deploy defects lived in. `mcp_smoke.py`
+closes it, over the public URL:
+
+```bash
+sudo docker compose -f deploy/compose.prod.yml exec api \
+    python -m app.scripts.mcp_smoke --base-url https://api.arkvane.in --email you@example.com
+```
+
+It mints a one-day token, exercises the refusals (including that a **Supabase-shaped** credential
+is refused here), breaks each 2026-07-28 validation rule on purpose, calls every tool in the
+catalogue, asserts on the wire that no tool's schema takes an `org_id`, checks that every call
+left an audit row, and **revokes the token in a `finally` block**. It never prints the secret.
+Both of those last two are enforced by `tests/unit/test_mcp_smoke_script.py` rather than left to
+care, because a check that leaks or outlives its own credential is worse than no check.
+
 Anthropic warns that custom connectors are unverified and tells users to connect only to servers
 run by organisations they trust. We are asking our own users to trust us, which is worth being
 deliberate rather than quiet about.

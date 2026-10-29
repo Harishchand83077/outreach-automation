@@ -513,6 +513,23 @@ deliberately. The Gmail API with OAuth was considered and rejected in ADR-006: b
 it needs a Cloud project, a consent screen and a token-refresh path for a volume SMTP handles
 comfortably.
 
+### 6.4 Monitoring: is any of this actually arriving?
+
+The records above are *configuration*. Nothing so far says whether mail gets to an inbox, and the
+one time it came up we found out by accident — a reply was in Spam and somebody looked.
+
+**`docs/POSTMASTER.md` is the runbook**, and the short version is that the two free signals are
+not the two you would guess:
+
+- **Google Postmaster Tools** — ten minutes, owner-only, and it will probably show **nothing**
+  for months: Google withholds low-volume data, and it counts only mail to `@gmail.com`. Set it
+  up now anyway, because it has **no backfill** — verify after the first campaign and the first
+  campaign is the one you cannot see.
+- **DMARC aggregate reports** — already published (`rua=mailto:…`), arrive at any volume, and
+  would show the `From`-versus-authenticated-account mismatch §6 warns about immediately. Nobody
+  reads them, and `rua` currently points at a mailbox this system both sends from and polls.
+  Fixing that is the highest-value item in the whole of §6.
+
 ---
 
 ## 7. Backups, restore, retention
