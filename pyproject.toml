@@ -7,7 +7,7 @@ requires-python = "==3.12.*"
 # Pinned to exact versions. The prototype used `>=` throughout with no lockfile, so two
 # installs a week apart were different programs (issue E6). `uv.lock` pins the full graph.
 dependencies = [
-    "fastapi==0.159.1",
+    "fastapi==0.162.0",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.32",
     "pydantic==2.14.1",
@@ -23,7 +23,7 @@ dependencies = [
     # dependency trees would carry their vulnerabilities too (§19).
     "sqlalchemy[asyncio]==2.1.6",
     "asyncpg==0.32.0",
-    "alembic==1.20.0",
+    "alembic==1.20.1",
     # Windows ships no tz database, and scheduling is defined in Asia/Kolkata, so ZoneInfo
     # needs this. Also required by Alembic's UTC filename timestamps.
     "tzdata==2026.5",
