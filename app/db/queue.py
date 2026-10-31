@@ -40,6 +40,9 @@ class JobKind:
     CLASSIFY_REPLY = "classify_reply"
     DRAFT_REPLY = "draft_reply"
     SEND_MESSAGE = "send_message"
+    #: Poll one public ATS board (F5). Its dedupe key is built from the board slug, which
+    #: two workspaces can share -- which is why ADR-032 had to scope dedupe by org first.
+    POLL_ATS_FEED = "poll_ats_feed"
 
 
 class QueueFull(Exception):
