@@ -1710,6 +1710,25 @@ not the deployment config, so `settings.PUBLIC_API_URL` was an attribute that do
 the same shape as `Event.created_at` before it, and again found by the type checker rather than by
 a screen showing nothing for ever.
 
+**And CI caught a second one, which is this project's most repeated defect and was mine.** The
+route passed `reason="one-click unsubscribe"` to `add_suppression`. `ck_suppressions_reason`
+allows exactly four values and that is not one of them, so **every POST was a 500** -- and the
+test written alongside it asserted `"one-click" in rows[0].reason`, so it asserted my own invented
+value and would never have caught it. A literal that has to match a database constraint, copied
+into a caller that cannot see it change: the same shape as `direction == "outbound"` where the
+column holds `'out'`, `outcome != "ok"` where success is `"success"`, and `Event.created_at` where
+the column is `Event.at`.
+
+The structural cure, rather than just the fix: `SUPPRESSION_REASONS` is defined once in
+`models.py`, **the check constraint is built from it**, the route reads it, and
+`tests/unit/test_suppression_reasons.py` walks the whole tree with `ast` and fails on any
+`add_suppression(reason="...")` literal the database would refuse. Run against the broken line
+first, to watch it fail.
+
+The detail did not just get dropped. `reason` says *that* they opted out -- a four-value column is
+not where a mechanism belongs -- and a `lead.unsubscribed` event now records *how*, so "why is
+this address suppressed?" is still answerable months later.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

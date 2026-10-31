@@ -20,7 +20,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.settings import config
-from app.db.models import Lead, Suppression
+from app.db.models import SUPPRESSION_REASONS, Event, Lead, Suppression
 from app.services import unsubscribe
 
 from .test_api_settings import api, keypair, member, owner, token_for  # noqa: F401
@@ -60,14 +60,45 @@ class TestThePostActs:
 
         assert len(await suppressions(db, org)) == 1
 
-    async def test_the_suppression_records_why(self, api, db, org, lead_factory):
-        """Months later, "why is this address suppressed?" has to be answerable."""
+    async def test_the_reason_is_one_the_database_allows(self, api, db, org, lead_factory):
+        """**This test asserted my own invented value and CI caught it.**
+
+        The route first passed `reason="one-click unsubscribe"`. `ck_suppressions_reason` allows
+        four values and that is not one of them, so every POST was a 500 -- and this test, written
+        from the implementation rather than from the constraint, asserted the wrong string with
+        it. A literal that has to match a database constraint, copied into a caller that cannot
+        see it change, is this project's most repeated defect.
+
+        The constraint is now built from `SUPPRESSION_REASONS` and the route reads that tuple, so
+        the two cannot disagree.
+        """
         lead = await lead_factory()
 
         api.post(f"/u/{token_for_lead(lead)}")
 
         rows = await suppressions(db, org)
-        assert rows and "one-click" in rows[0].reason
+        assert rows
+        assert rows[0].reason in SUPPRESSION_REASONS
+        assert rows[0].reason == "opt_out"
+
+    async def test_the_mechanism_is_in_the_audit_trail(self, api, db, org, lead_factory):
+        """The reason column says *that* they opted out; the event says *how*.
+
+        "Why is this address suppressed?" has to be answerable months later, and a four-value
+        column is not where that detail belongs.
+        """
+        lead = await lead_factory()
+
+        api.post(f"/u/{token_for_lead(lead)}")
+
+        events = list(
+            (
+                await db.scalars(
+                    select(Event).where(Event.org_id == org.id, Event.type == "lead.unsubscribed")
+                )
+            ).all()
+        )
+        assert [event.data.get("mechanism") for event in events] == ["one_click_header"]
 
 
 class TestTheGetDoesNot:

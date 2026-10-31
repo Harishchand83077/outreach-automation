@@ -24,8 +24,9 @@ from fastapi.responses import HTMLResponse
 from app.api.deps import SessionDep
 from app.core.settings import config
 from app.db import repo
-from app.db.models import Lead
+from app.db.models import SUPPRESSION_REASONS, Lead
 from app.db.repo import OrgContext
+from app.db.state import record_event
 from app.services import unsubscribe
 
 logger = logging.getLogger(__name__)
@@ -101,11 +102,28 @@ async def act(token: str, session: SessionDep) -> Response:
         await session.rollback()
         return Response(status_code=status.HTTP_200_OK)
 
+    ctx = OrgContext(org_id=org_id, actor_id="unsubscribe")
     await repo.add_suppression(
-        OrgContext(org_id=org_id, actor_id="unsubscribe"),
+        ctx,
         session,
+        # **Read from the model, not written out.** `ck_suppressions_reason` allows four values
+        # and this route first invented a fifth, which the database refused with a 500 that
+        # explained nothing. The reason column says *that* they opted out; the event below says
+        # *how*, which is where there is room for it.
+        reason=SUPPRESSION_REASONS[0],
         value=lead.email_norm,
-        reason="one-click unsubscribe",
+    )
+    await record_event(
+        session,
+        org_id=org_id,
+        campaign_id=lead.campaign_id,
+        lead_id=lead.id,
+        actor="system",
+        actor_id="unsubscribe",
+        type="lead.unsubscribed",
+        # The mechanism, so "why is this address suppressed?" is answerable later without
+        # guessing. No address and no token: this row is read in logs and screenshots.
+        data={"mechanism": "one_click_header"},
     )
     await session.commit()
     logger.info("one-click unsubscribe honoured", extra={"org_id": str(org_id)})
