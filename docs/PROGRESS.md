@@ -1915,6 +1915,28 @@ has caught that class this week.
 authenticates, confirm `DKIM: PASS` in Show original on a received message, and replace the
 booking URL. The gate reports all three and cannot do any of them.
 
+**Job postings come in now, from public ATS feeds or a pasted URL (F5, ADR-036, slices S12.1 and
+S12.2).** `job_posts`, a parser for Greenhouse, Lever and Ashby, a fetch client, and
+`/api/v1/job-posts` to paste, list and archive.
+
+**The endpoints were tested before anything was built on them**, because the v3 doc took them
+from one third-party article. All three answer 200, and `docs/ATS_FEEDS.md` records what they
+actually return. The difference that mattered: **Lever returns a bare JSON array where the other
+two wrap theirs in `jobs`**, and its timestamps are epoch milliseconds rather than ISO 8601. A
+parser written against an assumed shape would have failed for exactly one source, which reads
+like a bad board slug rather than a bad assumption. Greenhouse's list response carries no
+description at all, so `body_text` is nullable from the first migration instead of being
+discovered to be optional later. Fixtures are real trimmed responses, so the parser is tested
+against what the services send rather than what I expected.
+
+**Nothing fetches a pasted URL.** The user supplies the text, and a structural test asserts the
+router imports no HTTP client -- that is what keeps this on the right side of hard rule 4 and of
+each board's terms.
+
+A test caught a real hole: an unknown source whose payload happened to have the right shape
+returned **zero postings** rather than an error, which is indistinguishable from an empty board.
+The source is now validated before parsing.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
