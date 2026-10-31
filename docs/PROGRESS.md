@@ -1769,6 +1769,89 @@ the DKIM detail, and failed against a sentence that uses it to *deny* signing. A
 absence of a word is a poor stand-in for asserting a claim; it now checks that the detail says
 "published" and defers to a received message.
 
+**A mailbox that is bouncing badly now stops by itself (F3, ADR-034, slice S11.6). Phase 11 is
+complete.** `mailbox_health` holds one row per mailbox per IST day, and an hourly `Scheduler` pass
+rolls it up and pauses any mailbox whose bounce rate over a rolling week has crossed the limit,
+with an alert naming the counts.
+
+**The one rule everything else follows from: this pass may only restrict.** No branch resumes a
+mailbox, raises a cap, extends a window or touches a send mode -- asserted over the source, with
+comments stripped first so the prose explaining the rule cannot satisfy it. That asymmetry is what
+makes acting without a human acceptable: **a signal that can only restrict cannot cause the outage
+it would then report.** Resuming is the risky direction, so resuming stays a person's decision.
+The structural test exists because the edit that breaks this is one somebody would make for a
+good-sounding reason -- "un-pause it once the rate recovers" is exactly how this becomes something
+that resumes sending on its own.
+
+**Three guards that matter more than the threshold.** A minimum of 20 sends before any rate is
+believed, because at five sends one bounce is 20% and alerting on noise is how an operator learns
+to ignore alerts. A rolling seven days rather than a single day, because one bad afternoon is not
+a reputation problem. And an already-paused mailbox is skipped, so the alert fires once rather than
+every hour for something somebody is already handling. The threshold itself is 5%, the lenient end
+of the usual guidance, because the action is automatic and stopping a campaign wrongly is worse
+than stopping it a day later.
+
+**A rollup rather than counters.** The table is recomputed from `messages` and `classifications`,
+which are the record. A counter incremented at send time drifts -- a crash between the send and
+the increment leaves it wrong for ever and nothing notices -- while a rollup is always a fresh
+answer. The numbers lag one pass, which for a signal measured in days is not a cost.
+
+**`complaint_rate` is nullable and deliberately never written.** A complaint rate needs a feed
+from the receiving provider, and Postmaster Tools is a link we ask the owner to open rather than
+an integration (ADR-029). A zero there would read as "no complaints" when it means "we cannot see
+complaints", and the whole value of this table is that it can be trusted. The column exists so a
+future feed has somewhere to go, and `source` records where a number came from. So the honest
+summary of F3 is: **we can now see bounces automatically; complaints still need the owner's manual
+Postmaster step**, and that is the number Gmail actually judges on.
+
+**The alert kind carries the mailbox id**, because the cool-down dedupes by kind and the first
+mailbox paused would otherwise silence every other one -- and the mailbox that never got its alert
+is the one still bouncing. The same reasoning as the OAuth grant warnings, and three tests fail
+without it.
+
+**mypy earned its keep twice in this slice**: nullable `mailbox_id` and `sent_at` columns whose
+queries exclude nulls but whose types cannot know it, so the narrowing is explicit and a row with
+neither is skipped rather than crashing a housekeeping pass.
+
+**The deliverability report was telling most users to fix something they cannot fix (ADR-035,
+slice S11.7).** Caught by the owner pointing out -- for the second time -- that this is a
+multi-user product where anyone connects their own mailbox, Gmail or their own domain.
+
+The code was already domain-agnostic: ADR-023 removed the deployment mailbox, no sending logic
+names a domain, and a grep confirms every `arkvane` string in `app/` is either the API's own
+hostname or a comment about the historical incident. **The report was the problem.** It ran every
+sending domain through the same DNS checklist, which is right for a domain the sender owns and
+wrong for the commonest case here.
+
+`gmail.com` answers an SPF record and a DMARC record and **no selector anyone could guess** --
+Google signs with its own rotating ones. So a user who connected a Gmail address was told their
+domain was **not ready**, over a DKIM record they cannot publish, do not control and do not need.
+Most signups connect a Gmail address. Verified before fixing: `ready: False`, `DKIM: unknown`.
+
+A provider-owned domain is now reported as the provider's business -- one passing
+**Authentication** line, and **no DNS query at all**, because nothing in DNS could change the
+answer. The detail carries the two things that genuinely are true of a shared domain, because both
+are easy to assume away: you share its reputation with everybody else sending from it, and you
+cannot add it to Postmaster Tools because it is not yours. Then the sentence that makes it
+actionable rather than a shrug: sending from a domain you own gives you both of those.
+
+One-click unsubscribe is still checked and can still fail -- that header is ours, not the
+provider's. And a domain the sender owns still gets the full four-item checklist, asserted by its
+own test: the point is to tell the two cases apart, not to skip the checks.
+
+**The lesson is about where the single-tenant assumption hides.** Not in the schema -- ADR-004 put
+`org_id` everywhere in the first migration -- but in a *report*, written as though every sender
+owned their domain. The three cross-tenant queue defects earlier today were the same shape in a
+different place. Tenancy is not only about which rows you can read; it is about whether the thing
+you say to a user is true of *their* setup.
+
+**And my own structural guard caught an ambiguity in my own code on the way.**
+`HealthReport.paused` was a list of mailbox ids while `Mailbox.paused` is a boolean, so the guard
+asserting "this module may only ever set `paused = True`" read `report.paused = decided.paused` as
+an attempt to clear a pause. The fix was to remove the ambiguity rather than loosen the guard:
+`paused_mailbox_ids`. A field named after the column it is not is a field that will be confused
+for it.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

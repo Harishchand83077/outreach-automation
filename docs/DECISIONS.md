@@ -2139,3 +2139,151 @@ already cost this project one long investigation.
 alongside a window-function subquery join is the kind of SQL a type checker cannot judge: a probe
 against the development database with four jobs in one workspace and one in another returned one
 from each for a claim of two.
+
+---
+
+## ADR-034 — Deliverability may only pause
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Relates to:** F3 in `docs/OUTREACH_PLATFORM_V3.md`, slice S11.6
+
+### Context
+
+Gmail and Yahoo cap spam complaints at 0.3% and judge senders on bounce rates too. The first
+reply this system ever received was in Spam, and nothing in the system could have told us: there
+was no per-mailbox health signal at all, and `mailboxes.paused` was a flag only a person set.
+
+### Decision
+
+`mailbox_health` holds one row per mailbox per IST day — sent, bounced — and an hourly
+`Scheduler` pass rolls it up and then **pauses** any mailbox whose bounce rate over a rolling
+window has crossed the limit, raising an alert that names the counts.
+
+**The one rule everything else follows from: this pass may only restrict.** There is no branch
+that resumes a mailbox, raises a cap, extends a window or touches a send mode — asserted over the
+source by `test_nothing_here_can_resume_a_mailbox_or_raise_a_cap`, which also strips comments
+first so the prose explaining the rule cannot satisfy it.
+
+That asymmetry is what makes automatic action acceptable without a human in the loop. **A signal
+that can only restrict cannot cause the outage it would then report.** Resuming is the risky
+direction, so resuming stays a person's decision. The structural test exists because the edit
+that breaks this is one somebody would make for a good-sounding reason — "un-pause it once the
+rate recovers" is exactly how this would become something that resumes sending on its own.
+
+### Three guards, which matter more than the threshold
+
+1. **Minimum volume (20 sends).** At five sends one bounce is 20%, a number about nothing.
+   Alerting on noise is how an operator learns to ignore alerts.
+2. **A rolling 7-day window, not a day.** One bad afternoon is not a reputation problem.
+3. **An already-paused mailbox is skipped**, so the alert fires once rather than every hour for
+   something somebody is already dealing with.
+
+The threshold is 5% — the lenient end of the usual 2–5% guidance — because the action is
+automatic and stopping a campaign wrongly is worse than stopping it a day later.
+
+### A rollup, not counters
+
+`mailbox_health` is recomputed from `messages` and `classifications`, which are the record.
+Counters incremented at send time drift: a crash between the send and the increment leaves one
+wrong for ever and nothing notices. The cost is that the numbers lag one pass, which for a signal
+measured in days is not a cost.
+
+### `complaint_rate` is nullable and never written
+
+Deliberately, not unfinished. A complaint rate needs a feed from the receiving provider, and
+Postmaster Tools is a link we ask the owner to open rather than an integration (ADR-029). **A
+zero would read as "no complaints" when it means "we cannot see complaints"**, and the entire
+value of this table is that an operator can trust what it says. The column exists so a future
+provider feed has somewhere to go, and `source` says where a number came from.
+
+### The alert kind carries the mailbox id
+
+The cool-down dedupes by kind, so without the id the first mailbox paused would silence every
+other mailbox in the deployment — and the one that never got its alert is the one still bouncing.
+The same reasoning as the OAuth grant warnings (ADR-021), and three tests fail without it.
+
+### Consequences
+
+A mailbox bouncing badly stops by itself, within an hour, with an alert saying why. Nobody has to
+be watching. The deliverability signal the project has been missing since its first send now
+exists, and it is the half that works without Postmaster Tools.
+
+What it still cannot see is complaints, which is the number Gmail actually judges on. DMARC
+aggregate reports and Postmaster remain the owner's manual steps (`docs/POSTMASTER.md`).
+
+### What was rejected
+
+- **Auto-resuming when the rate recovers.** The whole safety argument is that this can only
+  restrict.
+- **Lowering the cap instead of pausing.** A cap is a product rule; this is a fault signal, and
+  mixing them would mean a bug here quietly changed how much a healthy workspace may send.
+- **Counting at send time.** Covered above: counters drift silently.
+- **Writing `complaint_rate = 0.0` until a feed exists.** Covered above: a fabricated zero is
+  worse than a null.
+
+---
+
+## ADR-035 — A provider's domain is not the sender's to configure
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Relates to:** F4, slice S11.7, and ADR-023 (every workspace sends from an account its owner
+connected)
+
+### Context
+
+The sender-requirement report (S11.5) ran every sending domain through the same DNS checklist.
+Correct for a domain the sender owns, and wrong for the commonest case in a multi-user product.
+
+`gmail.com` answers an SPF record and a DMARC record, and **no selector we could guess** —
+Google signs outbound Gmail with its own rotating selectors. So a user who connected a Gmail
+address was told their domain was **not ready**, over a DKIM record they cannot publish, do not
+control and do not need. Most people signing up connect a Gmail address, so that was the
+majority of users being told to fix something unfixable.
+
+This was caught by the owner pointing out, for the second time, that the product is not tied to
+one domain. The code was already domain-agnostic — ADR-023 removed the deployment mailbox and no
+sending logic names a domain — but the *report* had been written as though every sender owned
+their domain, which is exactly the assumption a single-tenant mindset produces.
+
+### Decision
+
+A domain in `PROVIDER_DOMAINS` is reported as the provider's business: one **Authentication**
+check, passing, saying there is nothing to publish. No DNS query is made at all, because nothing
+in DNS could change the answer.
+
+The detail carries the two things that **are** true of a shared domain, because both are easy to
+assume away:
+
+1. **You share its reputation** with everybody else sending from it.
+2. **You cannot add it to Postmaster Tools**, because it is not your domain.
+
+Followed by the one sentence that makes it actionable rather than a shrug: sending from a domain
+you own gives you both of those.
+
+**One-click unsubscribe is still checked and can still fail.** That header is ours, not the
+provider's.
+
+A domain the sender owns gets the full four-item checklist, unchanged. The point is to tell the
+two cases apart, not to skip the checks — asserted by
+`test_a_domain_the_sender_owns_still_gets_the_full_checklist`.
+
+### Consequences
+
+A Gmail user sees `ready: true` and one honest line instead of a warning they can do nothing
+about. A user on their own domain sees the checklist that is genuinely theirs to act on. The
+report keeps being read, which is the only property that matters about a report.
+
+`provider_owned` is on the response so a screen can say this in words rather than leaving
+somebody to infer it from a single row.
+
+### What was rejected
+
+- **Probing more selectors.** DNS cannot enumerate selectors, so the list could never be
+  complete, and a longer list would still fail for a provider rotating them.
+- **Reporting it as `UNKNOWN`.** Honest about our knowledge and useless to the reader: nothing
+  they do can resolve it, so it would sit there for ever.
+- **Hiding the shared-reputation and Postmaster limits** to keep the message simple. They are
+  the real difference between sending from Gmail and sending from your own domain, and somebody
+  choosing between the two deserves to know.

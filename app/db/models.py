@@ -14,13 +14,14 @@ in advance. `alerts` and `worker_heartbeats` arrived with Phase 9.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -856,6 +857,50 @@ class Suppression(Base):
             f"reason IN ({', '.join(repr(reason) for reason in SUPPRESSION_REASONS)})",
             name="ck_suppressions_reason",
         ),
+    )
+
+
+class MailboxHealth(Base):
+    """One row per mailbox per day: how much it sent and how much came back (ADR-034).
+
+    **A rollup rather than counters incremented at send time.** Counters drift — a crash between
+    the send and the increment leaves them wrong for ever, and nothing would notice — while a
+    rollup is recomputed from `messages` and `classifications`, which are the record. The cost is
+    that the numbers lag by one pass of the `Scheduler`, which for a signal measured over days is
+    not a cost at all.
+
+    `complaint_rate` is **nullable and is never populated today**, which is deliberate rather
+    than unfinished. A complaint rate needs a feed from the receiving provider; Postmaster Tools
+    is a link we ask the owner to open, not an integration (ADR-029), so there is no honest
+    number to put here. A column holding zero would read as "no complaints" when it means "we
+    cannot see complaints", and the whole value of this table is that an operator can trust it.
+    """
+
+    __tablename__ = "mailbox_health"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The IST day the counts belong to. A `date`, not a timestamp: the send window and the daily
+    #: cap are both IST days, so health measured in UTC days would straddle them.
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    bounced: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: See the class docstring: deliberately never written.
+    complaint_rate: Mapped[float | None] = mapped_column(Float)
+    #: Where the numbers came from, so a future provider feed is distinguishable from our own
+    #: counting without guessing at the shape of the data.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="messages")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("mailbox_id", "day", name="uq_mailbox_health_mailbox_day"),
+        CheckConstraint("sent >= 0 AND bounced >= 0", name="ck_mailbox_health_counts"),
+        Index("ix_mailbox_health_org_day", "org_id", "day"),
     )
 
 

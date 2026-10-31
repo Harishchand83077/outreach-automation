@@ -29,6 +29,40 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+#: Domains a provider owns, where the sender does not control DNS and does not need to.
+#:
+#: **This exists because the product is multi-user.** Most people who sign up will connect a
+#: Gmail address, and `gmail.com` answers an SPF and a DMARC record but not any selector we could
+#: guess -- Google signs outbound Gmail with its own rotating selectors. Checked as an ordinary
+#: domain, such a mailbox is reported "not ready" over a DKIM record the user **cannot publish
+#: and does not need**. Telling the majority of signups to fix something unfixable is how a
+#: report stops being read.
+#:
+#: What is true of a shared domain is different rather than absent, and §`_shared` says it: the
+#: authentication is the provider's and is fine, the *reputation* is shared with every other
+#: sender on it, and it cannot be verified in Postmaster Tools because it is not yours.
+PROVIDER_DOMAINS: frozenset[str] = frozenset(
+    {
+        "gmail.com",
+        "googlemail.com",
+        "outlook.com",
+        "hotmail.com",
+        "live.com",
+        "msn.com",
+        "yahoo.com",
+        "yahoo.co.in",
+        "ymail.com",
+        "icloud.com",
+        "me.com",
+        "aol.com",
+        "proton.me",
+        "protonmail.com",
+        "zoho.com",
+        "gmx.com",
+        "yandex.com",
+    }
+)
+
 #: Selectors worth probing. Ours is Google's; the rest are the common defaults of providers
 #: somebody might reasonably be sending through. Not exhaustive and cannot be — hence `UNKNOWN`
 #: rather than `FAIL` when none answers.
@@ -69,9 +103,16 @@ class DomainReport:
     dkim: Check
     dmarc: Check
     one_click: Check
+    #: True when the domain belongs to a mail provider rather than to this sender, so the DNS
+    #: checklist does not apply. Carried on the report so a caller can say so in words instead
+    #: of inferring it from three identical checks.
+    provider_owned: bool = False
 
     @property
     def items(self) -> tuple[Check, ...]:
+        if self.provider_owned:
+            # One authentication line rather than the same sentence three times.
+            return (self.spf, self.one_click)
         return (self.spf, self.dkim, self.dmarc, self.one_click)
 
     @property
@@ -171,11 +212,48 @@ def _one_click(configured: bool) -> Check:
     )
 
 
+def _shared(name: str) -> Check:
+    """The verdict for a domain somebody else owns.
+
+    A pass, because there is genuinely nothing wrong and nothing to do: the provider publishes
+    SPF, signs with DKIM and sets DMARC for its own domain, and does it properly. The detail
+    carries the two things that *are* worth knowing, because they are easy to assume away.
+    """
+    return Check(
+        "Authentication",
+        Verdict.PASS,
+        f"{name} is your provider's domain, so SPF, DKIM and DMARC are theirs and are already "
+        "correct — there is nothing for you to publish. Two consequences worth knowing: you "
+        "share the domain's reputation with everyone else sending from it, and you cannot add "
+        "it to Postmaster Tools because it is not your domain. Sending from a domain you own "
+        "gives you both of those.",
+    )
+
+
 def check_domain(
     domain: str, *, resolver: TxtResolver, unsubscribe_configured: bool
 ) -> DomainReport:
-    """Everything checkable about one sending domain, from outside."""
+    """Everything checkable about one sending domain, from outside.
+
+    A provider-owned domain (`gmail.com` and friends) is reported as the provider's business
+    rather than run through the DNS checklist — see `PROVIDER_DOMAINS`.
+    """
     name = domain.strip().lower().rstrip(".")
+
+    if name in PROVIDER_DOMAINS:
+        shared = _shared(name)
+        # The same verdict in all three slots rather than a different shape of report, so every
+        # caller -- the admin screen, the go-live script -- renders one thing and cannot forget
+        # to handle a special case. One-click unsubscribe is still ours to get right, because it
+        # is our header and not the provider's.
+        return DomainReport(
+            domain=name,
+            spf=shared,
+            dkim=shared,
+            dmarc=shared,
+            one_click=_one_click(unsubscribe_configured),
+            provider_owned=True,
+        )
 
     dkim_found: tuple[str, list[str] | None] | None = None
     for selector in DKIM_SELECTORS:

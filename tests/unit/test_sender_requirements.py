@@ -196,3 +196,77 @@ class TestTheOverallVerdict:
 
         assert "MIIBIjAN" not in joined
         assert "dmarc@example.com" not in joined
+
+
+class TestAProviderOwnedDomain:
+    """**The multi-user case, and the majority one.**
+
+    Most people who sign up connect a Gmail address. `gmail.com` answers an SPF and a DMARC
+    record but no selector we could guess, because Google signs with its own rotating ones. Run
+    through the ordinary checklist, such a mailbox was reported "not ready" over a DKIM record
+    the user cannot publish and does not need -- which is how a report stops being read.
+    """
+
+    def test_gmail_is_ready_rather_than_failing_on_a_dkim_record_nobody_can_publish(self):
+        report = sr.check_domain(
+            "gmail.com", resolver=FakeResolver({}), unsubscribe_configured=True
+        )
+
+        assert report.provider_owned is True
+        assert report.ready is True
+
+    def test_it_does_not_query_dns_at_all(self):
+        """Nothing in DNS could change the answer, so asking is pure waste."""
+        resolver = FakeResolver({})
+
+        sr.check_domain("gmail.com", resolver=resolver, unsubscribe_configured=True)
+
+        assert resolver.asked == []
+
+    def test_it_reports_one_authentication_line_not_three_identical_ones(self):
+        report = sr.check_domain(
+            "outlook.com", resolver=FakeResolver({}), unsubscribe_configured=True
+        )
+
+        assert [check.name for check in report.items] == [
+            "Authentication",
+            "One-click unsubscribe",
+        ]
+
+    def test_it_says_the_two_things_that_are_actually_true(self):
+        """Shared reputation, and no Postmaster verification. Both easy to assume away."""
+        report = sr.check_domain(
+            "gmail.com", resolver=FakeResolver({}), unsubscribe_configured=True
+        )
+        detail = report.spf.detail.lower()
+
+        assert "share" in detail
+        assert "postmaster" in detail
+
+    def test_one_click_is_still_ours_to_get_right(self):
+        """The header is ours, not the provider's, so it is still checked and can still fail."""
+        report = sr.check_domain(
+            "gmail.com", resolver=FakeResolver({}), unsubscribe_configured=False
+        )
+
+        assert report.one_click.verdict is sr.Verdict.FAIL
+        assert report.ready is False
+
+    def test_a_domain_the_sender_owns_still_gets_the_full_checklist(self):
+        """The whole point is to tell the two cases apart, not to skip the checks."""
+        report = check(GOOD)
+
+        assert report.provider_owned is False
+        assert [check_item.name for check_item in report.items] == [
+            "SPF",
+            "DKIM",
+            "DMARC",
+            "One-click unsubscribe",
+        ]
+
+    def test_case_and_a_trailing_dot_do_not_defeat_it(self):
+        report = sr.check_domain(
+            "GMail.com.", resolver=FakeResolver({}), unsubscribe_configured=True
+        )
+
+        assert report.provider_owned is True
