@@ -1729,6 +1729,46 @@ The detail did not just get dropped. `reason` says *that* they opted out -- a fo
 not where a mechanism belongs -- and a `lead.unsubscribed` event now records *how*, so "why is
 this address suppressed?" is still answerable months later.
 
+**A sending domain can now say whether it meets the bulk-sender rules (F4, slice S11.5).**
+`GET /admin/sender-requirements`, admin-gated, one report per **distinct domain** rather than per
+mailbox -- SPF, DKIM and DMARC are properties of a domain, and two mailboxes on one domain listed
+twice would show one problem as two.
+
+**The whole thing is built around one honesty rule: say what DNS can prove and no more.** That is
+not pedantry here, it is the defect this project has already paid for. Mail went out as
+`From: rahul@arkvane.in` while SMTP authenticated as an unrelated Gmail, so the SPF and DKIM
+records verified for that domain applied to none of it -- and the first reply the system ever
+received was sitting in Spam. A report that had said "DKIM: pass" would have been true about the
+record and wrong about the mail.
+
+So: **SPF** is checkable, and two records is reported as the permanent error it is rather than a
+merge -- the single commonest way a domain's mail breaks. **DKIM is only probeable**: DNS cannot
+enumerate selectors, so a miss is `UNKNOWN` ("not at the selectors we tried") and a key that is
+published is reported as *published*, with the reader sent to Show original on a received message
+for whether anything is signing with it. **DMARC** with no `rua=` is a warning rather than a pass,
+because aggregate reports are the one deliverability signal that works at our volume where
+Postmaster Tools shows nothing (ADR-029). And **a failed lookup is `UNKNOWN`, never `FAIL`** --
+a timeout is not evidence of absence, the same rule the importer's MX check already follows.
+`ready` treats `UNKNOWN` as not ready, because for a go-live gate "we could not tell" is not a yes.
+
+**No key, address or token appears in any detail string**, asserted by a test: these reach a
+browser, a screenshot and a log.
+
+**This route does talk to the network, and the contrast with `GET /mailboxes` is deliberate.**
+That one is non-networked because refreshing it would mint OAuth tokens and could write an
+`invalid_reason` -- a read with a side effect, fired by anyone pressing F5. A DNS lookup has no
+side effect, and the resolver caches per request, so a refresh costs a few UDP packets.
+
+`dnspython` turned out to be **already a dependency** (the importer's MX check uses it), so the
+implementation plan's note about adding one was wrong -- corrected there. The checker is a shared
+function precisely so P10's go-live script reads the same code: a screen and a script that
+disagree about whether a domain is ready would be the signature defect again.
+
+**One test of mine was a bad proxy for its claim.** It asserted the word "signed" was absent from
+the DKIM detail, and failed against a sentence that uses it to *deny* signing. Asserting the
+absence of a word is a poor stand-in for asserting a claim; it now checks that the detail says
+"published" and defers to a received message.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
