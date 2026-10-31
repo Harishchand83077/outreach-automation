@@ -20,7 +20,6 @@ it lives: `tests/integration/test_outbox.py` drives two concurrent claims agains
 does not duplicate that; it covers the layer above, where a *handler* could be run twice.
 """
 
-
 from __future__ import annotations
 
 import uuid
