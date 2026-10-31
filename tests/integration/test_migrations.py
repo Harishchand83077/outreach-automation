@@ -1,10 +1,14 @@
 """The migrations must agree with the models.
 
-This test exists because of a specific, nasty failure. `uq_jobs_kind_dedupe_live` — the partial
-unique index that makes job enqueueing idempotent — was created by raw SQL in migration 1 but
-never declared in the model metadata. Autogenerate therefore read it as drift and wrote a
-migration that **dropped** it, silently removing the guarantee. The queue tests caught it, but
-only because they happened to cover that behaviour.
+This test exists because of a specific, nasty failure. The partial unique index that makes job
+enqueueing idempotent — `uq_jobs_kind_dedupe_live`, now `uq_jobs_org_kind_dedupe_live` after
+ADR-032 — was created by raw SQL in migration 1 but never declared in the model metadata.
+Autogenerate therefore read it as drift and wrote a migration that **dropped** it, silently
+removing the guarantee. The queue tests caught it, but only because they happened to cover that
+behaviour.
+
+It has since earned its keep a second time: ADR-032 renamed the index, and this file is what
+failed in CI to say so.
 
 Comparing metadata against a freshly migrated database catches the whole class: an index, a
 constraint or a column that exists in one place and not the other.
@@ -72,19 +76,48 @@ class TestTheDedupeIndexSurvives:
     """The specific regression, asserted directly rather than only via behaviour."""
 
     async def test_the_partial_unique_index_exists(self, db):
+        """Renamed by ADR-032, and this guard is how the rename was noticed.
+
+        It was `uq_jobs_kind_dedupe_live`. Scoping the key to the workspace changed the columns,
+        so the name changed with them — and this test failed in CI, which is exactly what a guard
+        written against a silent index drop is for. The assertion is now *stronger* rather than
+        merely renamed: it checks `org_id` is in the definition, because the whole point of the
+        change is that the key is per workspace.
+        """
         found = await db.scalar(
             text(
                 "select indexdef from pg_indexes "
-                "where schemaname = 'app' and indexname = 'uq_jobs_kind_dedupe_live'"
+                "where schemaname = 'app' and indexname = 'uq_jobs_org_kind_dedupe_live'"
             )
         )
         assert found is not None, (
-            "uq_jobs_kind_dedupe_live is missing: job enqueueing is no longer idempotent"
+            "uq_jobs_org_kind_dedupe_live is missing: job enqueueing is no longer idempotent"
         )
         assert "UNIQUE" in found.upper()
+        # ADR-032: without `org_id` a live job in one workspace refuses the same key in every
+        # other workspace, and `enqueue` reports that as "already queued, nothing to do".
+        assert "org_id" in found.lower()
         # The predicate is what makes it *partial* — without it, a key could never be reused
         # after a job finished.
         assert "status" in found.lower()
+
+    async def test_the_old_unscoped_index_is_gone(self, db):
+        """Both must not exist at once.
+
+        The migration creates the new index before dropping the old one, deliberately, so the
+        guarantee is never weaker mid-migration. If the drop were ever lost, the stricter old
+        index would still be refusing cross-workspace keys and the fix would look applied while
+        doing nothing.
+        """
+        stale = await db.scalar(
+            text(
+                "select indexname from pg_indexes "
+                "where schemaname = 'app' and indexname = 'uq_jobs_kind_dedupe_live'"
+            )
+        )
+        assert stale is None, (
+            "the pre-ADR-032 index is still present, so cross-workspace keys are still refused"
+        )
 
     async def test_the_events_append_only_trigger_exists(self, db):
         found = await db.scalar(
