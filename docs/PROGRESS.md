@@ -1557,6 +1557,43 @@ header was present. That is the fourth time in this project a test has encoded t
 have caught -- after `parse_chain`'s empty chain, the mailbox-credential fallback, and the
 `tools/list` ordering assertion that compared a list with itself -- and it keeps happening for one
 reason: a test written from the implementation describes the implementation.
+**Job deduplication was not workspace-scoped, and a second workspace's work would have
+vanished silently (ADR-032, slice S11.1).** The second of the three items to land before any new
+job kind.
+
+`jobs.dedupe_key` plus a partial unique index is what makes enqueueing idempotent, and
+`enqueue` returning `None` for a duplicate is how that stays harmless. The index was unique on
+**`(kind, dedupe_key)`** with no `org_id` -- so a live job in one workspace refused the same key in
+**every other workspace**, and the refusal arrives as `None`, which every caller in the tree reads
+as "already queued, nothing to do". No exception, no log line, no dead job, nothing on any screen.
+The quietest failure available, and a cross-tenant one in a schema built on ADR-004.
+
+**It had never bitten because every key in the tree is built from a UUID** -- `draft:{lead.id}` --
+and a UUID cannot collide across orgs. The guarantee held by accident of key choice rather than by
+design. It stops holding the moment a key is built from something two workspaces share:
+`feed:greenhouse:{token}`, `company:{domain}`, `poll:{ats_slug}` -- which is exactly what the
+job-post intake and signal polling need. Two users watching the same company is the ordinary case
+in this product, not an edge one.
+
+The index is now `(org_id, kind, dedupe_key)`. **Three places expressed the old rule and all three
+had to change together**: the migration, the `Index` in `models.py` metadata -- without which
+autogenerate reads it as drift and writes a migration that DROPS it, which it has already done
+once -- and `index_elements` in `queue.py`, because Postgres infers the constraint from those
+columns and a mismatch is rejected outright.
+
+**The migration is index-only and creates the new index before dropping the old**, so at no instant
+is the guarantee weaker. The downgrade needed care the upgrade did not: the old index is
+*stricter*, so if two workspaces hold the same key -- the case this change allows -- recreating it
+would fail. The revert cancels the newer duplicates with the reason in `last_error` rather than
+deleting them, because a cancelled job is visible and re-enqueueable where a deleted one is gone.
+Both directions were run against the development database and the index checked each way.
+
+**A mistake on the way, worth recording because the recovery was the easy part.** I ran
+`alembic downgrade -1` to test reversibility without checking where the development database
+actually was -- it was one revision behind head, so that dropped `api_tokens` instead of reverting
+the new migration. `upgrade head` restored it, and the run incidentally proved all three pending
+upgrades apply cleanly in order. The lesson is the cheap one: `alembic current` before
+`alembic downgrade`, because `-1` is relative to the database and not to the branch.
 
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the

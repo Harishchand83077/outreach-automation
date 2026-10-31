@@ -56,10 +56,15 @@ async def enqueue(
 ) -> Job | None:
     """Add a job, or return `None` if an identical one is already queued or running.
 
-    Deduplication is enforced by a partial unique index on `(kind, dedupe_key)` covering only
-    the live statuses, so the same work can be enqueued again later once the first attempt has
-    finished. That makes enqueueing safe to retry — which matters, because the scheduler may
+    Deduplication is enforced by a partial unique index on `(org_id, kind, dedupe_key)` covering
+    only the live statuses, so the same work can be enqueued again later once the first attempt
+    has finished. That makes enqueueing safe to retry — which matters, because the scheduler may
     notice the same due lead twice.
+
+    **`org_id` is in the key deliberately (ADR-032).** It used to be `(kind, dedupe_key)`, so a
+    live job in one workspace refused the same key everywhere else — and a refusal is reported as
+    `None`, which callers read as "already queued", so the other workspace's work quietly never
+    happened.
     """
     values: dict[str, Any] = {
         "id": uuid.uuid4(),
@@ -78,10 +83,10 @@ async def enqueue(
 
     stmt = insert(Job).values(**values)
     if dedupe_key is not None:
-        # The predicate must match migration 1's partial index exactly, or Postgres cannot infer
-        # which constraint this refers to and rejects the statement.
+        # The columns and the predicate must match the partial index exactly, or Postgres cannot
+        # infer which constraint this refers to and rejects the statement.
         stmt = stmt.on_conflict_do_nothing(
-            index_elements=["kind", "dedupe_key"],
+            index_elements=["org_id", "kind", "dedupe_key"],
             index_where=text("dedupe_key IS NOT NULL AND status IN ('queued', 'running')"),
         )
     result = await session.execute(stmt.returning(Job.id))

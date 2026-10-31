@@ -584,14 +584,23 @@ class Job(Base):
             postgresql_where=text("status = 'queued'"),
         ),
         Index("ix_jobs_lease", "status", "locked_until"),
-        # Enqueueing is idempotent: a live job already holding this (kind, dedupe_key) blocks a
-        # duplicate, while a finished one does not, so the same work can be queued again later.
+        # Enqueueing is idempotent: a live job already holding this (org_id, kind, dedupe_key)
+        # blocks a duplicate, while a finished one does not, so the same work can be queued again
+        # later.
         #
-        # Declared here as well as created by migration 1. It must be in the metadata, or
+        # **`org_id` is part of the key (ADR-032), and leaving it out was a cross-tenant bug.**
+        # Without it a live job in one workspace refused the same key in every other workspace,
+        # and `enqueue` reports a refusal as `None`, which every caller reads as "already
+        # queued, nothing to do" — so one workspace's work silently did not happen. Latent only
+        # because every key in the tree is built from a UUID; a key built from a shared
+        # identifier (`feed:greenhouse:{token}`, `company:{domain}`) collides immediately.
+        #
+        # Declared here as well as created by migration. It must be in the metadata, or
         # autogenerate reads it as drift and writes a migration that DROPS it — which it did
         # once, silently removing the guarantee until the queue tests caught it.
         Index(
-            "uq_jobs_kind_dedupe_live",
+            "uq_jobs_org_kind_dedupe_live",
+            "org_id",
             "kind",
             "dedupe_key",
             unique=True,

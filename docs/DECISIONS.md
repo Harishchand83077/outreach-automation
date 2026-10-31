@@ -1959,3 +1959,71 @@ the implementation.
   does not reach.
 - **Leaving it as it was until the endpoint existed.** The header is read by the systems that
   decide our deliverability; a false claim there is not a cosmetic debt.
+## ADR-032 — Job deduplication is scoped to the workspace
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Relates to:** F21, `docs/IMPLEMENTATION_PLAN_V3.md` §1.2.1
+
+### Context
+
+`jobs.dedupe_key` plus a partial unique index is what makes enqueueing idempotent: the scheduler
+may notice the same due lead twice, and `enqueue` returning `None` for a duplicate is how that
+stays harmless (ADR-014 — a job is enqueued in the same transaction as the state change that
+justifies it, which is why there is no broker).
+
+The index, since migration 1, was unique on **`(kind, dedupe_key)`**. No `org_id`.
+
+**So a live job in one workspace refused the same key in every other workspace.** And the refusal
+is reported by returning `None`, which every caller in the tree treats as "an identical job is
+already queued, nothing to do". The second workspace's work would simply not happen: no
+exception, no log line, no dead job, nothing on any screen. It is the quietest possible failure,
+and it is a cross-tenant one in a codebase whose whole schema is built on ADR-004.
+
+**Why it has never bitten.** Every dedupe key in the tree today is built from a UUID —
+`draft:{lead.id}`, `lead:{lead.id}` — and a UUID cannot collide across orgs. The guarantee held
+by accident of key choice rather than by design.
+
+**Why it must be fixed now.** It stops holding the moment a key is built from an identifier two
+workspaces genuinely share: `feed:greenhouse:{token}`, `company:{domain}`, `poll:{ats_slug}`.
+Those are exactly the keys the job-post intake (P12) and signal polling (P15) need. Two users
+watching the same company is the ordinary case, not an edge one — this is a product where that
+should be expected.
+
+### Decision
+
+The index becomes unique on **`(org_id, kind, dedupe_key)`**, same partial predicate
+(`dedupe_key IS NOT NULL AND status IN ('queued','running')`). `enqueue`'s
+`on_conflict_do_nothing` names the same three columns, because Postgres infers the constraint
+from them and a mismatch is rejected outright.
+
+Three places express this and all three were changed together: the migration, the `Index` in
+`models.py` metadata (without which autogenerate reads the index as drift and writes a migration
+that **drops** it — which it has done once already, per the comment that has sat there since),
+and the `index_elements` in `queue.py`.
+
+### Consequences
+
+Two workspaces can hold the same key at once; within one workspace a duplicate is still refused,
+which is what dedupe is for and is now its own test.
+
+**The migration is index-only — no row is read, altered or moved** — and creates the new index
+before dropping the old one, so at no instant is the guarantee weaker than it was.
+
+**The downgrade needs care the upgrade does not**, because the old index is *stricter*. If two
+workspaces hold a live job with the same `(kind, dedupe_key)` — precisely the case this ADR
+allows — recreating the old index would fail. The revert therefore **cancels** the newer
+duplicates rather than deleting them, with the reason written into `last_error`: a cancelled job
+is visible and can be enqueued again, where a deleted one is gone. Both directions were run
+against the development database and the index was checked each way.
+
+### What was rejected
+
+- **Leaving it and documenting the constraint on key naming** ("never build a key from a shared
+  identifier"). That is a rule held in one person's head, enforced by nothing, against a failure
+  mode that is invisible when it happens.
+- **Dropping dedupe and relying on handler idempotency.** The index is what makes the
+  enqueue-in-the-same-transaction design safe to retry; handlers being idempotent as well is
+  defence in depth, not a replacement.
+- **Including `lead_id`.** It is nullable, and NULLs are not equal in a unique index, so
+  lead-less jobs would stop deduplicating at all.
