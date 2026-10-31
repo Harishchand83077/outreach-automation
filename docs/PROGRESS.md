@@ -1530,6 +1530,34 @@ server is root-owned and Compose interpolates it at parse time, so the command f
 missing flag. Fixed, with a note saying why, since it is the easy mistake to repeat.
 
 
+**Every message had been claiming RFC 8058 compliance it did not have (ADR-033, slice S11.0).**
+First slice of the v3 plan, and deliberately first of all of them: it is one line of behaviour and
+it removes a false statement from every email this system sends.
+
+`List-Unsubscribe-Post: List-Unsubscribe=One-Click` was set on every message while
+`List-Unsubscribe` was a bare `mailto:`. RFC 8058's one-click is about an **https URI a receiver
+can POST to**; the header beside a mailto announces a capability that is not there. The comment
+next to it read "tells a client the mailto is safe to trigger without a confirmation step", which
+is a misreading of the RFC -- one-click is not "no confirmation", it is "POST here and we will act
+on it".
+
+**Why this outranked the queue work it was planned behind.** Most wrong headers are inert. This one
+is *testable by the receiver*: Gmail can POST, find nothing, and conclude the sender misrepresents
+its own compliance -- against the exact criteria that decide whether our mail is delivered. We were
+claiming the one bulk-sender rule we had not implemented.
+
+The header is now sent only when an https URL exists, which until S11.4 means not at all. The
+mailto stays, so every message still carries an unsubscribe mechanism; it is just no longer
+described as something it is not. With a URL, `List-Unsubscribe` carries it first and the mailto
+second, because a receiver takes the first target it understands. A non-https URL is refused rather
+than normalised: `http` would have a receiver POST somebody's opt-out in clear.
+
+**And the existing test asserted the defect.** `test_one_click_is_advertised` checked that the
+header was present. That is the fourth time in this project a test has encoded the bug it should
+have caught -- after `parse_chain`'s empty chain, the mailbox-credential fallback, and the
+`tools/list` ordering assertion that compared a list with itself -- and it keeps happening for one
+reason: a test written from the implementation describes the implementation.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

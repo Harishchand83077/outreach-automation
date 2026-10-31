@@ -1891,3 +1891,71 @@ of that string is how the cap would quietly stop counting.
 - **Validating a proposal the way a template is validated.** Covered above; it is the whole ADR.
 - **Making propose the default scope.** Default-off is the same decision as `SEND_MODE=disabled`
   and `SIGNUP_MODE=closed`: the narrow setting is the one you get without choosing.
+
+---
+
+## ADR-033 — One-click unsubscribe is an https endpoint, and the header is not sent without one
+
+**Date:** 2026-10-31
+**Status:** Accepted (part 1 of 2 — the header claim; the endpoint lands with F4's slice S11.4)
+**Relates to:** F4 in `docs/OUTREACH_PLATFORM_V3.md`, `docs/IMPLEMENTATION_PLAN_V3.md` §1.2.6
+
+### Context
+
+Gmail and Yahoo's bulk-sender rules require a one-click unsubscribe that follows RFC 8058. This
+repo has been sending, on every message:
+
+```
+List-Unsubscribe: <mailto:asha@example.com?subject=unsubscribe>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+```
+
+**RFC 8058 is about an `https` URI a receiver can POST to.** The second header beside a bare
+`mailto:` announces a capability that does not exist. The code comment beside it read "tells a
+client the mailto is safe to trigger without a confirmation step", which is a misreading of the
+RFC — one-click is not "no confirmation", it is "POST here and we will act on it".
+
+**This is worse than a missing feature, and that is why it is fixed before the endpoint is
+built.** Most wrong headers are inert. This one is *testable by the receiver*: a mail provider can
+POST, find nothing there, and conclude that the sender misrepresents its own compliance — against
+exactly the criteria that decide whether our mail is delivered. The repo had been claiming
+compliance with the one rule it had not implemented.
+
+### Decision
+
+1. **`List-Unsubscribe-Post` is sent only when an https unsubscribe URL exists.** Until S11.4
+   builds the endpoint, that means it is not sent at all. The `mailto:` stays, so there is still
+   an unsubscribe mechanism in every message — it is simply not described as something it is not.
+2. **`List-Unsubscribe` carries the https URL first and the mailto second**, once there is a URL.
+   A receiver takes the first target it understands, and the POST is the one the bulk rules ask
+   for. The mailto is kept because it needs no endpoint to be reachable and a reply to it lands
+   in the inbox the IMAP poller already watches.
+3. **A non-https URL is refused rather than normalised.** `http` would have a receiver POST
+   somebody's opt-out in clear, and silently rewriting a caller's URL is how the wrong endpoint
+   ends up in a header nobody reads.
+4. **The URL is a parameter of `build_message`**, defaulting to `None`. So this slice changes
+   behaviour in exactly one way — a header stops being sent — and S11.4 is a wiring change rather
+   than a second edit to the message builder.
+
+### Consequences
+
+Our messages no longer claim RFC 8058 compliance. That is a *reduction* in what we advertise and
+an increase in how true it is; until S11.4 lands we are a sender with a mailto unsubscribe, which
+is where we actually were.
+
+`tests/unit/test_mail_message.py::test_one_click_is_advertised` **asserted the defect** and is now
+`test_one_click_is_not_advertised_without_a_url_to_post_to`. That is the fourth time in this
+project a test has encoded the bug it should have caught (after `parse_chain`'s empty chain, the
+mailbox-credential fallback, and the `tools/list` ordering assertion that compared a list with
+itself), and it keeps happening for one reason: a test written from the implementation describes
+the implementation.
+
+### What was rejected
+
+- **Building the endpoint in the same slice.** It needs a public unauthenticated route, a signing
+  scheme and a suppression write — a `needs-human` change on the sending path. Removing a false
+  claim should not wait behind it.
+- **Dropping the mailto once there is a URL.** It costs nothing and works where an https POST
+  does not reach.
+- **Leaving it as it was until the endpoint existed.** The header is read by the systems that
+  decide our deliverability; a false claim there is not a cosmetic debt.

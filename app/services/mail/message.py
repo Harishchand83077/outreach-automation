@@ -100,13 +100,30 @@ def build_footer(identity: FooterIdentity) -> str:
 
 
 def unsubscribe_mailto(mailbox: Mailbox) -> str:
-    """The `List-Unsubscribe` target.
+    """The `List-Unsubscribe` mailto target.
 
-    A mailto rather than a URL: it needs no endpoint to exist, it works in every client, and a
-    reply lands in the inbox the IMAP poller already watches, so an opt-out is detected by
-    machinery that is already there. §9.7 notes a signed one-click URL as a later option.
+    Kept even once an https URL exists: it needs no endpoint to be reachable, it works in every
+    client, and a reply lands in the inbox the IMAP poller already watches, so an opt-out is
+    detected by machinery that is already there.
     """
     return f"<mailto:{mailbox.from_email}?subject=unsubscribe>"
+
+
+def unsubscribe_header(mailbox: Mailbox, url: str | None) -> str:
+    """The `List-Unsubscribe` value: the https URL first when there is one, then the mailto.
+
+    Order matters because a receiver takes the first target it understands, and the one-click
+    POST is the one Gmail and Yahoo ask for.
+    """
+    mailto = unsubscribe_mailto(mailbox)
+    if url is None:
+        return mailto
+    if not url.startswith("https://"):
+        # RFC 8058 requires https, and `http` would have a receiver POST somebody's opt-out in
+        # clear. Refused here rather than normalised, because silently rewriting a caller's URL
+        # is how the wrong endpoint ends up in a header nobody reads.
+        raise ValueError(f"an unsubscribe URL must be https, got {url!r}")
+    return f"<{url}>, {mailto}"
 
 
 @dataclass
@@ -133,6 +150,7 @@ def build_message(
     in_reply_to: str | None = None,
     references: str | None = None,
     attachments: Sequence[Attachment] = (),
+    unsubscribe_url: str | None = None,
     now: datetime | None = None,
 ) -> BuiltMessage:
     """Assemble one plain-text email, optionally carrying files.
@@ -180,9 +198,14 @@ def build_message(
     if references:
         message["References"] = sanitise_header(references)
 
-    message["List-Unsubscribe"] = unsubscribe_mailto(mailbox)
-    # Tells a client the mailto is safe to trigger without a confirmation step.
-    message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
+    message["List-Unsubscribe"] = unsubscribe_header(mailbox, unsubscribe_url)
+    if unsubscribe_url is not None:
+        # **Only with an https URL to POST to.** RFC 8058's one-click is about an https URI a
+        # receiver can POST an opt-out to; this header beside a bare `mailto:` announces a
+        # capability we do not have. Unlike most wrong headers that one is testable by the
+        # receiver — Gmail can POST, get nothing, and conclude the sender misrepresents itself —
+        # so it was a deliverability liability rather than a missing feature.
+        message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     # Marks this as solicited-style bulk mail rather than a transactional message.
     message["Auto-Submitted"] = "no"
 
