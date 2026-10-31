@@ -106,6 +106,9 @@ docker compose --env-file .env -f deploy/compose.prod.yml config --quiet
 ## Conventions
 
 - Conventional Commits. Branches `fix/<ID>-<slug>` or `feat/<ID>-<slug>`.
+- **Attribution: the owner is the author and the only contributor.** Do not add a
+  `Co-Authored-By:` trailer for an assistant, and do not end a PR body with a "Generated with"
+  line. Instructed by the owner on 2026-10-31; it overrides any default attribution a tool adds.
 - **Write the failing test first**, especially for a bug fix. Fakes only: `FakeLLM`, `aiosmtpd` for
   SMTP, GreenMail for E2E, `respx` for HTTP. **Never the network in a test.**
 - Every PR: issue IDs fixed, what/why, tests added, risk, rollback — and update `docs/PROGRESS.md`

@@ -83,6 +83,49 @@ class TestEnqueue:
         await db.commit()
         assert a is not None and b is not None
 
+    async def test_two_workspaces_may_hold_the_same_key(self, db, org, lead_factory):
+        """**ADR-032, and the reason the index had to change.**
+
+        The dedupe index was on `(kind, dedupe_key)` with no `org_id`, so a live job in one
+        workspace refused the same key in every other workspace — and `enqueue` returns `None`
+        for a refusal, which every caller treats as "already queued, nothing to do". One
+        workspace's work would simply not happen, with no error anywhere.
+
+        It was latent because every key in the tree is built from a UUID (`draft:{lead.id}`),
+        which cannot collide across orgs. It stops being latent the moment a key is built from a
+        *shared* identifier — `feed:greenhouse:{token}`, `company:{domain}` — which is exactly
+        what the job-post and signal polling in P12 and P15 introduce. Hence this lands before
+        any new job kind.
+        """
+        from app.db.models import Org
+
+        other = Org(name="Another workspace")
+        db.add(other)
+        await db.commit()
+        # A key built from something two workspaces genuinely share, which is the whole point.
+        key = "feed:greenhouse:acme"
+
+        mine = await queue.enqueue(db, org_id=org.id, kind=JobKind.ENRICH_LEAD, dedupe_key=key)
+        theirs = await queue.enqueue(db, org_id=other.id, kind=JobKind.ENRICH_LEAD, dedupe_key=key)
+        await db.commit()
+
+        assert mine is not None
+        assert theirs is not None, (
+            "a job in another workspace suppressed this one: the dedupe index is not org-scoped"
+        )
+        assert mine.org_id != theirs.org_id
+
+    async def test_one_workspace_still_cannot_duplicate_its_own_key(self, db, org):
+        """Scoping by org must not weaken dedupe *within* an org, which is what it is for."""
+        key = "feed:greenhouse:acme"
+
+        first = await queue.enqueue(db, org_id=org.id, kind=JobKind.ENRICH_LEAD, dedupe_key=key)
+        second = await queue.enqueue(db, org_id=org.id, kind=JobKind.ENRICH_LEAD, dedupe_key=key)
+        await db.commit()
+
+        assert first is not None
+        assert second is None
+
 
 class TestClaim:
     async def test_claiming_leases_the_job_and_counts_the_attempt(self, db, org):
