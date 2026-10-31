@@ -70,6 +70,69 @@ def reply_hook(their_reply: str) -> dict[str, object]:
     }
 
 
+async def refuse_reply_draft(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    lead: Lead,
+    label: ReplyLabel,
+) -> str | None:
+    """Whether a reply to this lead may be drafted at all, and if not, why in one sentence.
+
+    **Extracted so there is one answer rather than two.** `draft_reply` asks it before calling a
+    model, and the MCP proposal path (ADR-030) asks it before storing text somebody else's model
+    produced. A second copy of these rules would be this project's signature defect in the one
+    place it would hurt most: the rule that stops a machine writing back to somebody who told us
+    to stop. Five labels deliberately produce no draft, and `hostile` is why it matters --
+    answering somebody who is threatening to report us as spam is how a complaint becomes a
+    listing.
+
+    Each refusal is a correctness requirement rather than an optimisation:
+
+    1. **The label's policy does not call for a draft.** An opt-out must not produce a drafted
+       acknowledgement, because an acknowledgement is another unwanted email.
+    2. **The address is suppressed.** Suppression is checked again at send time, but a
+       suppressed address must not even reach a review queue: a reviewer should never be shown
+       an approve button for somebody who asked us to stop.
+    3. **The lead is terminal.** A draft for a conversation that has ended is a loaded gun
+       sitting in a queue.
+    """
+    # **Why no draft appeared has to be on the lead, not only in a return value.** Several
+    # labels deliberately produce no proposed reply -- `other` is "unclear, a person decides",
+    # and `not_interested` is a clear no -- but nothing recorded that, so the lead sat in
+    # `REPLIED` with no draft, no job and no explanation anywhere an operator could see. From
+    # the dashboard that is indistinguishable from drafting being broken, which it also was at
+    # the time, so the two were impossible to tell apart.
+    policy = policy_for(label)
+    skip = ""
+    if not policy.draft_reply:
+        skip = (
+            f"the policy for {label.value} is {policy.action.value}, which does not send "
+            "or draft anything"
+        )
+    elif policy.action is not ReplyAction.NEEDS_HUMAN:
+        # Belt and braces: the only action that may reach here is the one that asks for a human.
+        skip = f"{label.value} does not need a human reply"
+
+    if skip:
+        await record_event(
+            session,
+            org_id=ctx.org_id,
+            campaign_id=lead.campaign_id,
+            lead_id=lead.id,
+            actor="system",
+            type="reply.no_draft_by_policy",
+            data={"label": label.value, "action": policy.action.value, "why": skip},
+        )
+        return skip
+
+    if await is_suppressed(session, org_id=ctx.org_id, email=lead.email_norm):
+        return "the address is suppressed"
+    if LeadState(lead.state) in TERMINAL:
+        return f"the lead is in the terminal state {lead.state}"
+    return None
+
+
 async def draft_reply(
     session: AsyncSession,
     ctx: OrgContext,
@@ -99,41 +162,8 @@ async def draft_reply(
     if lead is None or lead.org_id != ctx.org_id:
         return ReplyDraftOutcome(skipped_reason="lead not found in this org")
 
-    # **Why no draft appeared has to be on the lead, not only in this return value.** Several
-    # labels deliberately produce no proposed reply -- `other` is "unclear, a person decides",
-    # and `not_interested` is a clear no -- but nothing recorded that, so the lead sat in
-    # `REPLIED` with no draft, no job and no explanation anywhere an operator could see. From
-    # the dashboard that is indistinguishable from drafting being broken, which it also was at
-    # the time, so the two were impossible to tell apart.
-    policy = policy_for(label)
-    skip = ""
-    if not policy.draft_reply:
-        skip = (
-            f"the policy for {label.value} is {policy.action.value}, which does not send "
-            "or draft anything"
-        )
-    elif policy.action is not ReplyAction.NEEDS_HUMAN:
-        # Belt and braces: the only action that may reach here is the one that asks for a human.
-        skip = f"{label.value} does not need a human reply"
-
-    if skip:
-        await record_event(
-            session,
-            org_id=ctx.org_id,
-            campaign_id=lead.campaign_id,
-            lead_id=lead.id,
-            actor="system",
-            type="reply.no_draft_by_policy",
-            data={"label": label.value, "action": policy.action.value, "why": skip},
-        )
-        return ReplyDraftOutcome(skipped_reason=skip)
-    if await is_suppressed(session, org_id=ctx.org_id, email=lead.email_norm):
-        # Suppression is checked again at send time, but a suppressed address must not even
-        # reach a review queue: a reviewer should never be shown an approve button for someone
-        # who asked us to stop.
-        return ReplyDraftOutcome(skipped_reason="the address is suppressed")
-    if LeadState(lead.state) in TERMINAL:
-        return ReplyDraftOutcome(skipped_reason=f"the lead is in the terminal state {lead.state}")
+    if refusal := await refuse_reply_draft(session, ctx, lead=lead, label=label):
+        return ReplyDraftOutcome(skipped_reason=refusal)
 
     message = await session.get(Message, message_id)
     if message is None or message.org_id != ctx.org_id or message.direction != "in":

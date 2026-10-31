@@ -243,11 +243,25 @@ async def _check_catalogue(client: httpx.AsyncClient, token: str, report: Report
     listed = first.json().get("result", {}).get("tools", [])
     names = [entry.get("name") for entry in listed]
 
-    expected = sorted(tool.name for tool in tools.CATALOGUE)
+    # **A read-only token must be served the read-only catalogue and nothing else** (ADR-030).
+    # Read from the catalogue rather than restated, so a tool added later is covered without
+    # anybody remembering this file exists.
+    expected = sorted(tool.name for tool in tools.CATALOGUE if tool.read_only)
     report.record(
-        "every catalogue tool is served",
+        "every read-only tool is served",
         sorted(name for name in names if name) == expected,
         f"{len(names)} served",
+    )
+
+    # The other half of that, asserted positively rather than left to the count. This is the
+    # scope gate observed on the live deployment, which is the only place the filtering actually
+    # happens -- the integration suite can only see it in-process.
+    withheld = sorted(tool.name for tool in tools.CATALOGUE if not tool.read_only)
+    leaked = [name for name in names if name in withheld]
+    report.record(
+        "a read-only token is not offered the proposal tools",
+        not leaked,
+        f"withheld {', '.join(withheld) or 'nothing'}",
     )
 
     # Tenancy, asserted against the wire rather than against the source. `org_id` arriving as a
@@ -286,7 +300,8 @@ async def _check_every_tool(client: httpx.AsyncClient, token: str, report: Repor
         "get_meeting_brief": {"lead_id": absent},
     }
 
-    for tool in tools.CATALOGUE:
+    readable = [tool for tool in tools.CATALOGUE if tool.read_only]
+    for tool in readable:
         response = await _rpc(
             client,
             token,
@@ -308,7 +323,42 @@ async def _check_every_tool(client: httpx.AsyncClient, token: str, report: Repor
             detail = f"HTTP {response.status_code} {str(payload)[:120]}"
         report.record(f"tools/call {tool.name}", ok, detail)
 
-    return len(tools.CATALOGUE)
+    # **The proposal tools are asserted to refuse this token, not exercised.** This script runs
+    # against production, so minting a credential that may write and then proving it writes
+    # would put a real draft in a real workspace's review queue -- a check with a side effect
+    # somebody has to go and delete. The refusal is the half that can be tested safely, and it
+    # is also the half worth testing: that the gate holds through TLS, Caddy and the real
+    # database, which is what no in-process test can see.
+    #
+    # It is called with a lead id from nowhere as well, so that if the gate ever failed open the
+    # call still could not write anything.
+    for tool in (tool for tool in tools.CATALOGUE if not tool.read_only):
+        response = await _rpc(
+            client,
+            token,
+            "tools/call",
+            params={
+                "name": tool.name,
+                "arguments": {"lead_id": absent, "subject": "no", "body": "no"},
+            },
+            tool_name=tool.name,
+        )
+        payload = response.json()
+        result = payload.get("result") or {}
+        refused = (
+            response.status_code == 200
+            and result.get("isError") is True
+            and "scope" in str(result.get("content"))
+        )
+        report.record(
+            f"{tool.name} refuses a read-only token",
+            refused,
+            "refused for want of the scope" if refused else str(payload)[:140],
+        )
+
+    # Only the calls that were allowed through leave an audit row; a scope refusal is answered
+    # before the handler runs and writes nothing, which is what the count has to expect.
+    return len(readable)
 
 
 async def _check_audit(

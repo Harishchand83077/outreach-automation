@@ -33,23 +33,51 @@ def _source_without_comments(path: Path) -> str:
 
 
 class TestTheCatalogueCannotSend:
-    def test_every_tool_is_read_only(self):
+    def test_no_tool_can_send_or_approve(self):
         """The single most important assertion in the project's MCP surface.
 
-        Phase 3 of `docs/MCP_PLAN.md` would add `propose_draft`, which *writes* -- but writes a
-        `pending_review` draft into the queue a human already reads. Even that is a separate
-        decision taken later. Today every tool reads.
+        Phase 3 (ADR-030) added the first tools that write, so "every tool is read-only" is no
+        longer the invariant -- and it was never the one that mattered. What matters is that
+        nothing in the catalogue can put an email on the wire or past a human. A proposal is a
+        `pending_review` draft in the queue a reviewer already reads; approving it is a click in
+        the dashboard, and there is no tool for it.
         """
-        assert all(tool.read_only for tool in tools.CATALOGUE)
+        for tool in tools.CATALOGUE:
+            assert not tool.sends, tool.name
+            assert not tool.approves, tool.name
+
+    def test_a_tool_that_writes_is_named_propose_and_nothing_else(self):
+        """The name is part of the containment, because the model reads the name.
+
+        A write whose name does not say it proposes is a write somebody will mistake for an
+        action. There are exactly two verbs in this catalogue: get/list, and propose.
+        """
+        for tool in tools.CATALOGUE:
+            if not tool.read_only:
+                assert tool.name.startswith("propose_"), tool.name
+
+    def test_a_tool_that_writes_requires_the_propose_scope(self):
+        """A read-only credential must not be able to reach a write, and the tool says so.
+
+        The gate is on the tool rather than in the router's body, so a tool added later is
+        refused by default: `required_scope` has no permissive value.
+        """
+        for tool in tools.CATALOGUE:
+            expected = protocol.READ_SCOPE if tool.read_only else protocol.PROPOSE_SCOPE
+            assert tool.required_scope == expected, tool.name
 
     def test_no_tool_is_named_anything_like_sending(self):
         forbidden = ("send", "deliver", "email_now", "approve", "bulk", "mode", "allowlist")
         for tool in tools.CATALOGUE:
             assert not any(word in tool.name.lower() for word in forbidden), tool.name
 
-    def test_the_only_scope_is_read(self):
-        """There is deliberately no `mcp:propose`, because there is nothing for it to authorise."""
-        assert protocol.SCOPES == ("mcp:read",)
+    def test_the_scopes_are_read_and_propose_and_nothing_else(self):
+        """There is no scope that could authorise a send, so one cannot be asked for.
+
+        The database says the same thing with a check constraint, which is what stops a
+        hand-written INSERT inventing one.
+        """
+        assert protocol.SCOPES == ("mcp:read", "mcp:propose")
 
     def test_no_tool_takes_an_org_id(self):
         """ADR-004: the org comes from the membership, never from the caller.
@@ -61,6 +89,53 @@ class TestTheCatalogueCannotSend:
             properties = tool.input_schema.get("properties", {})
             assert "org_id" not in properties, tool.name
             assert "organisation_id" not in properties, tool.name
+
+
+class TestAProposalCannotApproveItself:
+    """The write phase's own containment, asserted over the source.
+
+    A proposal is only safe because it lands in a status a human still has to judge. The ways
+    that could stop being true are all in this package: writing a different status, calling the
+    approval helper, or moving the lead itself.
+    """
+
+    def test_nothing_in_the_package_names_an_approved_status(self):
+        """Over string *constants*, not the text.
+
+        A substring search is wrong here for the same instructive reason it was wrong for the
+        Supabase guard: a tool description has to tell the model in plain words that a person
+        must still approve the proposal, and prose explaining a rule must not be able to fail an
+        assertion about code any more than it may satisfy one. A status is a whole literal, so
+        that is what this compares.
+        """
+        for path in MCP_PACKAGE.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            constants = {
+                node.value
+                for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            }
+            assert "approved" not in constants, path.name
+            assert "APPROVED" not in constants, path.name
+
+    def test_nothing_in_the_package_imports_the_approval_path(self):
+        """`drafts.approve` and `transition` are both absent, and both for the same reason.
+
+        `save_draft` is the one write this package is allowed to reach: it decides the status
+        from the validator's verdict and cannot be asked for a different one.
+        """
+        for path in MCP_PACKAGE.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            imported: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    imported.add(node.module or "")
+                    imported.update(alias.name for alias in node.names)
+                elif isinstance(node, ast.Import):
+                    imported.update(alias.name for alias in node.names)
+            assert "approve" not in imported, path.name
+            assert "transition" not in imported, path.name
+            assert "app.domain.state" not in imported, path.name
 
 
 class TestTheModuleCannotReachSmtp:

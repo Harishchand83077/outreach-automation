@@ -3364,6 +3364,9 @@ function McpTokens({ onError, onToast }) {
   const [data, setData] = useState(null)
   const [name, setName] = useState('My Claude')
   const [busy, setBusy] = useState(false)
+  // Off unless somebody ticks it, which is the same decision as the send mode defaulting to
+  // disabled: the narrow setting is the one you get without choosing.
+  const [mayPropose, setMayPropose] = useState(false)
   // The minted secret, held in memory only and shown once. Never put in localStorage: a
   // credential that outlives the page it was shown on is one nobody remembers is there.
   const [minted, setMinted] = useState(null)
@@ -3378,7 +3381,9 @@ function McpTokens({ onError, onToast }) {
     event.preventDefault()
     setBusy(true)
     try {
-      const created = await postJson('/mcp-tokens', { json: { name } })
+      const created = await postJson('/mcp-tokens', {
+        json: { name, may_propose: mayPropose },
+      })
       setMinted(created)
       onToast('Token created. Copy it now \u2014 it is not shown again.', 'success')
       load()
@@ -3408,9 +3413,11 @@ function McpTokens({ onError, onToast }) {
         campaigns, leads, research and replies. It spends your model quota rather than ours.
       </p>
       <p className="muted">
-        <strong>Read-only.</strong> There is no tool that sends mail, approves a draft or changes
-        a sending setting, and no permission that could grant one. The worst a confused or
-        hijacked agent can do here is read your own data back to you.
+        <strong>It cannot send.</strong> There is no tool that sends mail, approves a draft or
+        changes a sending setting, and no permission that could grant one. A token reads your
+        own workspace, and may optionally write a draft into your review queue &mdash; where a
+        person still has to read it and press approve, exactly as for a draft this system wrote
+        itself.
       </p>
 
       <dl className="kv">
@@ -3449,10 +3456,26 @@ function McpTokens({ onError, onToast }) {
             placeholder="My Claude"
           />
         </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={mayPropose}
+            onChange={(event) => setMayPropose(event.target.checked)}
+          />
+          <span>
+            Let it <strong>propose drafts</strong> into the review queue
+          </span>
+        </label>
         <button type="submit" className="btn" disabled={busy || !name.trim()}>
           {busy ? 'Creating\u2026' : 'Create token'}
         </button>
       </form>
+      <p className="muted">
+        Leave that unticked and the token can only read. Ticked, your Claude can write a draft
+        or a reply for one of your leads &mdash; it goes through the same grounding checks as
+        ours, lands in the review queue as <em>pending review</em>, and still needs a person to
+        approve it before anything is sent.
+      </p>
 
       {data?.tokens?.length ? (
         <div className="table-wrap">
@@ -3461,6 +3484,7 @@ function McpTokens({ onError, onToast }) {
               <tr>
                 <th>Name</th>
                 <th>Token</th>
+                <th>Can do</th>
                 <th>Created</th>
                 <th>Expires</th>
                 <th>Last used</th>
@@ -3472,6 +3496,13 @@ function McpTokens({ onError, onToast }) {
                 <tr key={row.id}>
                   <td>{row.name}</td>
                   <td className="mono">{row.prefix}</td>
+                  <td className="muted">
+                    {/* The scope the server actually issues, named by the server, so this
+                        cannot label a row with a string it does not use. */}
+                    {data.propose_scope && (row.scopes || []).includes(data.propose_scope)
+                      ? 'read + propose drafts'
+                      : 'read only'}
+                  </td>
                   <td className="muted">{row.created_at.slice(0, 10)}</td>
                   <td className="muted">
                     {row.expires_at ? row.expires_at.slice(0, 10) : 'never'}

@@ -120,7 +120,17 @@ async def mcp_endpoint(
     if presented is None:
         return _unauthorised()
     bearer = await api_tokens.verify_token(session, presented)
-    if bearer is None or not bearer.may_read():
+    if bearer is None or not any(scope in protocol.SCOPES for scope in bearer.scopes):
+        # A token carrying no scope this endpoint recognises is refused at the door rather than
+        # per tool. Which scopes it does carry decides which tools it is shown and may call.
+        #
+        # **Rolled back, because the lookup opened a transaction.** Returning here without
+        # resolving it leaves the pooled connection idle in transaction, holding a share lock on
+        # `api_tokens` and `members` until something else tears it down -- which is a refused
+        # credential quietly blocking whatever wants those tables next, and is exactly how this
+        # deadlocked the test suite's own cleanup. Every path out of this route now ends with
+        # the transaction resolved.
+        await session.rollback()
         return _unauthorised()
     # `verify_token` may have touched `last_used_at`; it is the only write this endpoint makes
     # and it must land whatever the call goes on to do.
@@ -130,6 +140,7 @@ async def mcp_endpoint(
         raw = await request.body()
         body = json.loads(raw) if raw else None
     except (json.JSONDecodeError, UnicodeDecodeError):
+        await session.rollback()
         return _json_rpc_error(
             protocol.McpError(protocol.INVALID_REQUEST, "The body is not valid JSON.")
         )
@@ -140,6 +151,7 @@ async def mcp_endpoint(
     try:
         rpc = protocol.validate(body, headers)
     except protocol.McpError as error:
+        await session.rollback()
         request_id = body.get("id") if isinstance(body, dict) else None
         return _json_rpc_error(error, request_id)
 
@@ -154,6 +166,9 @@ async def mcp_endpoint(
         # that once made a duplicate-key error look like an unreachable backend. The reason goes
         # to the log; the caller gets a JSON-RPC error it can read.
         logger.exception("mcp call failed", extra={"mcp_method": rpc.method})
+        # Same reason as the refusal path: an unresolved transaction holds locks, and this is
+        # the branch where nobody knows what the handler had already done.
+        await session.rollback()
         return _json_rpc_error(
             protocol.McpError(
                 protocol.INTERNAL_ERROR,
@@ -177,7 +192,10 @@ async def _dispatch(
 
     if rpc.method == "tools/list":
         return protocol.cacheable(
-            {"tools": tools.describe_all()},
+            # Filtered to what this credential may actually call. A read-only token is not
+            # offered the proposal tools, because a tool a caller cannot use is worse than an
+            # absent one: the model tries it, is refused, and tries again differently.
+            {"tools": tools.describe_all(bearer.scopes)},
             ttl_ms=tools.LIST_TTL_MS,
             scope=tools.LIST_CACHE_SCOPE,
         )
@@ -207,16 +225,42 @@ async def _call_tool(
         # trying different arguments.
         raise protocol.McpError(protocol.INVALID_PARAMS, f"Unknown tool: {name}")
 
+    # **The scope gate, and it is on the tool rather than written out here.** `required_scope`
+    # is derived from whether the tool writes, so a tool added later is gated without anybody
+    # remembering to gate it -- there is no permissive default to forget.
+    #
+    # Reported as a tool error rather than a 401: the credential is perfectly valid for this
+    # endpoint and the rest of the catalogue, and only this one tool is out of its reach. The
+    # sentence names the scope, because the person who can fix it is the user reading their
+    # client, and the fix is to mint a token that has it.
+    if not bearer.permits(tool.required_scope):
+        await session.rollback()
+        return protocol.tool_result(
+            f"This token is not allowed to call {name}: it needs the {tool.required_scope} "
+            "scope. Mint a token with it in the dashboard under Settings, if that is what you "
+            "intend to allow.",
+            is_error=True,
+        )
+
     try:
         summary, structured = await tool.handler(session, ctx, rpc.arguments)
     except protocol.McpError as error:
+        # **Roll back before answering.** A refused call has usually read a row or two and may
+        # have written an event, and returning without resolving that transaction leaves the
+        # connection holding locks until the request is torn down. Harmless-looking until it
+        # is not: it deadlocked this file's own tests against their cleanup, and on the live
+        # database the same shape is a refused tool call blocking whatever touches those rows
+        # next. A tool that succeeded has already committed its own work.
+        await session.rollback()
         if error.code == protocol.INVALID_PARAMS:
             # Reported as a *tool* error, because this is the class a model can recover from by
             # correcting its arguments — which is exactly what the spec distinguishes.
             return protocol.tool_result(error.message, is_error=True)
         raise
 
-    await _audit(session, ctx, bearer, tool_name=name, client=rpc.client_name)
+    await _audit(
+        session, ctx, bearer, tool_name=name, client=rpc.client_name, wrote=not tool.read_only
+    )
     return protocol.tool_result(summary, structured)
 
 
@@ -227,6 +271,7 @@ async def _audit(
     *,
     tool_name: str,
     client: str | None,
+    wrote: bool = False,
 ) -> None:
     """One event per tool call. A call that leaves no trace cannot be told from one that never
     happened, and this is the one surface where somebody else's software is doing the asking.
@@ -234,6 +279,11 @@ async def _audit(
     Wrapped and never fatal: the audit records the work, it is not the work, and a read must not
     fail because the row describing it could not be written. The failure is logged instead, so a
     trail that has stopped being written is visible rather than silent.
+
+    **A tool that writes commits its own work before this runs**, precisely because the
+    `rollback` below would otherwise discard it -- correct for a read, where the audit row is
+    the only write in flight, and destructive for a proposal. `wrote` is recorded so the trail
+    distinguishes the two without anybody having to know which tools write.
     """
     try:
         await record_event(
@@ -247,6 +297,7 @@ async def _audit(
             actor_id=f"mcp:{bearer.user_id}",
             data={
                 "tool": tool_name,
+                "wrote": wrote,
                 "token_id": str(bearer.token_id),
                 # Self-reported by the client and not verified by the protocol, so it is
                 # recorded as a claim rather than treated as identity.

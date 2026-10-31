@@ -53,6 +53,27 @@ JUDGEABLE_STATUSES = (*LIVE_STATUSES, "validation_failed")
 #: Each rejection is a model call, and a loop would spend a day's free-tier quota on one lead.
 MAX_REJECTIONS = 5
 
+#: The lead states a draft of each kind may be *written into* and still be approvable
+#: afterwards (ADR-030). It lives here, beside `approve`, because `approve` is the thing it has
+#: to agree with -- and `tests/integration/test_mcp_propose.py` asserts that agreement by
+#: approving a draft from every state in it rather than by restating the list.
+#:
+#: Four times in this project a draft has been written and *then* found unapprovable because
+#: the transition was illegal -- `NEW -> RESEARCHED`, `RESEARCHED -> AWAITING_APPROVAL`,
+#: `DRAFTED -> DRAFTED` and `REPLIED -> APPROVED` -- each time after a model had been paid for.
+#: The in-app drafter is reached through the state machine and cannot ask the wrong question;
+#: anything that writes a draft from outside that path can, so it has to ask this first.
+#:
+#: `initial` admits `DRAFTED` because `approve` writes the missing `AWAITING_APPROVAL` step
+#: itself. `followup` and `reply` are exactly `outbox._VALID_FROM`, because approving one of
+#: those deliberately does not move the lead at all: the draft becoming `approved` is what makes
+#: it sendable, and the state says where the *conversation* is.
+PROPOSABLE_FROM: dict[str, frozenset[str]] = {
+    "initial": frozenset({LeadState.DRAFTED.value, LeadState.AWAITING_APPROVAL.value}),
+    "followup": frozenset({LeadState.SENT.value}),
+    "reply": frozenset({LeadState.REPLIED.value}),
+}
+
 
 @dataclass
 class ReviewItem:

@@ -1,9 +1,10 @@
 # Connecting your own Claude to this system
 
-**Status: Phases 0 and 1 are built and merged — read-only tools over a stateless Streamable HTTP
-endpoint at `/mcp`, authenticated with this system's own tokens.** Phase 2 (OAuth 2.1) and Phase
-3 (proposing drafts) are not built; §7 says what each would now take and why neither was done in
-the same change.
+**Status: Phases 0, 1 and 3 are built and merged** — read-only tools plus two proposal tools
+over a stateless Streamable HTTP endpoint at `/mcp`, authenticated with this system's own
+tokens. Phase 3 landed once Phases 0–1 were in production, which is the gate ADR-027 set for it;
+ADR-030 records the decision. **Phase 2 (OAuth 2.1) is not built**, and §6 says what it would now
+take and why.
 
 The goal, unchanged: a user adds `https://api.arkvane.in/mcp` to their own Claude as a custom
 connector and can then ask it about their campaigns, leads, research and replies.
@@ -115,6 +116,31 @@ HTTP.
 | `list_reply_queue` | inbound messages with the label of record and its confidence |
 | `get_meeting_brief` | everything known about one lead, for a call |
 
+### The two that write (ADR-030)
+
+| Tool | Does |
+|---|---|
+| `propose_draft` | writes a first email or follow-up into the review queue, `pending_review` |
+| `propose_reply` | answers the lead's newest reply, into the same queue |
+
+Both need the **`mcp:propose`** scope, which is off unless somebody ticks the box when minting a
+token, and `tools/list` does not show them to a credential that lacks it. Neither sends and
+neither approves: a person reads the draft in the dashboard exactly as they do for one this
+system wrote, and there is no tool that can do it for them.
+
+A proposal is validated with **`validate_draft`**, not the narrower `validate_rendered` the
+template path uses. That is the one genuinely new decision in Phase 3 and ADR-030 is where it is
+argued: an operator typing their own email is the authority on their own offer, a model is not,
+and the model in question has usually just read a lead's reply — so the claim check is exactly
+the defence that has to apply here, unrelaxed. A proposal that fails is stored as
+`validation_failed` with its reasons, which keeps it out of the approval path, and the reasons
+go back to the agent, which is the only party that can fix them.
+
+Three refusals happen before anything is written: the lead's state must be one the approval path
+can actually handle (`drafts.PROPOSABLE_FROM`, asserted to agree with `approve` rather than
+restated), a reply must pass the same `refuse_reply_draft` the in-app drafter calls, and a reply
+must have a label of record. `propose_reply` takes no `subject` — the thread's subject is ours.
+
 `org_id` is never a tool argument; a test asserts no tool's schema has such a property.
 `get_meeting_brief` is composed from the other read paths rather than querying afresh, so it
 cannot show something they do not — which would have been this project's signature defect again.
@@ -129,8 +155,25 @@ classifier, which can only *label*; over MCP it reaches an agent that has tools.
 
 **The containment is the tool catalogue, and that is the whole safety argument.** There is no
 send tool, no approve tool, no tool that touches a send mode or an allowlist, and no scope that
-could authorise one. The worst a fully hijacked agent achieves with this catalogue is reading one
-workspace's own data back to its owner.
+could authorise one.
+
+**What the worst case is, now that one tool writes.** Before Phase 3 it was "reading one
+workspace's own data back to its owner". It is now **a bad draft sitting in a queue a human
+reads**, which is the bound ADR-027 argued for from the start and the reason a proposal was
+always the only write worth allowing. Three things make that the ceiling rather than a hope:
+
+- A proposal enters review; it cannot approve itself, cannot move the lead, and cannot reach the
+  send path. The write path is structurally barred from importing the state machine or naming an
+  approved status.
+- It goes through `validate_draft`, so an injected instruction that produces a confident claim
+  about us is refused for citing nothing — the grounding check is also an injection defence, and
+  it is the one that applies to the exact text a hijacked agent would write.
+- A proposal that fails is stored `validation_failed`, which cannot be approved without somebody
+  editing it first.
+
+What remains, and is not eliminated, is a **plausible** bad draft reaching a reviewer who
+approves it without reading. That is the same risk the in-app drafter has always carried, which
+is the argument for treating a proposal identically rather than specially.
 
 Two further defences, both explicitly secondary:
 
@@ -153,8 +196,10 @@ worked. This one does not.
   rather than a 403, because a refusal that distinguishes "not yours" from "does not exist"
   confirms the id.
 - **Audit.** One `mcp.tool_called` event per call, naming the tool, the token and the client's
-  *claimed* name — self-reported and recorded as a claim, since the protocol does not verify it.
-  Wrapped and never fatal: the audit records the work, it is not the work.
+  *claimed* name — self-reported and recorded as a claim, since the protocol does not verify it —
+  plus whether the call **wrote**. Wrapped and never fatal: the audit records the work, it is not
+  the work. A tool that writes commits its own work *before* the audit attempt, because the
+  rollback that makes a failed audit harmless to a read would otherwise discard the draft.
 - **No send mode anywhere.** `tests/unit/test_send_guard.py`'s tree-wide structural check covers
   the package, and `test_mcp_safety.py` adds the narrower rule that nothing here imports the mail
   services at all — so a future tool cannot reach them via an import already in the file.
@@ -172,6 +217,15 @@ worked. This one does not.
 4. **Check the audit trail.** Every call writes an `mcp.tool_called` event. A call that left no
    event is a bug, not a detail.
 5. **Try to break it.** Ask Claude to send an email. It should find no tool that can, and say so.
+6. **To let it write**, tick *Let it propose drafts into the review queue* when minting the
+   token. Then ask it to draft an email for one of your leads: the draft appears under Review
+   with its evidence beside it, and nothing leaves until you approve it. Ask it to approve one
+   and it will find no tool for that either.
+
+A note on the `--env-file .env` in the command below, because leaving it out is the easy
+mistake: `.env` on the server is root-owned and Compose interpolates the file at parse time, so
+without it every variable reads as missing and the command fails with six `required variable ...
+is missing a value` lines that look like a broken config rather than a missing flag.
 
 ### Checking the deployment itself, before wiring a client to it
 
@@ -181,12 +235,16 @@ cannot see TLS, Caddy, a forwarded `Origin`, or a route mounted at the root rath
 closes it, over the public URL:
 
 ```bash
-sudo docker compose -f deploy/compose.prod.yml exec api \
+sudo docker compose --env-file .env -f deploy/compose.prod.yml exec api \
     python -m app.scripts.mcp_smoke --base-url https://api.arkvane.in --email you@example.com
 ```
 
-It mints a one-day token, exercises the refusals (including that a **Supabase-shaped** credential
-is refused here), breaks each 2026-07-28 validation rule on purpose, calls every tool in the
+It mints a one-day **read-only** token — deliberately, because this runs against production and
+a write-capable credential proving it writes would leave a real draft in somebody's real review
+queue; the proposal tools are asserted to be withheld from it and to refuse it, which is the
+half of Phase 3 that can be checked safely and the half worth checking. It exercises the
+refusals (including that a **Supabase-shaped** credential is refused here), breaks each
+2026-07-28 validation rule on purpose, calls every read tool in the
 catalogue, asserts on the wire that no tool's schema takes an `org_id`, checks that every call
 left an audit row, and **revokes the token in a `finally` block**. It never prints the secret.
 Both of those last two are enforced by `tests/unit/test_mcp_smoke_script.py` rather than left to
@@ -198,7 +256,7 @@ deliberate rather than quiet about.
 
 ---
 
-## 6. What is deliberately not built
+## 6. The remaining phases, and what each one would take
 
 **Phase 2 — OAuth 2.1.** A bearer token in a client's settings cannot be scoped per device as
 narrowly as an OAuth grant, and that remains true. But the preferred route is closed: Supabase
@@ -210,12 +268,13 @@ the endpoint it protects, and it should be its own decision rather than a paragr
 Meanwhile the exposure is bounded by the catalogue: a leaked token reads one workspace's data and
 can write nothing. Mitigated by a default 90-day expiry, one-click revocation and `last_used_at`.
 
-**Phase 3 — `propose_draft` / `propose_reply`.** Still the right design: a proposal is the same
-`Draft` row the in-app drafter creates, `pending_review`, through the same validator, with
-`created_by='mcp:<user>'`. It does not bypass review, it enters it. It is not built because this
-plan's own gate says Phase 3 is a separate decision taken **with Phases 0–2 in production**, and
-nothing is in production yet. Building it in the same change would have been ignoring the
-sequencing that made the first part safe to ship.
+**Phase 3 — `propose_draft` / `propose_reply`.** Built; see §2 and ADR-030. The design held
+exactly as written here, which is worth recording because it was planned before any of it ran: a
+proposal is the same `Draft` row the in-app drafter creates, `pending_review`, through the same
+validator, with `created_by='mcp:<user>'`. The gate this plan set — Phases 0–1 in production
+first — was waited out rather than waived, and the two things building it added were both
+refusals the plan had not thought of: the lead's state has to admit a review, and a reply has to
+clear the reply policy.
 
 **Resources, prompts and `subscriptions/listen`.** Not implemented and not advertised:
 `server/discover` names the `tools` capability only. Advertising a capability we do not implement

@@ -1726,3 +1726,126 @@ signature defect. A tool added later is exercised without anybody remembering th
   answer is worth anything.
 - **Letting the check use a long-lived token kept in the environment.** That is the credential
   nobody remembers exists, which is what ADR-028's expiry and revocation were for.
+
+---
+
+## ADR-030 — An MCP client may propose a draft, and that is the only thing it may write
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Supersedes:** nothing. It completes ADR-027's Phase 3 and keeps every constraint ADR-028 set.
+
+### Context
+
+ADR-027 planned four phases for the MCP surface and gated Phase 3 explicitly: proposing drafts
+is "a separate decision taken with the first two already in production". Phases 0 and 1 went
+live on 31 October 2026, so the gate is satisfied and the decision is due.
+
+Phase 2 — running an OAuth 2.1 authorization server of our own — is **not** taken here. Supabase
+cannot be that server (supabase/auth#2610), so Phase 2 means writing and operating one, which is
+a larger change than the endpoint it would protect. The exposure meanwhile is bounded by the
+catalogue rather than by the credential, which is what made shipping on header auth defensible
+in the first place and is what still has to hold once a tool can write.
+
+### Decision
+
+Two tools, `propose_draft` and `propose_reply`, behind a new `mcp:propose` scope that is **off
+unless somebody ticks a box**. A proposal is the same `Draft` row the in-app drafter creates,
+`pending_review`, through the same validator, with `created_by='mcp:<user>'`. It does not bypass
+review, it enters it — so there is no new approval path, no new state and no new send gate.
+
+**The containment is still the catalogue, and the invariant was restated rather than weakened.**
+`test_mcp_safety.py` used to assert that every tool is read-only. That was never the property
+that mattered; it was a proxy for it. The tools now declare `sends` and `approves`, both of
+which must be false for every entry, and the test reads those. "Nothing here can put an email on
+the wire or past a human" is the real rule, and it is now written down as the real rule.
+
+### The one genuinely new decision: which validator
+
+`validate_rendered` is deliberately narrower than `validate_draft` — no invention checks — and
+ADR-012's reason was that an operator typing their own email is the authority on their own offer,
+so failing their draft for asserting it would be the system refusing to send what it was asked
+to send.
+
+**A model is not that authority, and a proposal goes through `validate_draft` unrelaxed.** Two
+reasons, and the second is the serious one:
+
+1. Hard rule 6 forbids the drafter inventing facts about the sender. Which model does the
+   inventing does not change what the recipient is told.
+2. **The agent has usually just read a lead's reply.** Hard rule 7 calls that untrusted input,
+   and over MCP it reaches something holding tools. A proposal is the one place where text a
+   stranger wrote could come back as text we would send — so the claim check, every concrete
+   assertion resolving to a persona proof point or a verified research hook, is exactly the
+   defence that has to apply, and it has to apply here hardest.
+
+So a proposal is held to a *higher* standard than an operator's own template and the same
+standard as our own drafter. A proposal that fails is stored as `validation_failed` with its
+reasons, which keeps it out of the approval path while leaving it visible — and the reasons go
+back in the tool result, because the agent is the one party that can correct them.
+
+### Three refusals before anything is written
+
+- **The lead's state has to admit a review.** `drafts.PROPOSABLE_FROM` lives beside `approve`,
+  because `approve` is what it has to agree with, and an integration test approves a draft from
+  every state in it rather than restating the list. This exists because four times in this
+  project a draft has been written and *then* found unapprovable — `NEW -> RESEARCHED`,
+  `RESEARCHED -> AWAITING_APPROVAL`, `DRAFTED -> DRAFTED`, `REPLIED -> APPROVED` — each time
+  after a model had been paid for. The in-app drafter is reached through the state machine and
+  cannot ask the wrong question; a proposal arriving from outside can.
+- **A reply obeys the reply policy**, through the same `refuse_reply_draft` the in-app drafter
+  calls. It was extracted for this, not copied: five labels deliberately produce no draft, and
+  `hostile` is the one that matters — a machine-written answer to somebody threatening to report
+  us as spam is how a complaint becomes a listing. A second copy of that rule would have been
+  this project's signature defect in the worst available place.
+- **A reply needs a label of record.** No safe default exists, since the label decides whether a
+  reply may be drafted at all.
+
+### Smaller decisions worth keeping
+
+- **`tools/list` is filtered by scope.** A tool a credential cannot call is worse than an absent
+  one: the model tries it, is refused, and tries again differently. `cacheScope: private` was
+  already set, which is what makes a per-credential catalogue safe to cache.
+- **`required_scope` is derived from `read_only`, not declared.** There is no permissive default
+  to forget, so a tool added later is gated whether or not anybody remembers to gate it.
+- **A write commits before the audit row.** The audit is deliberately wrapped and rolls back on
+  failure — correct for a read, where the audit is the only write in flight, and destructive for
+  a proposal, where the rollback would discard the draft and report success for a row that no
+  longer exists. The event records `wrote`, so the trail distinguishes the two.
+- **`propose_reply` has no `subject` argument.** The in-app drafter overwrites the model's
+  subject to protect threading; here the mistake is not expressible.
+- **`prompt_version` is `agent-v1`.** An agent-written draft is not a sample of our own
+  drafter's behaviour and `docs/DATASET_DESIGN.md` must not count it as one.
+- **The smoke check asserts the refusal rather than exercising the write.** It runs against
+  production, so minting a write-capable credential and proving it writes would leave a real
+  draft in a real workspace's review queue. The refusal is the half that can be checked safely
+  and the half worth checking: that the gate holds through TLS, Caddy and the real database.
+
+### Consequences
+
+A user can now ask their own Claude to write an email for a lead, and the result arrives where
+every other draft arrives. Our free-tier model chain stops being the ceiling for anybody who
+brings their own.
+
+The new risk is not a send — there is no tool for one — it is a **plausible** bad draft reaching
+a reviewer who approves it without reading. That is mitigated and not eliminated: grounding
+checks catch invention, the queue shows the evidence beside the text, and `review_all` means a
+person decides. It is the same risk the in-app drafter has always carried, which is the argument
+for treating a proposal identically rather than specially.
+
+**Two limits worth stating rather than discovering.** A proposal supersedes the lead's previous
+draft of the same kind, because `save_draft` does — which is right for a regeneration and means
+an agent can also replace a draft a reviewer was about to approve. Nothing is lost (the
+superseded row stays, and every version is in the lead's timeline), and the reviewer still reads
+whatever is in front of them, but it is a way to churn a queue. And there is **no per-lead cap on
+proposals**, where rejections are capped at five; if either becomes a nuisance the fix is a cap in
+the same place `MAX_REJECTIONS` lives, and it is deliberately not pre-emptive.
+
+### What was rejected
+
+- **A scope that could approve.** There is no tool to authorise, and the database's check
+  constraint keeps the set to two so one cannot be invented by hand.
+- **Letting a proposal move the lead.** The write path cannot import the state machine, asserted
+  structurally. `approve` already writes the one missing step it needs.
+- **Validating a proposal the way a template is validated.** Covered above; it is the whole ADR.
+- **Making propose the default scope.** Default-off is the same decision as `SEND_MODE=disabled`
+  and `SIGNUP_MODE=closed`: the narrow setting is the one you get without choosing.
