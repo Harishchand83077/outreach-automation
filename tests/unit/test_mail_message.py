@@ -141,8 +141,42 @@ class TestUnsubscribe:
             "<mailto:asha@outreach.example?subject=unsubscribe>"
         )
 
-    def test_one_click_is_advertised(self):
-        assert build().message["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+    def test_one_click_is_not_advertised_without_a_url_to_post_to(self):
+        """**The bug this replaced, and the test that asserted it.**
+
+        `List-Unsubscribe-Post: List-Unsubscribe=One-Click` is RFC 8058, and RFC 8058 is about an
+        `https` URI a receiver can POST to. Sending that header beside a `mailto:` announces a
+        capability we do not have -- and unlike most wrong headers, this one is *testable by the
+        receiver*: Gmail can POST, get nothing, and conclude the sender misrepresents itself. A
+        missing feature is better than a false claim about one.
+        """
+        assert build().message["List-Unsubscribe-Post"] is None
+
+    def test_one_click_is_advertised_once_there_is_a_url(self):
+        built = build(unsubscribe_url="https://api.example.com/u/abc123")
+
+        assert built.message["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+
+    def test_the_url_comes_first_and_the_mailto_stays(self):
+        """Both targets, https first.
+
+        RFC 8058 wants the https URI, and the mailto is kept because it needs no endpoint to be
+        reachable and a reply to it lands in the inbox the IMAP poller already watches. Order
+        matters: a receiver takes the first one it understands.
+        """
+        header = build(unsubscribe_url="https://api.example.com/u/abc123").message[
+            "List-Unsubscribe"
+        ]
+
+        assert header == (
+            "<https://api.example.com/u/abc123>, "
+            "<mailto:asha@outreach.example?subject=unsubscribe>"
+        )
+
+    def test_a_non_https_unsubscribe_url_is_refused(self):
+        """`http` would have a receiver POST an opt-out in clear, and RFC 8058 requires https."""
+        with pytest.raises(ValueError):
+            build(unsubscribe_url="http://api.example.com/u/abc123")
 
     def test_it_is_a_mailto_so_no_endpoint_has_to_exist(self):
         """A reply lands in the inbox the IMAP poller already watches, so an opt-out is caught
