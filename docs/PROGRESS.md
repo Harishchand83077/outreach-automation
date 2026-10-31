@@ -1852,6 +1852,48 @@ an attempt to clear a pause. The fix was to remove the ambiguity rather than loo
 `paused_mailbox_ids`. A field named after the column it is not is a field that will be confused
 for it.
 
+**"Are we ready to mail strangers?" has an answer that is not somebody's memory of reading a
+page (F1, slice S10.1).** `python -m app.scripts.preflight` prints a line per finding and exits
+non-zero on NO-GO.
+
+`docs/GO_LIVE.md` is the checklist a person works down; this is the half a machine can answer, in
+the order things actually go wrong: every sending domain's SPF, DKIM, DMARC and one-click; every
+mailbox connected and unpaused; the send mode and whether an allowlist deployment has anybody on
+its list; and each campaign's booking link.
+
+**Three rules it shares rather than restates.** The domain checks call the same `check_domain` the
+admin screen uses -- a script and a screen disagreeing about whether a domain is ready would be
+this project's signature defect in the one place somebody acts on the answer. Mailbox usability
+asks `unavailable_reason`, which already answers that for the campaign screen and for `login_for`
+and never touches the network. And the send mode comes from `effective_send_mode`, because hard
+rule 1 says exactly one function resolves it. Three tests assert each of those by source.
+
+**`UNKNOWN` is a FAIL here, and that is the one place it should be.** The admin screen reports
+"we could not tell" because that is honest and useful there. A go-live gate has to answer, and
+"we could not tell" is not a yes.
+
+**A booking link that books nothing is worse than none, because it looks done.** The live
+campaign's URL was `calendar.google.com/calendar/u/0/r`, which opens the **reader's own** calendar
+-- a recipient clicking it sees their own week. That shipped and sat there because every validator
+only asked whether the field was filled in. The gate now recognises that shape and the three
+others like it, and a written ask with no link is a warning rather than a failure, since
+`CampaignSettings` has allowed exactly that since Phase 2.
+
+**And a GO still says what a machine cannot check.** DKIM passing in DNS is not DKIM signing;
+only Show original on a received message proves that. A gate that said GO without saying so would
+be the most expensive kind of wrong, which is confident.
+
+**Two small things the first run taught, both already-learned lessons re-learned.** The printed
+output had an em-dash and a middle dot in it, which a Windows console renders as replacement
+glyphs -- the same defect as the smoke check's Unicode ellipsis in a credential prefix, and now
+asserted by a test that every printable string is ASCII while docstrings are exempt. And I checked
+the exit code through `| tail`, which reports *tail's* status, so a NO-GO looked like a pass. That
+is the second time today that pipeline has lied to me.
+
+**mypy caught the one wrong assumption**: `invalid_reason` is on `mail_credentials`, not on
+`mailboxes`. Being made to look showed that `unavailable_reason` already existed and was the right
+thing to call, so the type error prevented a second copy of a rule rather than just a crash.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
