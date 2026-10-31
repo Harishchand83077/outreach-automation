@@ -1959,6 +1959,43 @@ the implementation.
   does not reach.
 - **Leaving it as it was until the endpoint existed.** The header is read by the systems that
   decide our deliverability; a false claim there is not a cosmetic debt.
+
+### Part 2, 2026-10-31 — the endpoint (slice S11.4)
+
+`POST /u/{token}` and `GET /u/{token}`, mounted at the root outside `/api/v1`. **The only
+unauthenticated write in the system**, by necessity: a recipient must be able to unsubscribe
+without an account, and a receiving mail server POSTs the URL automatically.
+
+**POST acts, GET does not**, and that split is a safety property rather than pedantry. Mail
+clients, security scanners and link-preview crawlers fetch URLs they find in a message. If GET
+unsubscribed, a scanner opening the mail would opt the recipient out of a campaign they had not
+read — and we would record it as their choice. GET returns a page with a button; the button
+POSTs.
+
+**The token carries its own proof.** HMAC-SHA256 over `org_id || lead_id`, truncated to 128 bits,
+unpadded base64url so nothing in it needs escaping by whatever rewrites links in a recipient's
+client. Integrity, not confidentiality: anyone holding the email holds the token and that is the
+design — what must be impossible is editing one into a different lead.
+
+**The signing key is derived from `CREDENTIAL_KEY` under a fixed label, not that key itself.**
+`CREDENTIAL_KEY` encrypts mailbox credentials; this signs public URLs. One secret for both would
+mean a flaw in either reached the other, and deriving adds no new secret for the owner to manage.
+
+**Every failure answers 200 after doing nothing** — an unknown token, a forged one, a lead that
+no longer exists. A public endpoint that distinguishes them is an oracle for which tokens exist,
+and from the recipient's side the outcome is identical either way: they will not be emailed
+again. `verify()` returns `None` for every malformed input and raises for none, because a public
+route that can be made to raise is a 500 handled outside the CORS middleware — the trap that once
+made a duplicate key look like an unreachable backend.
+
+**The org–lead pairing is checked before writing**, which is the one forgery the MAC cannot catch
+alone: an attacker holds no secret, so they cannot re-sign, but the route verifies the lead
+actually belongs to the org the token names rather than trusting the pair.
+
+**`PUBLIC_API_URL` is its own setting, and empty means no one-click header at all.** Deriving it
+from `GOOGLE_REDIRECT_URI` would be a public URL that breaks quietly when that value changes, and
+a URL built on a guess would have receivers POST opt-outs into the void — which is the defect
+part 1 of this ADR exists to fix, wearing a different hat.
 ## ADR-032 — Job deduplication is scoped to the workspace
 
 **Date:** 2026-10-31
