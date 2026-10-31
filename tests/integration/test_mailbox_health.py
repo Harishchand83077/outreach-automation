@@ -38,12 +38,20 @@ async def a_mailbox(db, org, *, paused: bool = False) -> Mailbox:
     return row
 
 
-async def sent(db, org, mailbox, count: int, *, when: datetime = NOW) -> None:
+async def sent(db, org, mailbox, count: int, *, lead, when: datetime = NOW) -> None:
+    """Outbound messages from this mailbox.
+
+    `lead` is required because `ck_messages_out_has_lead` requires it -- "only inbound mail may
+    be orphaned. We never send to nobody." The first version of this helper left it out and CI
+    caught the violation, which is the same mistake as inventing a suppression reason: a row
+    written without reading the constraint that governs it.
+    """
     for index in range(count):
         db.add(
             Message(
                 org_id=org.id,
                 mailbox_id=mailbox.id,
+                lead_id=lead.id,
                 direction="out",
                 kind="initial",
                 subject="hello",
@@ -79,9 +87,10 @@ async def alerts_for(db, org) -> list[Alert]:
 
 
 class TestTheRollup:
-    async def test_it_counts_sends_and_bounces_per_day(self, db, org):
+    async def test_it_counts_sends_and_bounces_per_day(self, db, org, lead_factory):
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 10)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 10, lead=lead)
         await bounced(db, org, mailbox, 2)
 
         written = await health.roll_up(db, now=NOW)
@@ -92,13 +101,14 @@ class TestTheRollup:
         assert row is not None
         assert (row.sent, row.bounced) == (10, 2)
 
-    async def test_running_it_twice_corrects_rather_than_duplicates(self, db, org):
+    async def test_running_it_twice_corrects_rather_than_duplicates(self, db, org, lead_factory):
         """A day is rolled up while it is still in progress, so the second pass must correct."""
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 5)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 5, lead=lead)
         await health.roll_up(db, now=NOW)
         await db.commit()
-        await sent(db, org, mailbox, 3)
+        await sent(db, org, mailbox, 3, lead=lead)
 
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -113,7 +123,7 @@ class TestTheRollup:
         assert len(rows) == 1
         assert rows[0].sent == 8
 
-    async def test_complaint_rate_is_left_null(self, db, org):
+    async def test_complaint_rate_is_left_null(self, db, org, lead_factory):
         """**Deliberately never written.**
 
         A complaint rate needs a feed from the receiving provider, and Postmaster Tools is a link
@@ -121,7 +131,8 @@ class TestTheRollup:
         "no complaints" when it means "we cannot see complaints".
         """
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 3)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 3, lead=lead)
 
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -131,9 +142,10 @@ class TestTheRollup:
 
 
 class TestWhenItPauses:
-    async def test_a_high_bounce_rate_pauses_the_mailbox_and_alerts(self, db, org):
+    async def test_a_high_bounce_rate_pauses_the_mailbox_and_alerts(self, db, org, lead_factory):
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 40)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 40, lead=lead)
         await bounced(db, org, mailbox, 6)  # 15%, well over the limit
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -148,10 +160,11 @@ class TestWhenItPauses:
             f"mailbox_bounce_rate:{mailbox.id}"
         ]
 
-    async def test_the_alert_names_the_counts_and_not_an_address(self, db, org):
+    async def test_the_alert_names_the_counts_and_not_an_address(self, db, org, lead_factory):
         """Counts and a rate reach logs and screenshots; an address should not."""
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 40)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 40, lead=lead)
         await bounced(db, org, mailbox, 6)
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -162,7 +175,7 @@ class TestWhenItPauses:
         assert "6 of 40" in report.alerts[0]
         assert mailbox.from_email not in report.alerts[0]
 
-    async def test_the_alert_kind_carries_the_mailbox_id(self, db, org):
+    async def test_the_alert_kind_carries_the_mailbox_id(self, db, org, lead_factory):
         """Otherwise the first mailbox paused silences every other one for the cool-down.
 
         The same reasoning as the OAuth grant warnings: the mailbox that never got its alert is
@@ -170,8 +183,9 @@ class TestWhenItPauses:
         """
         first = await a_mailbox(db, org)
         second = await a_mailbox(db, org)
+        lead = await lead_factory()
         for mailbox in (first, second):
-            await sent(db, org, mailbox, 40)
+            await sent(db, org, mailbox, 40, lead=lead)
             await bounced(db, org, mailbox, 6)
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -187,13 +201,14 @@ class TestWhenItPauses:
 
 
 class TestWhenItLeavesThingsAlone:
-    async def test_too_few_sends_is_not_a_signal(self, db, org):
+    async def test_too_few_sends_is_not_a_signal(self, db, org, lead_factory):
         """**The guard that matters most.** At five sends, one bounce is 20% and means nothing.
 
         Alerting on noise is how an operator learns to ignore alerts.
         """
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 5)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 5, lead=lead)
         await bounced(db, org, mailbox, 2)  # 40%, and meaningless
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -205,9 +220,10 @@ class TestWhenItLeavesThingsAlone:
         assert mailbox.paused is False
         assert report.paused == []
 
-    async def test_a_healthy_rate_is_left_alone(self, db, org):
+    async def test_a_healthy_rate_is_left_alone(self, db, org, lead_factory):
         mailbox = await a_mailbox(db, org)
-        await sent(db, org, mailbox, 100)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 100, lead=lead)
         await bounced(db, org, mailbox, 2)  # 2%, under the limit
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -218,10 +234,13 @@ class TestWhenItLeavesThingsAlone:
         await db.refresh(mailbox)
         assert mailbox.paused is False
 
-    async def test_an_already_paused_mailbox_is_not_alerted_about_again(self, db, org):
+    async def test_an_already_paused_mailbox_is_not_alerted_about_again(
+        self, db, org, lead_factory
+    ):
         """The alert fires once, not every pass for something somebody is already dealing with."""
         mailbox = await a_mailbox(db, org, paused=True)
-        await sent(db, org, mailbox, 40)
+        lead = await lead_factory()
+        await sent(db, org, mailbox, 40, lead=lead)
         await bounced(db, org, mailbox, 6)
         await health.roll_up(db, now=NOW)
         await db.commit()
@@ -232,11 +251,12 @@ class TestWhenItLeavesThingsAlone:
         assert report.paused == []
         assert await alerts_for(db, org) == []
 
-    async def test_old_bounces_fall_out_of_the_window(self, db, org):
+    async def test_old_bounces_fall_out_of_the_window(self, db, org, lead_factory):
         """One bad week should not pause a mailbox for ever."""
         mailbox = await a_mailbox(db, org)
+        lead = await lead_factory()
         long_ago = NOW - timedelta(days=30)
-        await sent(db, org, mailbox, 40, when=long_ago)
+        await sent(db, org, mailbox, 40, lead=lead, when=long_ago)
         await bounced(db, org, mailbox, 20, when=long_ago)
         await health.roll_up(db, days=60, now=NOW)
         await db.commit()
