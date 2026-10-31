@@ -155,7 +155,7 @@ class TestWhenItPauses:
 
         await db.refresh(mailbox)
         assert mailbox.paused is True
-        assert report.paused == [mailbox.id]
+        assert report.paused_mailbox_ids == [mailbox.id]
         assert [alert.kind for alert in await alerts_for(db, org)] == [
             f"mailbox_bounce_rate:{mailbox.id}"
         ]
@@ -218,7 +218,7 @@ class TestWhenItLeavesThingsAlone:
 
         await db.refresh(mailbox)
         assert mailbox.paused is False
-        assert report.paused == []
+        assert report.paused_mailbox_ids == []
 
     async def test_a_healthy_rate_is_left_alone(self, db, org, lead_factory):
         mailbox = await a_mailbox(db, org)
@@ -248,7 +248,7 @@ class TestWhenItLeavesThingsAlone:
         report = await health.pause_unhealthy(db, now=NOW)
         await db.commit()
 
-        assert report.paused == []
+        assert report.paused_mailbox_ids == []
         assert await alerts_for(db, org) == []
 
     async def test_old_bounces_fall_out_of_the_window(self, db, org, lead_factory):
@@ -264,7 +264,7 @@ class TestWhenItLeavesThingsAlone:
         report = await health.pause_unhealthy(db, now=NOW)
         await db.commit()
 
-        assert report.paused == []
+        assert report.paused_mailbox_ids == []
         await db.refresh(mailbox)
         assert mailbox.paused is False
 

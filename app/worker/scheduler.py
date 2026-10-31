@@ -174,7 +174,7 @@ class Scheduler(WorkerTask):
         try:
             async with self.ctx.session_factory() as session, session.begin():
                 health = await run_health_pass(session, now=now)
-            report.mailboxes_paused = len(health.paused)
+            report.mailboxes_paused = len(health.paused_mailbox_ids)
             report.alerts.extend(health.alerts)
         except Exception as exc:
             logger.warning("the mailbox health pass failed", extra={"error": type(exc).__name__})

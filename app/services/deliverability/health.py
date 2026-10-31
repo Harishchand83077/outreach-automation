@@ -54,7 +54,10 @@ class HealthReport:
     """What one pass did, for the scheduler's log and for tests."""
 
     rows_written: int = 0
-    paused: list[uuid.UUID] = field(default_factory=list)
+    #: Named for what it holds, not after the column. `paused` would collide with
+    #: `mailbox.paused`, and the structural guard below cannot tell a list of ids from a
+    #: boolean being cleared -- which is a good reason for the name to be unambiguous.
+    paused_mailbox_ids: list[uuid.UUID] = field(default_factory=list)
     alerts: list[str] = field(default_factory=list)
 
 
@@ -191,7 +194,7 @@ async def pause_unhealthy(session: AsyncSession, *, now: datetime | None = None)
             continue
 
         mailbox.paused = True
-        report.paused.append(mailbox.id)
+        report.paused_mailbox_ids.append(mailbox.id)
         percent = window.bounce_rate * 100
         message = (
             f"Mailbox paused: {window.bounced} of {window.sent} messages bounced in the last "
@@ -231,6 +234,6 @@ async def run_health_pass(session: AsyncSession, *, now: datetime | None = None)
     report = HealthReport()
     report.rows_written = await roll_up(session, now=now)
     decided = await pause_unhealthy(session, now=now)
-    report.paused = decided.paused
+    report.paused_mailbox_ids = decided.paused_mailbox_ids
     report.alerts = decided.alerts
     return report
