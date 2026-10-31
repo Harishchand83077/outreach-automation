@@ -25,6 +25,8 @@ from typing import Annotated, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
+from app.domain.booking import opens_own_calendar
+
 #: Default word ceiling for a draft body. Short cold email outperforms long cold email, and a
 #: tight budget also limits how much an unsupervised model can invent.
 DEFAULT_MAX_WORDS = 120
@@ -106,6 +108,22 @@ class Persona(BaseModel):
     goal: str = Field(default="", max_length=500, description='e.g. "book a 20-minute call"')
     cta_text: str = Field(default="", max_length=300)
     booking_url: HttpUrl | None = None
+
+    @field_validator("booking_url")
+    @classmethod
+    def _booking_url_must_book(cls, v: HttpUrl | None) -> HttpUrl | None:
+        """Refuse a link that opens the reader's own calendar.
+
+        The live campaign's was `calendar.google.com/calendar/u/0/r`, so a recipient clicking it
+        saw their own week and nothing was ever scheduled. Every check until now only asked
+        whether the field was filled in.
+        """
+        if v is not None and opens_own_calendar(str(v)):
+            raise ValueError(
+                "this link opens the reader's own calendar and books nothing; use a scheduling "
+                "page that shows your availability"
+            )
+        return v
 
     # --- How it should read ---
     tone: str = Field(default="direct and warm", max_length=200)
