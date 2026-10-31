@@ -2139,3 +2139,85 @@ already cost this project one long investigation.
 alongside a window-function subquery join is the kind of SQL a type checker cannot judge: a probe
 against the development database with four jobs in one workspace and one in another returned one
 from each for a claim of two.
+
+---
+
+## ADR-034 — Deliverability may only pause
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Relates to:** F3 in `docs/OUTREACH_PLATFORM_V3.md`, slice S11.6
+
+### Context
+
+Gmail and Yahoo cap spam complaints at 0.3% and judge senders on bounce rates too. The first
+reply this system ever received was in Spam, and nothing in the system could have told us: there
+was no per-mailbox health signal at all, and `mailboxes.paused` was a flag only a person set.
+
+### Decision
+
+`mailbox_health` holds one row per mailbox per IST day — sent, bounced — and an hourly
+`Scheduler` pass rolls it up and then **pauses** any mailbox whose bounce rate over a rolling
+window has crossed the limit, raising an alert that names the counts.
+
+**The one rule everything else follows from: this pass may only restrict.** There is no branch
+that resumes a mailbox, raises a cap, extends a window or touches a send mode — asserted over the
+source by `test_nothing_here_can_resume_a_mailbox_or_raise_a_cap`, which also strips comments
+first so the prose explaining the rule cannot satisfy it.
+
+That asymmetry is what makes automatic action acceptable without a human in the loop. **A signal
+that can only restrict cannot cause the outage it would then report.** Resuming is the risky
+direction, so resuming stays a person's decision. The structural test exists because the edit
+that breaks this is one somebody would make for a good-sounding reason — "un-pause it once the
+rate recovers" is exactly how this would become something that resumes sending on its own.
+
+### Three guards, which matter more than the threshold
+
+1. **Minimum volume (20 sends).** At five sends one bounce is 20%, a number about nothing.
+   Alerting on noise is how an operator learns to ignore alerts.
+2. **A rolling 7-day window, not a day.** One bad afternoon is not a reputation problem.
+3. **An already-paused mailbox is skipped**, so the alert fires once rather than every hour for
+   something somebody is already dealing with.
+
+The threshold is 5% — the lenient end of the usual 2–5% guidance — because the action is
+automatic and stopping a campaign wrongly is worse than stopping it a day later.
+
+### A rollup, not counters
+
+`mailbox_health` is recomputed from `messages` and `classifications`, which are the record.
+Counters incremented at send time drift: a crash between the send and the increment leaves one
+wrong for ever and nothing notices. The cost is that the numbers lag one pass, which for a signal
+measured in days is not a cost.
+
+### `complaint_rate` is nullable and never written
+
+Deliberately, not unfinished. A complaint rate needs a feed from the receiving provider, and
+Postmaster Tools is a link we ask the owner to open rather than an integration (ADR-029). **A
+zero would read as "no complaints" when it means "we cannot see complaints"**, and the entire
+value of this table is that an operator can trust what it says. The column exists so a future
+provider feed has somewhere to go, and `source` says where a number came from.
+
+### The alert kind carries the mailbox id
+
+The cool-down dedupes by kind, so without the id the first mailbox paused would silence every
+other mailbox in the deployment — and the one that never got its alert is the one still bouncing.
+The same reasoning as the OAuth grant warnings (ADR-021), and three tests fail without it.
+
+### Consequences
+
+A mailbox bouncing badly stops by itself, within an hour, with an alert saying why. Nobody has to
+be watching. The deliverability signal the project has been missing since its first send now
+exists, and it is the half that works without Postmaster Tools.
+
+What it still cannot see is complaints, which is the number Gmail actually judges on. DMARC
+aggregate reports and Postmaster remain the owner's manual steps (`docs/POSTMASTER.md`).
+
+### What was rejected
+
+- **Auto-resuming when the rate recovers.** The whole safety argument is that this can only
+  restrict.
+- **Lowering the cap instead of pausing.** A cap is a product rule; this is a fault signal, and
+  mixing them would mean a bug here quietly changed how much a healthy workspace may send.
+- **Counting at send time.** Covered above: counters drift silently.
+- **Writing `complaint_rate = 0.0` until a feed exists.** Covered above: a fabricated zero is
+  worse than a null.
