@@ -1894,6 +1894,49 @@ is the second time today that pipeline has lied to me.
 `mailboxes`. Being made to look showed that `unavailable_reason` already existed and was the right
 thing to call, so the type error prevented a second copy of a rule rather than just a crash.
 
+**Phase 10's code half is done (F1, slices S10.2 and S10.3).**
+
+**A booking link is now refused at save if it books nothing.** `Persona` validation rejects a URL
+that opens the reader's own calendar -- the live campaign's was
+`calendar.google.com/calendar/u/0/r`. The shapes live in `app/domain/booking.py`, which both the
+validator and the go-live gate read, so the two cannot drift. A `cta_text` with no link is still
+valid, as it has been since Phase 2.
+
+**`python -m app.scripts.rehearsal_report --since <date>`** lists every outbound message in a
+window with whether its recipient was on the allowlist, and exits non-zero if any *delivered*
+message went to an address that was not. A **blocked** send to an unlisted address is the gate
+working and does not fail the report -- a rehearsal in allowlist mode should be full of them.
+
+mypy caught two wrong column assumptions in these two scripts (`SendAllowlistEntry.value`, which
+is `email_norm`, and `invalid_reason` on the wrong model), which is the fourth and fifth time it
+has caught that class this week.
+
+**What is left of F1 is not code.** Connect a mailbox whose address matches the account that
+authenticates, confirm `DKIM: PASS` in Show original on a received message, and replace the
+booking URL. The gate reports all three and cannot do any of them.
+
+**Job postings come in now, from public ATS feeds or a pasted URL (F5, ADR-036, slices S12.1 and
+S12.2).** `job_posts`, a parser for Greenhouse, Lever and Ashby, a fetch client, and
+`/api/v1/job-posts` to paste, list and archive.
+
+**The endpoints were tested before anything was built on them**, because the v3 doc took them
+from one third-party article. All three answer 200, and `docs/ATS_FEEDS.md` records what they
+actually return. The difference that mattered: **Lever returns a bare JSON array where the other
+two wrap theirs in `jobs`**, and its timestamps are epoch milliseconds rather than ISO 8601. A
+parser written against an assumed shape would have failed for exactly one source, which reads
+like a bad board slug rather than a bad assumption. Greenhouse's list response carries no
+description at all, so `body_text` is nullable from the first migration instead of being
+discovered to be optional later. Fixtures are real trimmed responses, so the parser is tested
+against what the services send rather than what I expected.
+
+**Nothing fetches a pasted URL.** The user supplies the text, and a structural test asserts the
+router imports no HTTP client -- that is what keeps this on the right side of hard rule 4 and of
+each board's terms.
+
+A test caught a real hole: an unknown source whose payload happened to have the right shape
+returned **zero postings** rather than an error, which is indistinguishable from an empty board.
+The source is now validated before parsing.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
