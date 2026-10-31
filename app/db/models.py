@@ -813,6 +813,17 @@ class Classification(Base):
     )
 
 
+#: Why an address is suppressed. **The database's check constraint is built from this tuple**, so
+#: a caller reading it cannot pass a value the database will refuse — which is exactly what
+#: happened when the one-click unsubscribe route invented its own wording.
+#:
+#: The vocabulary is deliberately short and it is not where detail belongs. "They clicked the
+#: one-click header" and "they replied with the word unsubscribe" are both `opt_out`; which
+#: mechanism it was goes in the append-only event, where there is room for it and where
+#: "why is this address suppressed?" is actually answered months later.
+SUPPRESSION_REASONS: tuple[str, ...] = ("opt_out", "bounce", "manual", "complaint")
+
+
 class Suppression(Base):
     """Addresses and domains we must never contact. Checked at import and before every send."""
 
@@ -837,7 +848,12 @@ class Suppression(Base):
         UniqueConstraint("org_id", "kind", "value", name="uq_suppressions_org_kind_value"),
         CheckConstraint("kind IN ('email','domain','email_hash')", name="ck_suppressions_kind"),
         CheckConstraint(
-            "reason IN ('opt_out','bounce','manual','complaint')",
+            # Built from `SUPPRESSION_REASONS` rather than spelled out again. A literal that has
+            # to match a database constraint, copied into a caller that cannot see it change, is
+            # this project's most repeated defect -- and it caught me here: the one-click
+            # unsubscribe route passed `reason="one-click unsubscribe"`, which this constraint
+            # refused with a 500 that said nothing about why.
+            f"reason IN ({', '.join(repr(reason) for reason in SUPPRESSION_REASONS)})",
             name="ck_suppressions_reason",
         ),
     )

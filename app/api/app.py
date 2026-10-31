@@ -39,6 +39,7 @@ from app.api.routers import (
     platform,
     review,
     team,
+    unsubscribe,
 )
 from app.core.logging import configure_logging, log_context
 from app.core.settings import Settings, config
@@ -195,6 +196,11 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     # Mounted at the root, not under /api/v1: this URL is typed into a person's MCP client,
     # and `https://api.arkvane.in/mcp` is the address docs/MCP_PLAN.md promises.
     application.include_router(mcp.router)
+    # Also at the root, and for a sharper reason: this URL goes into a `List-Unsubscribe` header
+    # that receiving mail servers POST to automatically (ADR-033). It is unauthenticated by
+    # necessity -- a recipient must be able to act without an account -- so the token carries
+    # its own proof of which lead it names.
+    application.include_router(unsubscribe.router)
     return application
 
 

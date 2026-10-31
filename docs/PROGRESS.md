@@ -1672,6 +1672,63 @@ development database: four jobs in one workspace, one in another, a claim of two
 each. Worth noting because the local integration suite is still unusable (DEV-1), so this is the
 evidence that the statement works at all rather than merely compiles.
 
+**One-click unsubscribe is real now, and it is the only unauthenticated write in the system
+(ADR-033 part 2, slice S11.4).** S11.0 removed the false claim; this earns the claim back.
+
+`POST /u/{token}` and `GET /u/{token}`, at the root outside `/api/v1`, because a recipient must be
+able to act without an account and a receiving mail server POSTs the URL by itself.
+
+**POST acts, GET does not**, and that split is the point rather than pedantry. Mail clients,
+security scanners and link-preview crawlers fetch URLs they find in a message; if GET
+unsubscribed, a scanner opening the mail would opt somebody out of a campaign they had not read
+and the record would say they chose to. GET returns a page with a button, and the button POSTs.
+
+**The token carries its own proof**: HMAC-SHA256 over `org_id || lead_id`, truncated to 128 bits,
+unpadded base64url so nothing in it needs escaping by whatever rewrites links in a recipient's
+client. Integrity rather than confidentiality -- anyone holding the email holds the token, which
+is the design; what must be impossible is editing one into a different lead.
+
+**The signing key is derived from `CREDENTIAL_KEY` rather than being it.** That key encrypts
+mailbox credentials; this signs public URLs. One secret for both means a flaw in either reaches
+the other, and deriving under a fixed label costs nothing and adds no secret to manage.
+
+**Every failure answers 200 after doing nothing** -- unknown token, forged token, erased lead. A
+public endpoint that distinguishes them is an oracle for which tokens exist, and from the
+recipient's side the outcome is identical: they will not be emailed again. `verify()` returns
+`None` for every malformed input and raises for none, because a public route that can be made to
+raise is a 500 handled outside the CORS middleware, which is the trap that once made a duplicate
+key look like an unreachable backend.
+
+**`PUBLIC_API_URL` is its own setting and empty means no one-click header at all.** Deriving it
+from `GOOGLE_REDIRECT_URI` would be a public URL that breaks quietly when that value changes, and
+a URL built on a guess would have receivers POST opt-outs into the void -- the defect S11.0 fixed,
+wearing a different hat. So the deployment opts in by setting one value, and until it does the
+behaviour is exactly what S11.0 left: a mailto, and no claim about it.
+
+**mypy caught the one real mistake.** The send loop's `settings` parameter is `CampaignSettings`,
+not the deployment config, so `settings.PUBLIC_API_URL` was an attribute that does not exist --
+the same shape as `Event.created_at` before it, and again found by the type checker rather than by
+a screen showing nothing for ever.
+
+**And CI caught a second one, which is this project's most repeated defect and was mine.** The
+route passed `reason="one-click unsubscribe"` to `add_suppression`. `ck_suppressions_reason`
+allows exactly four values and that is not one of them, so **every POST was a 500** -- and the
+test written alongside it asserted `"one-click" in rows[0].reason`, so it asserted my own invented
+value and would never have caught it. A literal that has to match a database constraint, copied
+into a caller that cannot see it change: the same shape as `direction == "outbound"` where the
+column holds `'out'`, `outcome != "ok"` where success is `"success"`, and `Event.created_at` where
+the column is `Event.at`.
+
+The structural cure, rather than just the fix: `SUPPRESSION_REASONS` is defined once in
+`models.py`, **the check constraint is built from it**, the route reads it, and
+`tests/unit/test_suppression_reasons.py` walks the whole tree with `ast` and fails on any
+`add_suppression(reason="...")` literal the database would refuse. Run against the broken line
+first, to watch it fail.
+
+The detail did not just get dropped. `reason` says *that* they opted out -- a four-value column is
+not where a mechanism belongs -- and a `lead.unsubscribed` event now records *how*, so "why is
+this address suppressed?" is still answerable months later.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

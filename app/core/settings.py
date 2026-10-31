@@ -221,6 +221,16 @@ class Settings(BaseSettings):
     #: is one somebody reorders by accident. Empty means the API's own root.
     DASHBOARD_URL: str = ""
 
+    #: This API's own public base, e.g. `https://api.example.com`. Used to build the one-click
+    #: unsubscribe URL that goes in `List-Unsubscribe` (ADR-033). Its own setting rather than
+    #: derived from `GOOGLE_REDIRECT_URI`, for the same reason as `DASHBOARD_URL`: a public URL
+    #: inferred from another value is one that breaks quietly when that value changes.
+    #:
+    #: **Empty means no one-click header is sent at all**, which is the safe default: a URL
+    #: built against a guess would have receiving servers POST opt-outs into the void, and
+    #: claiming RFC 8058 compliance we cannot honour is the defect ADR-033 exists to fix.
+    PUBLIC_API_URL: str = ""
+
     # === LLM router (Phase 3) ===
     # Entries whose key is unset are skipped by the router, so adding a provider is just a
     # matter of setting its key. One account per provider — never rotate accounts to evade a

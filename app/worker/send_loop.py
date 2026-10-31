@@ -30,6 +30,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.settings import config
 from app.db import attachments as attachment_store
 from app.db import outbox
 from app.db.models import Campaign, Draft, Lead, Mailbox, Message, Org
@@ -47,7 +48,7 @@ from app.domain.scheduling import (
     warmup_cap,
     warmup_day_number,
 )
-from app.services import outcomes
+from app.services import outcomes, unsubscribe
 from app.services.mail.allowlist import allowed_for
 from app.services.mail.connection import MailboxUnavailable, login_for, mark_unavailable
 from app.services.mail.message import Attachment as OutgoingAttachment
@@ -441,6 +442,18 @@ async def send_one(
             if carried is not None
             else []
         ),
+        # One-click unsubscribe (ADR-033). Empty when `PUBLIC_API_URL` is unset, and
+        # `build_message` then sends the mailto alone with no one-click header -- a sender with
+        # an unsubscribe mechanism it does not oversell, rather than a false claim.
+        unsubscribe_url=unsubscribe.link(
+            config.PUBLIC_API_URL,
+            unsubscribe.sign(
+                org_id=chosen.lead.org_id,
+                lead_id=chosen.lead.id,
+                secret=unsubscribe.signing_key(config.CREDENTIAL_KEY),
+            ),
+        )
+        or None,
         now=now,
     )
 
