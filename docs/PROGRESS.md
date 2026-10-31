@@ -1637,6 +1637,41 @@ error.
 chain `ruff format --check . | tail -1 && git commit` reads as a pass: a pipeline's exit status is
 the *last* command's, and `tail` always succeeds. Check commands do not get piped from here on.
 
+**One workspace's import could starve every other workspace's queue (ADR-032 addendum 2, slice
+S11.2). F21 is complete.**
+
+`claim` ordered by `(priority, run_after)` across the whole table, so a workspace that imported a
+thousand leads held the thousand oldest `queued` rows and every claim for the next while was
+theirs. A second workspace's single urgent job waited behind all of it -- correct by that
+ordering, useless by any other measure.
+
+**Round-robin across workspaces**, by ranking each workspace's due jobs among its own and taking
+everybody's first before anybody's second. Ordering within a workspace is untouched, so a priority
+still means what it meant. The same answer PR #67 reached for two campaigns sharing one mailbox,
+and for the same reason: with one shared allowance, strict first-in-first-out lets a large holder
+starve a small one for a working week.
+
+**A queue cap is deliberately not the mechanism, and that is the judgement in this slice.** An
+import of a thousand leads legitimately creates a thousand jobs, spread over the days they could
+actually be sent. Refusing that would break the product to solve a problem the ordering already
+solves. So `MAX_QUEUED_JOBS_PER_ORG` is a runaway guard at 20,000 -- far above any real import --
+and it raises `QueueFull` rather than returning `None`, because `None` means "already queued" to
+every caller and would silently drop work, which is exactly the bug the first half of this ADR
+fixed.
+
+The import route catches it and answers 429 with the reason, rolling the whole import back rather
+than leaving leads half-queued -- a lead with no research job sits `NEW` for ever, looking imported
+and doing nothing. Caught rather than left to escape, because a bare exception reaches FastAPI's
+`ServerErrorMiddleware` *outside* `CORSMiddleware`, and the dashboard would report the backend
+unreachable while it answered perfectly. That trap has already cost this project one long
+investigation.
+
+**Verified against real Postgres, not only in tests.** `FOR UPDATE ... SKIP LOCKED` alongside a
+window-function subquery join is SQL a type checker cannot judge, so a probe ran it against the
+development database: four jobs in one workspace, one in another, a claim of two returned one from
+each. Worth noting because the local integration suite is still unusable (DEV-1), so this is the
+evidence that the statement works at all rather than merely compiles.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

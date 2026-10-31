@@ -199,6 +199,11 @@ class Settings(BaseSettings):
     JOB_MAX_ATTEMPTS: int = 5
     #: Idle poll interval. The runner backs off to this when there is no work.
     JOB_POLL_SECONDS: float = 2.0
+    #: A safety valve against a runaway loop, not a quota. Set far above any legitimate import —
+    #: a thousand-lead import creates a thousand jobs and that is ordinary — because starvation
+    #: between workspaces is solved by `claim`'s round-robin ordering, not by refusing work. If
+    #: a workspace ever reaches this, something is enqueueing in a cycle.
+    MAX_QUEUED_JOBS_PER_ORG: int = 20_000
 
     # === Auth (Supabase is used for AUTHENTICATION ONLY — ADR-001) ===
     # Declared now so the values are validated and visible to check_env. The code that consumes
