@@ -2027,3 +2027,37 @@ against the development database and the index was checked each way.
   defence in depth, not a replacement.
 - **Including `lead_id`.** It is nullable, and NULLs are not equal in a unique index, so
   lead-less jobs would stop deduplicating at all.
+
+### Addendum, 2026-10-31 — recording an outcome requires still holding the lease
+
+Found while writing the crash-safety test this ADR's half of F21 called for (slice S11.3), which
+is the argument for writing it.
+
+`queue.succeed()` had no ownership check, and `JobRunner._keep_lease` **deliberately tolerates a
+failed heartbeat** — the comment says so, and it is right to, because a reaped-and-retried job is
+the queue working as designed. The two together left a hole:
+
+1. Worker A claims a job. Its lease lapses: a slow job, a long pause, a blip.
+2. `reap_expired` requeues it, worker B claims it and runs the handler.
+3. Worker A, oblivious, finishes and calls `succeed()` — which had no idea A no longer owned it.
+
+**The handler ran twice and nothing about the queue looked wrong.** Nothing was ever *sent* twice,
+because that is the outbox's unique `idempotency_key` and it is tested with two concurrent claims
+in `test_outbox.py` — but every other side effect a handler has was duplicated.
+
+**Decision.** `succeed()` takes `worker_id` and scopes the `UPDATE` by `locked_by`, returning
+whether the row was still ours. The runner passes its own id, and a `False` raises inside the
+`session.begin()` block — so **the handler's work is rolled back with the outcome it could not
+record**. Only the worker that still owns the job leaves anything behind.
+
+The lost attempt is **not** routed through `_finish`. Recording a failure there would stamp an
+error on a job the new owner is running and burn an attempt belonging to them; the new owner
+decides the outcome. It is counted as `lost` in the runner's report, separately from `failed`,
+because nothing went wrong with the work.
+
+`worker_id=None` keeps the unscoped behaviour for callers that hold no lease, so every existing
+caller and test is unaffected.
+
+**What was rejected:** making the heartbeat fatal. A worker that cannot reach the database for a
+moment would then abandon work it still owned, which trades a rare duplicate for a common loss.
+The lease is the authority, and the check belongs where the outcome is written.

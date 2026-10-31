@@ -174,18 +174,44 @@ async def heartbeat(
     return result.rowcount == 1
 
 
-async def succeed(session: AsyncSession, job_id: uuid.UUID, *, now: datetime | None = None) -> None:
-    await session.execute(
-        update(Job)
-        .where(Job.id == job_id)
-        .values(
-            status="succeeded",
-            locked_by=None,
-            locked_until=None,
-            last_error=None,
-            finished_at=now or datetime.now(tz=UTC),
-        )
+async def succeed(
+    session: AsyncSession,
+    job_id: uuid.UUID,
+    *,
+    worker_id: str | None = None,
+    now: datetime | None = None,
+) -> bool:
+    """Record success. Returns whether this worker was still allowed to.
+
+    **`worker_id` is the lease check, and it exists because the heartbeat is allowed to fail.**
+    `JobRunner._keep_lease` logs a failed heartbeat and carries on -- deliberately, since a
+    reaped-and-retried job is the queue working as designed. But the consequence was that a
+    worker whose lease had lapsed could still finish and mark the job succeeded, *after*
+    `reap_expired` had requeued it and another worker had claimed and run it. The handler ran
+    twice and nothing about the queue looked wrong.
+
+    Nothing is ever *sent* twice regardless, because that is the outbox's unique
+    `idempotency_key`. Any other side effect was duplicated.
+
+    `None` keeps the old unscoped behaviour for callers that genuinely hold no lease -- some
+    tests, and any future caller completing a job it did not claim.
+    """
+    statement = update(Job).where(Job.id == job_id)
+    if worker_id is not None:
+        statement = statement.where(Job.locked_by == worker_id)
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            statement.values(
+                status="succeeded",
+                locked_by=None,
+                locked_until=None,
+                last_error=None,
+                finished_at=now or datetime.now(tz=UTC),
+            )
+        ),
     )
+    return result.rowcount == 1
 
 
 async def fail(
