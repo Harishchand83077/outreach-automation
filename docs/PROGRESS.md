@@ -1397,6 +1397,139 @@ validate `Origin`, and the CORS middleware already parsed the same setting. Rath
 `split`, the rule moved onto `Settings.allowed_origins()` and the app factory's helper delegates to
 it — so the two cannot disagree about what an allowed origin is.
 
+**Your own Claude can now write a draft, and that is the only thing it can write (ADR-030,
+Phase 3 of `docs/MCP_PLAN.md`).** `propose_draft` and `propose_reply`, behind a new
+`mcp:propose` scope that is **off unless somebody ticks the box** when minting a token.
+
+ADR-027 gated this explicitly: Phase 3 is "a separate decision taken with the first two already
+in production". Phases 0 and 1 went live this morning, so the gate was waited out rather than
+waived — and the design it described held exactly, which is worth recording because it was
+written before any of it had run.
+
+**A proposal is the same `Draft` row the in-app drafter creates**, `pending_review`, through the
+same validator, with `created_by='mcp:<user>'`. It does not bypass review, it enters it — which
+is why Phase 3 needed no new approval path, no new state and no new send gate. There is still
+exactly one way an email leaves this system: a person approves it and the send loop sends it.
+
+**The invariant was restated rather than weakened, and that is the part worth keeping.**
+`test_mcp_safety.py` asserted that *every tool is read-only*, which was never the property that
+mattered — it was a proxy for it. Tools now declare `sends` and `approves`, both false for every
+entry, and the test reads those. "Nothing here can put an email on the wire or past a human" is
+the real rule, so it is now written down as the real rule instead of being inferred from a
+weaker one that had to break the moment anything wrote.
+
+**The one genuinely new decision was which validator, and it is the whole ADR.**
+`validate_rendered` is deliberately narrower than `validate_draft` — no invention checks — and
+ADR-012's reason was that an operator typing their own email is the authority on their own offer,
+so failing their draft for asserting it would be the system refusing to send what it was asked to
+send. **A model is not that authority**, so a proposal goes through `validate_draft` unrelaxed.
+Hard rule 6 does not care which model invents a fact. And the serious half: the agent has usually
+just read a lead's reply, which hard rule 7 calls untrusted and which now reaches something
+holding tools — so a proposal is the one place where text a stranger wrote could come back as
+text we would send, and the claim check is exactly the defence that has to apply hardest there.
+A proposal is therefore held to a *higher* standard than an operator's own template and the same
+standard as our own drafter. Swapping the validator for the laxer one was run before being
+ruled out: the invented "revenue by 42% for 173 teams" sails through as `pending_review`, and
+three tests fail.
+
+**Three refusals happen before anything is written, and two of them the plan had not thought of.**
+
+1. **The lead's state has to admit a review.** `drafts.PROPOSABLE_FROM` lives beside `approve`
+   because `approve` is what it has to agree with, and the test approves a draft from every state
+   in it rather than restating the list. This exists because **four times** in this project a
+   draft has been written and *then* found unapprovable — `NEW -> RESEARCHED`,
+   `RESEARCHED -> AWAITING_APPROVAL`, `DRAFTED -> DRAFTED`, `REPLIED -> APPROVED` — each time
+   after a model had been paid for. The in-app drafter is reached through the state machine and
+   cannot ask the wrong question; a proposal arriving from outside can.
+2. **A reply obeys the reply policy**, through the same `refuse_reply_draft` the in-app drafter
+   calls. It was **extracted for this, not copied**: five labels deliberately produce no draft,
+   and `hostile` is the one that matters — a machine-written answer to somebody threatening to
+   report us as spam is how a complaint becomes a listing. A second copy of that rule would have
+   been this project's signature defect in the worst available place. The test reads the labels
+   from the policy table, so one added later is covered without anybody remembering.
+3. **A reply needs a label of record**, because the label decides whether a reply may be drafted
+   at all and there is no safe default.
+
+**Smaller decisions.** `tools/list` is filtered by scope, because a tool a credential cannot call
+is worse than an absent one — the model tries it, is refused, and tries again differently;
+`cacheScope: private` was already set, which is what makes a per-credential catalogue safe to
+cache. `required_scope` is **derived** from `read_only` rather than declared, so there is no
+permissive default to forget and a tool added later is gated whether or not anybody gates it.
+`propose_reply` has **no `subject` argument** at all: the in-app drafter overwrites the model's
+subject to protect threading, and here the mistake is simply not expressible. `prompt_version`
+is `agent-v1`, because an agent-written draft is not a sample of our own drafter's behaviour and
+`DATASET_DESIGN.md` must not count it as one.
+
+**A write commits before its audit row, and that ordering is a bug that was nearly shipped.** The
+audit is deliberately wrapped and **rolls back** on failure — correct for a read, where the audit
+row is the only write in flight, and destructive for a proposal, where the rollback would discard
+the draft and then report success for a row that no longer exists. The event records `wrote`, so
+the trail distinguishes the two without anybody having to know which tools write.
+
+**The smoke check asserts the refusal rather than exercising the write.** It runs against
+production, so minting a write-capable credential and proving it writes would leave a real draft
+in a real workspace's review queue — a check with a side effect somebody then has to go and
+delete. What it does instead is assert that the proposal tools are **withheld** from a read-only
+token and that they **refuse** it, which is the half that can be checked safely and the half
+worth checking: that the scope gate holds through TLS, Caddy and the real database, which no
+in-process test can see. Removing the gate was run first, to watch the test fail.
+
+**A proposal cannot replace a draft it has not read, and there is a cap (the owner's call).**
+The first version of this shipped `save_draft`'s superseding behaviour unchanged and I filed the
+consequence as a nuisance not worth pre-empting. That was wrong, and it was caught before the
+tools ever went live: it is not churn, it is **the draft a reviewer has open being replaced under
+them, so the one they approve is not the one they read.** The same class of defect as the headline
+number that fell as the campaign succeeded -- the screen telling the truth about a different
+moment than the one the person is acting in.
+
+Superseding is right for a *regeneration*, because a reviewer asked for that one. A proposal
+arriving from outside doing it silently is not. So `propose_draft` and `propose_reply` take
+`replaces_draft_id`, and the only way to know that id is to have read the lead:
+
+- **No id while a draft is waiting** -> refused, naming the draft and its id, so the agent can
+  comply rather than guess.
+- **A stale id** -> refused, naming the current draft. This is what makes it concurrency control
+  rather than a speed bump: a re-run against a moved-on queue cannot clobber, and two agents
+  cannot race.
+- **An id for a lead with no draft** -> refused, because the caller is working from a stale read.
+- **A draft a person wrote** -> never replaced, whatever id is passed. Somebody's own words are
+  not an agent's to overwrite.
+- **An approved draft** -> never replaced. A person decided and it is queued to send.
+
+And **five proposals per lead per day**, the same number as `MAX_REJECTIONS` for the same reason.
+It counts only drafts whose `created_by` carries the `mcp:` prefix, so our own pipeline's
+regenerations do not count against an agent -- the cap is on what the agent did, not on how busy
+the lead has been.
+
+`REPLACEABLE_STATUSES`, `current_draft()`, `was_approved()` and `was_written_by_a_person()` live
+beside `approve` in `app/db/drafts.py`, for the same reason `PROPOSABLE_FROM` does. **The
+structural guard forced the last of those**: comparing `current.status == approved` in the MCP
+package tripped the rule that nothing there may name an approved status, so the comparison became
+a predicate owned by the module that owns the vocabulary. The guard was written to stop a write
+and it caught a literal that would have drifted -- which is the better outcome of the two.
+
+**And one of these tests proved nothing until it was checked.**
+`test_an_approved_draft_is_never_replaced` used a lead with no classified inbound message, so the
+call was refused for having no reply to answer and the assertion passed for the wrong reason.
+Bypassing the clobber check made four of the six tests fail and left that one green, which is how
+it was found. With the message and its classification in place, five of six fail -- the same trap,
+and the same way of detecting it, as `test_a_message_still_sending_is_not_counted_as_sent`.
+
+**The migration widens one check constraint by exactly one value** and changes no existing row:
+every token in the table carries `['mcp:read']`, which still satisfies it. What is permitted is
+still an allowlist of two, so `mcp:send` stays unexpressible — there is no tool it could
+authorise, and the database refusing it is what keeps that true independently of the code. The
+downgrade **revokes** any propose-scoped token rather than silently stripping the scope: a
+credential whose permissions change under it while it keeps working is worse than one that stops.
+
+**A correction to the command this repo published yesterday.** `docs/MCP_PLAN.md` gave the smoke
+check as `sudo docker compose -f deploy/compose.prod.yml exec api ...` — **without
+`--env-file .env`**, which every other Compose command in these docs carries. `.env` on the
+server is root-owned and Compose interpolates it at parse time, so the command fails with six
+`required variable ... is missing a value` lines that read like a broken config rather than a
+missing flag. Fixed, with a note saying why, since it is the easy mistake to repeat.
+
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

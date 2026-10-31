@@ -31,8 +31,14 @@ from typing import Any, Literal
 PROTOCOL_VERSION = "2026-07-28"
 SUPPORTED_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION,)
 
-#: There is deliberately no write scope. See ADR-027: no tool sends, so none could authorise it.
-SCOPES: tuple[str, ...] = ("mcp:read",)
+#: Reading, and proposing a draft into the queue a human already reads (ADR-030). **There is
+#: deliberately no scope that could authorise a send**, and none that could approve anything:
+#: the catalogue holds no such tool, so there is nothing for such a scope to permit. The two are
+#: separate so that a credential living in somebody's MCP client for ninety days can be given
+#: the narrower one, which is the default everywhere it is offered.
+READ_SCOPE = "mcp:read"
+PROPOSE_SCOPE = "mcp:propose"
+SCOPES: tuple[str, ...] = (READ_SCOPE, PROPOSE_SCOPE)
 
 SERVER_NAME = "outreach-automation"
 

@@ -421,6 +421,9 @@ async def list_mcp_tokens(user: CurrentUserDep, session: SessionDep) -> dict[str
         ],
         "endpoint": "/mcp",
         "default_ttl_days": api_tokens.DEFAULT_TTL_DAYS,
+        # Named rather than hard-coded in the dashboard, so the screen cannot label a row with a
+        # scope string the server does not actually issue.
+        "propose_scope": api_tokens.PROPOSE_SCOPE,
     }
 
 
@@ -430,12 +433,19 @@ async def create_mcp_token(
     session: SessionDep,
     name: Annotated[str, Body(embed=True)] = "My Claude",
     ttl_days: Annotated[int | None, Body(embed=True)] = api_tokens.DEFAULT_TTL_DAYS,
+    may_propose: Annotated[bool, Body(embed=True)] = False,
 ) -> dict[str, Any]:
-    """Mint a read-only token and return it **once**.
+    """Mint a token and return it **once**.
 
     The secret is not stored and there is no route that reads one back: a credential a route can
     return is a credential a stolen session can return. If it is lost, revoke it and mint another
     -- which is cheap, and is the behaviour that keeps the stored form useless.
+
+    **`may_propose` defaults to false and has to be asked for** (ADR-030). It lets the holder
+    write a draft into this workspace's review queue -- not send one, and not approve one, since
+    no tool can do either -- and most tokens do not need it. Default-off is the same decision as
+    `SEND_MODE=disabled` and `SIGNUP_MODE=closed`: the narrow setting is the one you get without
+    choosing, and widening is deliberate.
     """
     if ttl_days is not None and (ttl_days < 1 or ttl_days > 365):
         raise HTTPException(
@@ -443,12 +453,19 @@ async def create_mcp_token(
             detail="ttl_days must be between 1 and 365, or null for no expiry.",
         )
 
+    scopes = [api_tokens.READ_SCOPE]
+    if may_propose:
+        # Additive rather than instead of: an agent that could write but not read would be able
+        # to propose an email about a lead it could not look up, which is not a useful tool.
+        scopes.append(api_tokens.PROPOSE_SCOPE)
+
     minted = await api_tokens.create_token(
         session,
         org_id=user.org_id,
         user_id=user.user_id,
         name=name,
         ttl_days=ttl_days,
+        scopes=scopes,
     )
     await record_event(
         session,
@@ -457,7 +474,14 @@ async def create_mcp_token(
         actor="user",
         actor_id=user.email or user.user_id,
         # The name and the prefix, never the secret.
-        data={"token_id": str(minted.id), "name": minted.name, "prefix": minted.prefix},
+        # The name, the prefix and what it may do -- never the secret. The scopes belong in the
+        # trail because "who gave a credential the ability to write?" has to be answerable later.
+        data={
+            "token_id": str(minted.id),
+            "name": minted.name,
+            "prefix": minted.prefix,
+            "scopes": list(minted.scopes),
+        },
     )
     await session.commit()
 
@@ -467,7 +491,7 @@ async def create_mcp_token(
         # Shown once. The dashboard says so beside it.
         "token": minted.secret,
         "expires_at": minted.expires_at.isoformat() if minted.expires_at else None,
-        "scopes": [api_tokens.READ_SCOPE],
+        "scopes": list(minted.scopes),
     }
 
 

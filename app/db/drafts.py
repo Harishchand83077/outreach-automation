@@ -53,6 +53,45 @@ JUDGEABLE_STATUSES = (*LIVE_STATUSES, "validation_failed")
 #: Each rejection is a model call, and a loop would spend a day's free-tier quota on one lead.
 MAX_REJECTIONS = 5
 
+#: How many drafts an agent may propose for one lead in a day (ADR-030). The same reasoning as
+#: `MAX_REJECTIONS` and the same number: a loop spends somebody's model quota on one lead and
+#: buries the queue, while a few rounds of rewriting in one sitting is ordinary use. Per day
+#: rather than per lifetime, so nobody is permanently stuck on a lead they came back to.
+PROPOSAL_DAILY_LIMIT = 5
+
+#: `created_by` on a draft an MCP client proposed. **The writer and the counter must agree on
+#: this string**, so it is defined once: `save_draft` is given `mcp:<user>` by the proposal path
+#: and `count_agent_drafts_since` matches on this prefix. A literal copied into the second place
+#: is how the cap would quietly stop counting.
+AGENT_CREATED_BY_PREFIX = "mcp:"
+
+#: A draft in one of these statuses is the lead's *current* one for its kind: either a reviewer
+#: still has to judge it, or they have judged it and it is queued to send. Deliberately wider
+#: than `_supersede_live` touches, because the question here is "what would a new draft be
+#: replacing?" and an approved draft is very much something.
+REPLACEABLE_STATUSES = (*JUDGEABLE_STATUSES, "approved")
+
+#: The lead states a draft of each kind may be *written into* and still be approvable
+#: afterwards (ADR-030). It lives here, beside `approve`, because `approve` is the thing it has
+#: to agree with -- and `tests/integration/test_mcp_propose.py` asserts that agreement by
+#: approving a draft from every state in it rather than by restating the list.
+#:
+#: Four times in this project a draft has been written and *then* found unapprovable because
+#: the transition was illegal -- `NEW -> RESEARCHED`, `RESEARCHED -> AWAITING_APPROVAL`,
+#: `DRAFTED -> DRAFTED` and `REPLIED -> APPROVED` -- each time after a model had been paid for.
+#: The in-app drafter is reached through the state machine and cannot ask the wrong question;
+#: anything that writes a draft from outside that path can, so it has to ask this first.
+#:
+#: `initial` admits `DRAFTED` because `approve` writes the missing `AWAITING_APPROVAL` step
+#: itself. `followup` and `reply` are exactly `outbox._VALID_FROM`, because approving one of
+#: those deliberately does not move the lead at all: the draft becoming `approved` is what makes
+#: it sendable, and the state says where the *conversation* is.
+PROPOSABLE_FROM: dict[str, frozenset[str]] = {
+    "initial": frozenset({LeadState.DRAFTED.value, LeadState.AWAITING_APPROVAL.value}),
+    "followup": frozenset({LeadState.SENT.value}),
+    "reply": frozenset({LeadState.REPLIED.value}),
+}
+
 
 @dataclass
 class ReviewItem:
@@ -143,6 +182,73 @@ async def save_draft(
         },
     )
     return row
+
+
+async def current_draft(session: AsyncSession, *, lead_id: uuid.UUID, kind: str) -> Draft | None:
+    """The draft a new one of this kind would be replacing, or None.
+
+    Newest first **with `id` breaking the tie**, for the same reason the review queue orders
+    that way: two drafts written in the same millisecond would otherwise order unstably and the
+    answer to "what is current?" would change between two identical calls.
+    """
+    return await session.scalar(
+        select(Draft)
+        .where(
+            Draft.lead_id == lead_id,
+            Draft.kind == kind,
+            Draft.status.in_(REPLACEABLE_STATUSES),
+        )
+        .order_by(Draft.version.desc(), Draft.id.desc())
+        .limit(1)
+    )
+
+
+async def count_agent_drafts_since(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    lead_id: uuid.UUID,
+    since: datetime,
+) -> int:
+    """How many drafts an MCP client has proposed for this lead since `since`.
+
+    Every kind counts, because the cap is about churn on one lead rather than about any one
+    email. Drafts our own pipeline wrote are **not** counted: they say `system`, and counting
+    them would mean a lead the pipeline had regenerated a few times could not be proposed for at
+    all — the cap is on what the agent did.
+    """
+    return int(
+        await session.scalar(
+            select(func.count(Draft.id)).where(
+                Draft.org_id == org_id,
+                Draft.lead_id == lead_id,
+                Draft.created_at >= since,
+                Draft.created_by.startswith(AGENT_CREATED_BY_PREFIX),
+            )
+        )
+        or 0
+    )
+
+
+def was_approved(draft: Draft) -> bool:
+    """Whether a person has approved this draft, so it is queued to send.
+
+    A predicate rather than a status string compared at the call site, because the status
+    vocabulary belongs to this module: this project's recurring defect is a literal that has to
+    match what the database says, copied into somewhere that cannot see it change.
+    """
+    return str(draft.status) == "approved"
+
+
+def was_written_by_a_person(draft: Draft) -> bool:
+    """Whether a person, rather than this system or an agent, wrote this draft's text.
+
+    Used to refuse replacing it (ADR-030). `system` is our own drafter and `mcp:<user>` is an
+    agent; anything else is the address of whoever edited it on the review screen, which
+    `approve` stores as `created_by` on the new version it writes.
+    """
+    author = str(draft.created_by or "")
+    return author != "system" and not author.startswith(AGENT_CREATED_BY_PREFIX)
 
 
 def kind_of(draft: Draft) -> str:

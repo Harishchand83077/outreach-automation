@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import secrets
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -27,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import ApiToken, Member
+from app.services.mcp import protocol
 
 #: Identifies our tokens at a glance, in a log, in a paste and in a client's settings screen.
 #: A credential nobody can recognise is one nobody reports when they find it somewhere it should
@@ -41,7 +43,16 @@ ENTROPY_BYTES = 32
 #: reason it was made.
 DEFAULT_TTL_DAYS = 90
 
-READ_SCOPE = "mcp:read"
+#: Re-exported from the protocol module, which is the one place the set is defined: the
+#: database's check constraint, the minting route and the tool gate must all mean the same thing
+#: by `mcp:propose`, and a literal copied into a second module is how they stop meaning it.
+READ_SCOPE = protocol.READ_SCOPE
+PROPOSE_SCOPE = protocol.PROPOSE_SCOPE
+
+#: What a token gets when nobody says otherwise. Reading is the default because a credential
+#: that leaves the browser should start as narrow as it can be and be widened on purpose --
+#: `SEND_MODE=disabled` and `SIGNUP_MODE=closed` are the same decision.
+DEFAULT_SCOPES: tuple[str, ...] = (READ_SCOPE,)
 
 
 def hash_token(token: str) -> str:
@@ -63,6 +74,7 @@ class MintedToken:
     secret: str
     prefix: str
     expires_at: datetime | None
+    scopes: tuple[str, ...] = DEFAULT_SCOPES
 
     def __repr__(self) -> str:  # pragma: no cover - defensive
         # `Sealed` and `MailLogin` do the same. A traceback must not print a credential.
@@ -86,6 +98,22 @@ class TokenBearer:
     def may_read(self) -> bool:
         return READ_SCOPE in self.scopes
 
+    def may_propose(self) -> bool:
+        """Whether this credential may write a draft into the review queue (ADR-030).
+
+        A separate question from `may_read`, and asked separately: most tokens are read-only,
+        and a token that may propose is one somebody deliberately asked for.
+        """
+        return PROPOSE_SCOPE in self.scopes
+
+    def permits(self, scope: str) -> bool:
+        """Whether this credential carries one named scope.
+
+        The tool says which scope it needs and this answers; neither hard-codes the other, so a
+        tool added later is refused by default rather than permitted by omission.
+        """
+        return scope in self.scopes
+
 
 async def create_token(
     session: AsyncSession,
@@ -94,10 +122,25 @@ async def create_token(
     user_id: str,
     name: str,
     ttl_days: int | None = DEFAULT_TTL_DAYS,
+    scopes: Sequence[str] | None = None,
     now: datetime | None = None,
 ) -> MintedToken:
-    """Mint a read-only token. The caller must already have been authorised by the route."""
+    """Mint a token. The caller must already have been authorised by the route.
+
+    `scopes` defaults to read-only. An unknown scope is refused **here**, before the INSERT, so
+    the error names the scope rather than arriving as a constraint violation nobody can read --
+    but the check constraint is still the authority, because this function is not the only way a
+    row can be written and a guard in application code does not bind `psql`.
+    """
     moment = now or datetime.now(UTC)
+    requested = tuple(scopes) if scopes is not None else DEFAULT_SCOPES
+    if not requested:
+        raise ValueError("a token with no scopes could do nothing; ask for at least one")
+    if unknown := [scope for scope in requested if scope not in protocol.SCOPES]:
+        raise ValueError(
+            f"unknown scope(s): {', '.join(sorted(unknown))}. "
+            f"This endpoint has {', '.join(protocol.SCOPES)} and nothing else."
+        )
     secret, prefix, digest = _mint()
     expires_at = moment + timedelta(days=ttl_days) if ttl_days else None
 
@@ -107,15 +150,21 @@ async def create_token(
         name=name.strip()[:80] or "Unnamed",
         token_prefix=prefix,
         token_hash=digest,
-        # Read, and only read. There is no write scope to ask for -- see ADR-027.
-        scopes=[READ_SCOPE],
+        # Whatever was asked for, from the one set the database will accept. There is no scope
+        # here that could authorise a send -- see ADR-027 and ADR-030.
+        scopes=list(requested),
         expires_at=expires_at,
     )
     session.add(row)
     await session.flush()
 
     return MintedToken(
-        id=row.id, name=row.name, secret=secret, prefix=prefix, expires_at=expires_at
+        id=row.id,
+        name=row.name,
+        secret=secret,
+        prefix=prefix,
+        expires_at=expires_at,
+        scopes=requested,
     )
 
 
