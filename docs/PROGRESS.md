@@ -1813,6 +1813,45 @@ without it.
 queries exclude nulls but whose types cannot know it, so the narrowing is explicit and a row with
 neither is skipped rather than crashing a housekeeping pass.
 
+**The deliverability report was telling most users to fix something they cannot fix (ADR-035,
+slice S11.7).** Caught by the owner pointing out -- for the second time -- that this is a
+multi-user product where anyone connects their own mailbox, Gmail or their own domain.
+
+The code was already domain-agnostic: ADR-023 removed the deployment mailbox, no sending logic
+names a domain, and a grep confirms every `arkvane` string in `app/` is either the API's own
+hostname or a comment about the historical incident. **The report was the problem.** It ran every
+sending domain through the same DNS checklist, which is right for a domain the sender owns and
+wrong for the commonest case here.
+
+`gmail.com` answers an SPF record and a DMARC record and **no selector anyone could guess** --
+Google signs with its own rotating ones. So a user who connected a Gmail address was told their
+domain was **not ready**, over a DKIM record they cannot publish, do not control and do not need.
+Most signups connect a Gmail address. Verified before fixing: `ready: False`, `DKIM: unknown`.
+
+A provider-owned domain is now reported as the provider's business -- one passing
+**Authentication** line, and **no DNS query at all**, because nothing in DNS could change the
+answer. The detail carries the two things that genuinely are true of a shared domain, because both
+are easy to assume away: you share its reputation with everybody else sending from it, and you
+cannot add it to Postmaster Tools because it is not yours. Then the sentence that makes it
+actionable rather than a shrug: sending from a domain you own gives you both of those.
+
+One-click unsubscribe is still checked and can still fail -- that header is ours, not the
+provider's. And a domain the sender owns still gets the full four-item checklist, asserted by its
+own test: the point is to tell the two cases apart, not to skip the checks.
+
+**The lesson is about where the single-tenant assumption hides.** Not in the schema -- ADR-004 put
+`org_id` everywhere in the first migration -- but in a *report*, written as though every sender
+owned their domain. The three cross-tenant queue defects earlier today were the same shape in a
+different place. Tenancy is not only about which rows you can read; it is about whether the thing
+you say to a user is true of *their* setup.
+
+**And my own structural guard caught an ambiguity in my own code on the way.**
+`HealthReport.paused` was a list of mailbox ids while `Mailbox.paused` is a boolean, so the guard
+asserting "this module may only ever set `paused = True`" read `report.paused = decided.paused` as
+an attempt to clear a pause. The fix was to remove the ambiguity rather than loosen the guard:
+`paused_mailbox_ids`. A field named after the column it is not is a field that will be confused
+for it.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

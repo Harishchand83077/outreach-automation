@@ -723,6 +723,9 @@ async def sender_requirements(
             {
                 "domain": report.domain,
                 "ready": report.ready,
+                # So the screen can say "your provider handles this" in words rather than
+                # leaving somebody to infer it from a single Authentication row.
+                "provider_owned": report.provider_owned,
                 "checks": [
                     {"name": item.name, "verdict": item.verdict.value, "detail": item.detail}
                     for item in report.items
@@ -734,7 +737,9 @@ async def sender_requirements(
         # record is not a signed message. Only Show original on a received message proves that.
         "note": (
             "DNS shows what is published, not what is happening. A DKIM key can be published "
-            "and nothing be signing with it — check Show original on a message you received."
+            "and nothing be signing with it — check Show original on a message you received. "
+            "Mailboxes on a provider's own domain (gmail.com and the like) have nothing to "
+            "configure: their records are the provider's and are already correct."
         ),
         "one_click_configured": configured,
     }
