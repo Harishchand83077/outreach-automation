@@ -153,7 +153,7 @@ class TestUnsubscribe:
         assert build().message["List-Unsubscribe-Post"] is None
 
     def test_one_click_is_advertised_once_there_is_a_url(self):
-        built = build(unsubscribe_url="https://api.example.com/u/abc123")
+        built = build(unsubscribe_url="https://a.test/u/k")
 
         assert built.message["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
 
@@ -164,19 +164,16 @@ class TestUnsubscribe:
         reachable and a reply to it lands in the inbox the IMAP poller already watches. Order
         matters: a receiver takes the first one it understands.
         """
-        header = build(unsubscribe_url="https://api.example.com/u/abc123").message[
-            "List-Unsubscribe"
-        ]
+        # A deliberately short URL: the assertion below is one string literal and the
+        # formatter will not split one, so a realistic URL makes a line E501 refuses.
+        header = build(unsubscribe_url="https://a.test/u/k").message["List-Unsubscribe"]
 
-        assert header == (
-            "<https://api.example.com/u/abc123>, "
-            "<mailto:asha@outreach.example?subject=unsubscribe>"
-        )
+        assert header == "<https://a.test/u/k>, <mailto:asha@outreach.example?subject=unsubscribe>"
 
     def test_a_non_https_unsubscribe_url_is_refused(self):
         """`http` would have a receiver POST an opt-out in clear, and RFC 8058 requires https."""
         with pytest.raises(ValueError):
-            build(unsubscribe_url="http://api.example.com/u/abc123")
+            build(unsubscribe_url="http://a.test/u/k")
 
     def test_it_is_a_mailto_so_no_endpoint_has_to_exist(self):
         """A reply lands in the inbox the IMAP poller already watches, so an opt-out is caught
