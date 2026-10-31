@@ -507,6 +507,244 @@ class TestAReplyProposalObeysTheSamePolicy:
         assert draft.subject == "Re: Two-week prototypes"
 
 
+class TestAProposalCannotClobberADraftItHasNotRead:
+    """Optimistic concurrency on the review queue.
+
+    `save_draft` supersedes the lead's previous live draft, which is right for a regeneration
+    and wrong for a proposal arriving from outside: it means the draft a reviewer has open can
+    be replaced under them, and the one they approve is not the one they read. So a proposal has
+    to **name** the draft it replaces, and the only way to know that id is to have read the lead.
+
+    Three rules, each its own refusal:
+
+    1. A live draft exists and no `replaces_draft_id` was given — refused, naming it.
+    2. The id given is not the current one — refused as stale, so two agents cannot race and a
+       re-run against a changed queue cannot clobber.
+    3. The current draft is a person's own work, or already approved — refused outright. Your
+       words are not an agent's to overwrite, and an approved draft is queued to send.
+    """
+
+    async def _lead_with_a_pending_draft(self, api, db, org, token):
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "AWAITING_APPROVAL")
+        response = _propose(api, token, lead)
+        assert response.json()["result"]["isError"] is False, response.text
+        draft = await _latest_draft(db, lead.id)
+        assert draft is not None
+        return lead, draft
+
+    async def test_a_second_proposal_without_an_id_is_refused(self, api, db, org):
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+        lead, first = await self._lead_with_a_pending_draft(api, db, org, token)
+
+        response = _propose(api, token, lead, body=GOOD_BODY + "\n\nPS. a second go.")
+
+        result = response.json()["result"]
+        assert result["isError"] is True
+        # The refusal has to name what it would have replaced, or the agent cannot comply.
+        assert str(first.id) in result["content"][0]["text"]
+        assert await _draft_count(db, lead.id) == 1
+
+    async def test_naming_the_current_draft_replaces_it(self, api, db, org):
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+        lead, first = await self._lead_with_a_pending_draft(api, db, org, token)
+
+        response = _propose(
+            api,
+            token,
+            lead,
+            replaces_draft_id=str(first.id),
+            body=GOOD_BODY + "\n\nPS. a better go.",
+        )
+
+        assert response.json()["result"]["isError"] is False, response.text
+        await db.refresh(first)
+        assert first.status == "superseded"
+        latest = await _latest_draft(db, lead.id)
+        assert latest is not None and latest.status == "pending_review"
+        assert latest.version == first.version + 1
+
+    async def test_a_stale_id_is_refused(self, api, db, org):
+        """The property that makes this concurrency control rather than a speed bump."""
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+        lead, first = await self._lead_with_a_pending_draft(api, db, org, token)
+        _propose(api, token, lead, replaces_draft_id=str(first.id), body=GOOD_BODY + "\n\nv2")
+        second = await _latest_draft(db, lead.id)
+        assert second is not None and second.id != first.id
+
+        # Replaying the first id, as a re-run against a queue that has moved on would.
+        response = _propose(
+            api, token, lead, replaces_draft_id=str(first.id), body=GOOD_BODY + "\n\nv3"
+        )
+
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert str(second.id) in result["content"][0]["text"]
+        await db.refresh(second)
+        assert second.status == "pending_review"
+
+    async def test_an_id_for_a_lead_with_no_draft_is_refused(self, api, db, org):
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "AWAITING_APPROVAL")
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+
+        response = _propose(api, token, lead, replaces_draft_id=str(uuid.uuid4()))
+
+        assert response.json()["result"]["isError"] is True
+        assert await _draft_count(db, lead.id) == 0
+
+    async def test_a_draft_a_person_wrote_is_never_replaced(self, api, db, org):
+        """Your words are not an agent's to overwrite, whatever id it names."""
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "AWAITING_APPROVAL")
+        human = Draft(
+            org_id=org.id,
+            lead_id=lead.id,
+            kind="initial",
+            version=1,
+            subject="Written by a person",
+            body="I wrote this myself.",
+            status="pending_review",
+            created_by="asha@example.com",
+        )
+        db.add(human)
+        await db.commit()
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+
+        response = _propose(api, token, lead, replaces_draft_id=str(human.id))
+
+        assert response.json()["result"]["isError"] is True
+        await db.refresh(human)
+        assert human.status == "pending_review"
+        assert await _draft_count(db, lead.id) == 1
+
+    async def test_an_approved_draft_is_never_replaced(self, api, db, org):
+        """A person has decided; it is queued to send. Not an agent's call to undo.
+
+        **The inbound message and its classification are set up deliberately**, so that the
+        approved draft is the *only* thing this proposal could be refused for. Without them the
+        call is refused for having no reply to answer, the assertion passes, and the test proves
+        nothing — which was true of the first version of it, and is the same trap as
+        `test_a_message_still_sending_is_not_counted_as_sent`.
+        """
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "REPLIED")
+        message = Message(
+            org_id=org.id,
+            lead_id=lead.id,
+            direction="in",
+            subject="Re: Two-week prototypes",
+            body_text="Sounds interesting, what would it cost?",
+            status="received",
+        )
+        db.add(message)
+        await db.commit()
+        db.add(
+            Classification(
+                org_id=org.id,
+                message_id=message.id,
+                lead_id=lead.id,
+                label=ReplyLabel.QUESTION.value,
+                confidence=0.9,
+            )
+        )
+        await db.commit()
+        approved = Draft(
+            org_id=org.id,
+            lead_id=lead.id,
+            kind="reply",
+            version=1,
+            subject="Re: Two-week prototypes",
+            body="Our answer, approved.",
+            status="approved",
+            created_by="system",
+            approved_by="asha@example.com",
+        )
+        db.add(approved)
+        await db.commit()
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+
+        response = _call(
+            api,
+            token,
+            "propose_reply",
+            {
+                "lead_id": str(lead.id),
+                "body": "A different answer.",
+                "replaces_draft_id": str(approved.id),
+            },
+        )
+
+        assert response.json()["result"]["isError"] is True
+        await db.refresh(approved)
+        assert approved.status == "approved"
+
+
+class TestThereIsALimitOnProposalsPerLead:
+    """The same reasoning as `MAX_REJECTIONS`, which exists for the same failure.
+
+    A loop costs a day of somebody's model quota on one lead and buries the queue. The cap is
+    per lead per day, so a legitimate few rounds of rewriting in one sitting is fine and nobody
+    is permanently stuck, and the refusal says what to do instead rather than declining silently.
+    """
+
+    async def test_the_cap_refuses_the_next_proposal_and_says_so(self, api, db, org):
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "AWAITING_APPROVAL")
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+
+        previous: Draft | None = None
+        for attempt in range(drafts_repo.PROPOSAL_DAILY_LIMIT):
+            arguments = {"body": f"{GOOD_BODY}\n\nPS. attempt {attempt}."}
+            if previous is not None:
+                arguments["replaces_draft_id"] = str(previous.id)
+            response = _propose(api, token, lead, **arguments)
+            assert response.json()["result"]["isError"] is False, (attempt, response.text)
+            previous = await _latest_draft(db, lead.id)
+
+        assert previous is not None
+        response = _propose(
+            api,
+            token,
+            lead,
+            replaces_draft_id=str(previous.id),
+            body=f"{GOOD_BODY}\n\nPS. one too many.",
+        )
+
+        result = response.json()["result"]
+        assert result["isError"] is True
+        assert str(drafts_repo.PROPOSAL_DAILY_LIMIT) in result["content"][0]["text"]
+        assert await _draft_count(db, lead.id) == drafts_repo.PROPOSAL_DAILY_LIMIT
+
+    async def test_a_drafts_written_by_the_system_do_not_count_against_it(self, api, db, org):
+        """The cap is on what the agent did, not on how busy the lead has been.
+
+        Our own drafter writes `system`, and counting those would mean a lead the pipeline had
+        regenerated a few times could not be proposed for at all.
+        """
+        campaign = await _proposable_campaign(db, org)
+        lead = await _lead_in(db, org, campaign, "AWAITING_APPROVAL")
+        for version in range(1, drafts_repo.PROPOSAL_DAILY_LIMIT + 2):
+            db.add(
+                Draft(
+                    org_id=org.id,
+                    lead_id=lead.id,
+                    kind="initial",
+                    version=version,
+                    subject="ours",
+                    body="written by the pipeline",
+                    status="superseded",
+                    created_by="system",
+                )
+            )
+        await db.commit()
+        token = await _token(db, org, scopes=[protocol.READ_SCOPE, protocol.PROPOSE_SCOPE])
+
+        response = _propose(api, token, lead)
+
+        assert response.json()["result"]["isError"] is False, response.text
+
+
 class TestTenancyAndAudit:
     async def test_a_lead_from_another_workspace_resolves_to_nothing(self, api, db, org):
         """Not a 403, which would confirm the id exists. ADR-004, asserted on the write path."""

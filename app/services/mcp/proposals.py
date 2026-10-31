@@ -27,6 +27,7 @@ project has already paid for:
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from pydantic import ValidationError
@@ -106,6 +107,89 @@ async def _hooks_for(session: AsyncSession, ctx: OrgContext, lead: Lead) -> list
         .limit(1)
     )
     return [dict(hook) for hook in (row.hooks or [])] if row is not None else []
+
+
+async def _check_not_clobbering(
+    session: AsyncSession, ctx: OrgContext, *, lead: Lead, kind: str, raw_replaces: Any
+) -> None:
+    """Refuse to replace a draft this caller has not read, or may not touch at all (ADR-030).
+
+    **The problem this solves.** `save_draft` supersedes the lead's previous live draft of the
+    same kind. That is right for a regeneration, which happens because a reviewer asked for one,
+    and wrong for a proposal arriving from outside: the draft a reviewer has open can be replaced
+    under them, so the one they approve is not the one they read.
+
+    **The fix is optimistic concurrency rather than a lock or a ban.** A proposal has to name the
+    draft it replaces, and the only way to know that id is to have read the lead first. A stale
+    id is refused, so a re-run against a queue that has moved on cannot clobber, and two agents
+    cannot race. Two drafts are refused outright whatever id is given: one a person wrote, whose
+    words are not an agent's to overwrite, and one already approved, which is queued to send and
+    not an agent's decision to undo.
+    """
+    replaces: uuid.UUID | None = None
+    if raw_replaces not in (None, ""):
+        try:
+            replaces = uuid.UUID(str(raw_replaces))
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise _refused("replaces_draft_id must be a UUID.") from exc
+
+    current = await drafts_repo.current_draft(session, lead_id=lead.id, kind=kind)
+
+    if current is None:
+        if replaces is not None:
+            # Naming a draft that is not there means the caller is working from a stale read,
+            # which is exactly the state this check exists to catch.
+            raise _refused(
+                "There is no current draft for this lead to replace, so replaces_draft_id does "
+                "not match anything. Read the lead again and propose without it."
+            )
+        return
+
+    if drafts_repo.was_approved(current):
+        raise _refused(
+            f"Draft version {current.version} for this lead has already been approved by a "
+            "person and is queued to send. Replacing it is not something to do from here."
+        )
+    if drafts_repo.was_written_by_a_person(current):
+        raise _refused(
+            f"Draft version {current.version} for this lead was written by a person, not by "
+            "this system. It is not for an agent to overwrite."
+        )
+
+    if replaces is None:
+        raise _refused(
+            f"This lead already has draft version {current.version} ({current.status}) waiting "
+            f"for review, id {current.id}. Read it first, and pass "
+            "replaces_draft_id with that id if you really mean to replace it."
+        )
+    if replaces != current.id:
+        raise _refused(
+            f"replaces_draft_id is out of date: the current draft for this lead is version "
+            f"{current.version}, id {current.id}. Read it and decide again rather than "
+            "replacing something that has already changed."
+        )
+
+
+async def _check_within_the_daily_limit(
+    session: AsyncSession, ctx: OrgContext, *, lead: Lead
+) -> None:
+    """At most `PROPOSAL_DAILY_LIMIT` agent drafts for one lead in 24 hours.
+
+    The same reasoning as `MAX_REJECTIONS`: a loop spends a day of somebody's free-tier quota on
+    one lead while every other lead waits behind it, and buries the review queue. The refusal
+    says what to do instead, because a limit that reads as a malfunction is one somebody retries
+    against.
+    """
+    since = datetime.now(UTC) - timedelta(days=1)
+    already = await drafts_repo.count_agent_drafts_since(
+        session, org_id=ctx.org_id, lead_id=lead.id, since=since
+    )
+    if already >= drafts_repo.PROPOSAL_DAILY_LIMIT:
+        raise _refused(
+            f"That is {already} proposals for this lead in the last 24 hours, and the limit is "
+            f"{drafts_repo.PROPOSAL_DAILY_LIMIT}. Leave the current draft for a person to read, "
+            "or edit it in the dashboard instead of writing another."
+        )
 
 
 def _check_state(lead: Lead, kind: str) -> None:
@@ -203,6 +287,10 @@ async def propose_draft(
 
     lead = await _lead_for(session, ctx, args.get("lead_id"))
     _check_state(lead, kind)
+    await _check_not_clobbering(
+        session, ctx, lead=lead, kind=kind, raw_replaces=args.get("replaces_draft_id")
+    )
+    await _check_within_the_daily_limit(session, ctx, lead=lead)
     _campaign, persona = await _persona_for(session, lead)
 
     subject = str(args.get("subject") or "").strip()
@@ -261,6 +349,10 @@ async def propose_reply(
     """
     lead = await _lead_for(session, ctx, args.get("lead_id"))
     _check_state(lead, "reply")
+    await _check_not_clobbering(
+        session, ctx, lead=lead, kind="reply", raw_replaces=args.get("replaces_draft_id")
+    )
+    await _check_within_the_daily_limit(session, ctx, lead=lead)
 
     message = await session.scalar(
         select(Message)

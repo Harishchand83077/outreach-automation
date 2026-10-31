@@ -1474,12 +1474,46 @@ token and that they **refuse** it, which is the half that can be checked safely 
 worth checking: that the scope gate holds through TLS, Caddy and the real database, which no
 in-process test can see. Removing the gate was run first, to watch the test fail.
 
-**Two limits are written down rather than left to be discovered.** A proposal supersedes the
-lead's previous draft of that kind, because `save_draft` does -- right for a regeneration, and it
-also means an agent can replace a draft a reviewer was about to approve. Nothing is lost and the
-reviewer still reads what is in front of them, but it is a way to churn a queue. And there is no
-per-lead cap on proposals where rejections are capped at five; if it becomes a nuisance the cap
-belongs next to `MAX_REJECTIONS`, and adding one pre-emptively would be guessing.
+**A proposal cannot replace a draft it has not read, and there is a cap (the owner's call).**
+The first version of this shipped `save_draft`'s superseding behaviour unchanged and I filed the
+consequence as a nuisance not worth pre-empting. That was wrong, and it was caught before the
+tools ever went live: it is not churn, it is **the draft a reviewer has open being replaced under
+them, so the one they approve is not the one they read.** The same class of defect as the headline
+number that fell as the campaign succeeded -- the screen telling the truth about a different
+moment than the one the person is acting in.
+
+Superseding is right for a *regeneration*, because a reviewer asked for that one. A proposal
+arriving from outside doing it silently is not. So `propose_draft` and `propose_reply` take
+`replaces_draft_id`, and the only way to know that id is to have read the lead:
+
+- **No id while a draft is waiting** -> refused, naming the draft and its id, so the agent can
+  comply rather than guess.
+- **A stale id** -> refused, naming the current draft. This is what makes it concurrency control
+  rather than a speed bump: a re-run against a moved-on queue cannot clobber, and two agents
+  cannot race.
+- **An id for a lead with no draft** -> refused, because the caller is working from a stale read.
+- **A draft a person wrote** -> never replaced, whatever id is passed. Somebody's own words are
+  not an agent's to overwrite.
+- **An approved draft** -> never replaced. A person decided and it is queued to send.
+
+And **five proposals per lead per day**, the same number as `MAX_REJECTIONS` for the same reason.
+It counts only drafts whose `created_by` carries the `mcp:` prefix, so our own pipeline's
+regenerations do not count against an agent -- the cap is on what the agent did, not on how busy
+the lead has been.
+
+`REPLACEABLE_STATUSES`, `current_draft()`, `was_approved()` and `was_written_by_a_person()` live
+beside `approve` in `app/db/drafts.py`, for the same reason `PROPOSABLE_FROM` does. **The
+structural guard forced the last of those**: comparing `current.status == approved` in the MCP
+package tripped the rule that nothing there may name an approved status, so the comparison became
+a predicate owned by the module that owns the vocabulary. The guard was written to stop a write
+and it caught a literal that would have drifted -- which is the better outcome of the two.
+
+**And one of these tests proved nothing until it was checked.**
+`test_an_approved_draft_is_never_replaced` used a lead with no classified inbound message, so the
+call was refused for having no reply to answer and the assertion passed for the wrong reason.
+Bypassing the clobber check made four of the six tests fail and left that one green, which is how
+it was found. With the message and its classification in place, five of six fail -- the same trap,
+and the same way of detecting it, as `test_a_message_still_sending_is_not_counted_as_sent`.
 
 **The migration widens one check constraint by exactly one value** and changes no existing row:
 every token in the table carries `['mcp:read']`, which still satisfies it. What is permitted is

@@ -136,10 +136,17 @@ the defence that has to apply here, unrelaxed. A proposal that fails is stored a
 `validation_failed` with its reasons, which keeps it out of the approval path, and the reasons
 go back to the agent, which is the only party that can fix them.
 
-Three refusals happen before anything is written: the lead's state must be one the approval path
-can actually handle (`drafts.PROPOSABLE_FROM`, asserted to agree with `approve` rather than
-restated), a reply must pass the same `refuse_reply_draft` the in-app drafter calls, and a reply
-must have a label of record. `propose_reply` takes no `subject` — the thread's subject is ours.
+Refusals happen before anything is written:
+
+- The lead's state must be one the approval path can actually handle
+  (`drafts.PROPOSABLE_FROM`, asserted to agree with `approve` rather than restated).
+- **A draft waiting for review must be named**, `replaces_draft_id`, so a proposal cannot replace
+  a draft nobody has read; a stale id is refused, and a draft a person wrote or has already
+  approved cannot be replaced at all.
+- **Five proposals per lead per day**, the same number and the same reasoning as
+  `MAX_REJECTIONS`. Our own pipeline's drafts do not count against it.
+- A reply must pass the same `refuse_reply_draft` the in-app drafter calls, and must have a
+  label of record. `propose_reply` takes no `subject` — the thread's subject is ours.
 
 `org_id` is never a tool argument; a test asserts no tool's schema has such a property.
 `get_meeting_brief` is composed from the other read paths rather than querying afresh, so it

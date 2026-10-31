@@ -1832,13 +1832,55 @@ checks catch invention, the queue shows the evidence beside the text, and `revie
 person decides. It is the same risk the in-app drafter has always carried, which is the argument
 for treating a proposal identically rather than specially.
 
-**Two limits worth stating rather than discovering.** A proposal supersedes the lead's previous
-draft of the same kind, because `save_draft` does — which is right for a regeneration and means
-an agent can also replace a draft a reviewer was about to approve. Nothing is lost (the
-superseded row stays, and every version is in the lead's timeline), and the reviewer still reads
-whatever is in front of them, but it is a way to churn a queue. And there is **no per-lead cap on
-proposals**, where rejections are capped at five; if either becomes a nuisance the fix is a cap in
-the same place `MAX_REJECTIONS` lives, and it is deliberately not pre-emptive.
+### Replacing a draft: optimistic concurrency, not a lock and not a ban
+
+The first version of this shipped `save_draft`'s superseding behaviour unchanged, and I filed the
+consequence as a nuisance not worth pre-empting. **That was the wrong call and the owner caught
+it.** It is not a churn problem, it is a correctness one: the draft a reviewer has open can be
+replaced under them, so the draft they approve is not the draft they read. A queue whose contents
+change while somebody is reading them is the same class of defect as the headline number that
+fell as the campaign succeeded — the screen tells the truth about a different moment than the one
+the person is acting in.
+
+Superseding itself is right for a *regeneration*, because a reviewer asked for that one. What is
+wrong is a proposal arriving from outside and doing it silently. So:
+
+- **A proposal must name the draft it replaces**, `replaces_draft_id`, and the only way to know
+  that id is to have read the lead. You cannot replace a draft you have not looked at.
+- **A stale id is refused**, naming the current draft. That makes this concurrency control rather
+  than a speed bump: a re-run against a queue that has moved on cannot clobber, and two agents
+  cannot race.
+- **An id for a lead with no current draft is refused too**, because it means the caller is
+  working from a stale read, which is exactly the state being guarded against.
+- **A draft a person wrote is never replaced**, whatever id is passed. Somebody's own words are
+  not an agent's to overwrite.
+- **An approved draft is never replaced.** A person has decided and it is queued to send;
+  undoing that is not something to do from a tool.
+
+Rejected: *always refuse while a draft is waiting*, which is the simplest invariant and makes the
+tool useless — most leads sit in `AWAITING_APPROVAL` with a pending draft, so "write this one
+better" could never be answered. Rejected: *keep replacing and flag it in the queue*, which tells
+the reviewer afterwards instead of preventing it.
+
+`REPLACEABLE_STATUSES` and `current_draft()` live in `app/db/drafts.py` beside `approve`, for the
+same reason `PROPOSABLE_FROM` does. The status comparisons are predicates there
+(`was_approved`, `was_written_by_a_person`) rather than string literals at the call site: the
+status vocabulary belongs to that module, and a literal copied into a caller that cannot see it
+change is this project's recurring defect. The structural guard that forbids the MCP package
+naming an approved status is what forced that, which is the guard doing its job.
+
+### A cap of five proposals per lead per day
+
+`MAX_REJECTIONS` is five for the same failure — each one is a model call, and a loop spends a
+day's free-tier quota on one lead while every other lead waits behind it. The cap counts drafts
+whose `created_by` carries the `mcp:` prefix, so **our own pipeline's drafts do not count**: the
+limit is on what the agent did, not on how busy the lead has been. Per day rather than per
+lifetime, so a legitimate user who comes back to a lead next week is not permanently stuck, and
+the refusal says what to do instead, because a limit that reads as a malfunction is one somebody
+retries against.
+
+`AGENT_CREATED_BY_PREFIX` is defined once and used by both the writer and the counter. Two copies
+of that string is how the cap would quietly stop counting.
 
 ### What was rejected
 

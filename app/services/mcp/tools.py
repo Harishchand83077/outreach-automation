@@ -26,6 +26,7 @@ from typing import Any, Literal
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db import drafts as drafts_repo
 from app.db import repo
 from app.db.models import (
     Campaign,
@@ -127,6 +128,18 @@ def _uuid_arg(
         "additionalProperties": False,
     }
 
+
+#: Shared by both proposal tools, so neither can describe replacement differently from the other
+#: or from the check that enforces it (ADR-030).
+_REPLACES_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "description": (
+        "The id of the draft this one replaces. Required when the lead already has a draft "
+        "waiting for review: read the lead first, then pass that draft's id. Omit it when the "
+        "lead has no draft yet. An out-of-date id is refused rather than applied, so you cannot "
+        "replace a draft that has changed since you read it."
+    ),
+}
 
 #: Shared by both proposal tools, so the two cannot describe a claim differently. The shape is
 #: `app.services.drafting.schema.Claim`, which is what actually validates it.
@@ -553,7 +566,11 @@ CATALOGUE: tuple[Tool, ...] = (
             "from get_research_with_sources (hook:...). A draft asserting anything the evidence "
             "does not support is stored as failed rather than queued, and the reasons come back "
             "so it can be rewritten. Plain text only, no HTML, and the only link allowed is the "
-            "campaign's booking URL."
+            "campaign's booking URL. "
+            "If the lead already has a draft waiting for review you must read it and pass its id "
+            "as replaces_draft_id, so you never replace a draft you have not seen; a draft a "
+            "person wrote or has already approved cannot be replaced at all. At most "
+            f"{drafts_repo.PROPOSAL_DAILY_LIMIT} proposals per lead per day."
         ),
         input_schema={
             "type": "object",
@@ -565,6 +582,7 @@ CATALOGUE: tuple[Tool, ...] = (
                 },
                 "body": {"type": "string", "description": "Plain text. No markdown, no HTML."},
                 "claims": _CLAIMS_SCHEMA,
+                "replaces_draft_id": _REPLACES_SCHEMA,
                 "kind": {
                     "type": "string",
                     "enum": ["initial", "followup"],
@@ -600,6 +618,7 @@ CATALOGUE: tuple[Tool, ...] = (
                 "lead_id": {"type": "string", "description": "The lead's id."},
                 "body": {"type": "string", "description": "Plain text. No markdown, no HTML."},
                 "claims": _CLAIMS_SCHEMA,
+                "replaces_draft_id": _REPLACES_SCHEMA,
             },
             "required": ["lead_id", "body"],
             "additionalProperties": False,
