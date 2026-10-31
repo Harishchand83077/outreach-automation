@@ -2061,3 +2061,44 @@ caller and test is unaffected.
 **What was rejected:** making the heartbeat fatal. A worker that cannot reach the database for a
 moment would then abandon work it still owned, which trades a rare duplicate for a common loss.
 The lease is the authority, and the check belongs where the outcome is written.
+
+### Addendum 2, 2026-10-31 — starvation is solved by ordering, not by refusing work
+
+The last of F21 (slice S11.2). The criterion was "a workspace over its queue cap cannot starve
+another", and the important word is **starve**.
+
+`claim` ordered by `(priority, run_after)` across the whole table. A workspace that imported a
+thousand leads therefore held the thousand oldest `queued` rows, and every claim for the next
+while was theirs — correct by that ordering and useless by any other measure, because a second
+workspace's single urgent job waited behind all of it.
+
+**Decision: round-robin across workspaces.** Each workspace's due jobs are ranked among its own
+with `row_number() over (partition by org_id order by priority, run_after)`, and the claim takes
+everybody's first before anybody's second. Ordering *within* a workspace is untouched, so a
+priority still means what it meant. This is the same answer PR #67 reached for two campaigns
+sharing one mailbox, and for the same reason: with one shared allowance, strict
+first-in-first-out lets a large holder starve a small one for a working week.
+
+**A queue cap is deliberately not the mechanism.** An import of a thousand leads legitimately
+creates a thousand jobs, spread by `run_after` over the days they could actually be sent.
+Refusing that would break the product to solve a problem the ordering already solves. So
+`MAX_QUEUED_JOBS_PER_ORG` is a **runaway guard** set at 20,000 — far above any real import — and
+reaching it means something is enqueueing in a cycle.
+
+**It raises `QueueFull` rather than returning `None`.** `enqueue` reports a duplicate with
+`None`, and every caller reads that as "already queued, nothing to do", so reporting a full queue
+the same way would silently drop work — the very bug the first half of this ADR fixed. The
+enqueue shares its transaction with the state change that justifies it (ADR-014), so raising
+abandons both, which is right: the work is not recorded as queued when it is not.
+
+The import route catches it and answers **429 with the reason**, rolling the whole import back
+rather than leaving leads half-queued — a lead with no research job sits `NEW` for ever, looking
+imported and doing nothing. It is caught rather than allowed to escape because FastAPI handles a
+bare exception in `ServerErrorMiddleware`, which sits *outside* `CORSMiddleware`, so a 500 would
+have the dashboard report the backend unreachable while it answered perfectly. That trap has
+already cost this project one long investigation.
+
+**Verified against real Postgres rather than only in tests**, because `FOR UPDATE ... SKIP LOCKED`
+alongside a window-function subquery join is the kind of SQL a type checker cannot judge: a probe
+against the development database with four jobs in one workspace and one in another returned one
+from each for a claim of two.

@@ -18,7 +18,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import and_, or_, select, text, update
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,6 +40,20 @@ class JobKind:
     CLASSIFY_REPLY = "classify_reply"
     DRAFT_REPLY = "draft_reply"
     SEND_MESSAGE = "send_message"
+
+
+class QueueFull(Exception):
+    """A workspace has more work waiting than the absolute ceiling allows.
+
+    **Raised rather than reported by returning `None`**, and that distinction is the whole
+    reason this is an exception. `enqueue` returns `None` for a duplicate, and every caller in
+    the tree reads `None` as "an identical job is already queued, nothing to do" — so reporting
+    a full queue that way would silently drop work, which is exactly the cross-workspace bug
+    ADR-032 fixed. A refusal nobody can detect is worse than a loud failure.
+
+    The enqueue shares the transaction with the state change that justifies it (ADR-014), so
+    raising correctly abandons both: the work is not recorded as queued when it is not.
+    """
 
 
 async def enqueue(
@@ -65,7 +79,22 @@ async def enqueue(
     live job in one workspace refused the same key everywhere else — and a refusal is reported as
     `None`, which callers read as "already queued", so the other workspace's work quietly never
     happened.
+
+    Raises `QueueFull` when this workspace already has `MAX_QUEUED_JOBS_PER_ORG` jobs waiting.
+    That ceiling is a safety valve against a runaway loop, deliberately set far above any real
+    import — starvation is solved by `claim`'s ordering, not by refusing work.
     """
+    waiting = await session.scalar(
+        select(func.count(Job.id)).where(
+            Job.org_id == org_id, Job.status.in_(("queued", "running"))
+        )
+    )
+    if (waiting or 0) >= config.MAX_QUEUED_JOBS_PER_ORG:
+        raise QueueFull(
+            f"workspace {org_id} already has {waiting} jobs waiting, which is the ceiling of "
+            f"{config.MAX_QUEUED_JOBS_PER_ORG}. Nothing new can be queued for it until some "
+            "finish; this is a runaway guard, so a backlog this size means something is looping."
+        )
     values: dict[str, Any] = {
         "id": uuid.uuid4(),
         "org_id": org_id,
@@ -108,22 +137,45 @@ async def claim(
     """Claim up to `limit` due jobs of the given kinds, leasing each to `worker_id`.
 
     One statement does the whole claim, so there is no window in which a job is selected but
-    not yet locked. Ordering is by priority then `run_after`, so urgent work and older work go
-    first.
+    not yet locked.
+
+    **Ordering is round-robin across workspaces, then priority and age within one** (ADR-032
+    addendum 2). A plain `ORDER BY priority, run_after` across the whole table let one workspace
+    starve every other: a thousand-lead import holds the thousand oldest `queued` rows, so every
+    claim for the next while is theirs and a second workspace's urgent job waits behind all of
+    it. Each workspace's jobs are ranked among its own, and the first from every workspace is
+    taken before the second from any — the same answer PR #67 reached for two campaigns sharing
+    one mailbox, and for the same reason. Ordering *within* a workspace is unchanged, so a
+    priority still means what it meant.
     """
     now = now or datetime.now(tz=UTC)
     lease = timedelta(seconds=lease_seconds or config.JOB_LEASE_SECONDS)
 
-    claimable = (
-        select(Job.id)
+    # The position of each job among its own workspace's due jobs: 1 for the one that workspace
+    # would have gone next, 2 for the one after, and so on.
+    rank = (
+        func.row_number()
+        .over(partition_by=Job.org_id, order_by=(Job.priority, Job.run_after))
+        .label("rank")
+    )
+    ranked = (
+        select(Job.id, rank, Job.priority, Job.run_after)
         .where(
             Job.status == "queued",
             Job.run_after <= now,
             Job.kind.in_(kinds),
         )
-        .order_by(Job.priority, Job.run_after)
+        .subquery()
+    )
+    claimable = (
+        select(Job.id)
+        .join(ranked, ranked.c.id == Job.id)
+        # Rank first: everybody's turn before anybody's second turn. Priority and age then
+        # decide between workspaces holding the same rank, so an urgent job still goes before a
+        # routine one of equal standing.
+        .order_by(ranked.c.rank, ranked.c.priority, ranked.c.run_after)
         .limit(limit)
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True, of=Job)
         .scalar_subquery()
     )
 

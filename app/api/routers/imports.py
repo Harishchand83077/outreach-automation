@@ -25,7 +25,7 @@ from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import Campaign
-from app.db.queue import JobKind, enqueue
+from app.db.queue import JobKind, QueueFull, enqueue
 from app.domain.campaign import CampaignSettings
 from app.services.importer import service as importer
 from app.services.importer.service import ImportPreview
@@ -204,6 +204,15 @@ async def commit_import(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    except QueueFull as exc:
+        # The whole import is rolled back rather than left half-queued: leads with no research
+        # job would sit `NEW` for ever, looking imported and doing nothing. Answered as a 429
+        # with the reason, not allowed to escape as a 500 — FastAPI handles a bare exception in
+        # `ServerErrorMiddleware`, which sits *outside* `CORSMiddleware`, so the dashboard would
+        # report the backend unreachable while it was answering perfectly. That trap has already
+        # cost this project one long investigation.
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
 
     # The batch id is what makes the import undoable, so it is returned rather than only
     # stored: a dashboard that has to go looking for "the most recent batch" would undo the
