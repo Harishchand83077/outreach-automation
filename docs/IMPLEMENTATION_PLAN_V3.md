@@ -200,10 +200,10 @@ calculation), so not before real volume.
 7. **Risk — DPDP.** None of this changes the open legal question about lawful basis for B2B cold
    email. It does not block the build; it blocks *widening beyond your own use*, and it is not
    mine to decide.
-8. **New dependency, stated reason:** `dnspython` for S10.1/S11.5. The standard library cannot
-   query TXT records, which SPF, DKIM and DMARC all are. Pure Python, no service, no cost. If you
-   would rather not add it, the fallback is shelling out to `dig`, which does not exist on this
-   Windows machine and so could not be tested locally.
+8. ~~**New dependency, stated reason:** `dnspython` for S10.1/S11.5.~~ **Wrong — it is already
+   a dependency** (`pyproject.toml` pins `dnspython==2.9.0`, used by the importer's MX check).
+   Corrected 2026-10-31 while building S11.5. The new code follows that existing usage: lazy
+   import, explicit timeouts, and a failed lookup distinguished from a negative answer.
 
 ---
 

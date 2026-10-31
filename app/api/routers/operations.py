@@ -33,6 +33,7 @@ from app.db.models import (
     Suppression,
 )
 from app.db.state import record_event
+from app.services.deliverability.sender_requirements import DnsTxtResolver, check_domain
 from app.services.mail.smtp import ALLOWED_SEND_MODES, effective_send_mode
 
 logger = logging.getLogger(__name__)
@@ -679,4 +680,61 @@ async def set_sending_mode(
         "source": "dashboard" if org.send_mode else "environment",
         "set_by": org.send_mode_set_by,
         "set_at": org.send_mode_set_at.isoformat(),
+    }
+
+
+@router.get("/admin/sender-requirements")
+async def sender_requirements(
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Whether each sending domain in this workspace meets the bulk-sender rules (F4).
+
+    One report per **distinct domain** rather than per mailbox: SPF, DKIM and DMARC are
+    properties of a domain, and two mailboxes on one domain would otherwise be listed twice with
+    identical findings and look like two problems.
+
+    **This one does talk to the network, unlike `GET /mailboxes`.** That route is deliberately
+    non-networked because refreshing it would mint OAuth tokens and could write an
+    `invalid_reason` — a read with a side effect, fired by anyone pressing F5. A DNS lookup has
+    no side effect at all, and the resolver caches per request, so the refresh case costs a few
+    UDP packets and changes nothing.
+    """
+    rows = await session.scalars(select(Mailbox).where(Mailbox.org_id == user.org_id))
+    domains = sorted(
+        {
+            mailbox.from_email.rpartition("@")[2].strip().lower()
+            for mailbox in rows
+            if "@" in (mailbox.from_email or "")
+        }
+    )
+
+    # One resolver for the whole response, so several domains sharing a name server do not pay
+    # for the same lookup twice.
+    resolver = DnsTxtResolver()
+    configured = bool(config.PUBLIC_API_URL.strip())
+    reports = [
+        check_domain(domain, resolver=resolver, unsubscribe_configured=configured)
+        for domain in domains
+    ]
+
+    return {
+        "domains": [
+            {
+                "domain": report.domain,
+                "ready": report.ready,
+                "checks": [
+                    {"name": item.name, "verdict": item.verdict.value, "detail": item.detail}
+                    for item in report.items
+                ],
+            }
+            for report in reports
+        ],
+        # Said plainly, because the honest limit of this screen is easy to forget: a published
+        # record is not a signed message. Only Show original on a received message proves that.
+        "note": (
+            "DNS shows what is published, not what is happening. A DKIM key can be published "
+            "and nothing be signing with it — check Show original on a message you received."
+        ),
+        "one_click_configured": configured,
     }
