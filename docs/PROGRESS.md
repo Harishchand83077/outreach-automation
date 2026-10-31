@@ -1595,6 +1595,48 @@ the new migration. `upgrade head` restored it, and the run incidentally proved a
 upgrades apply cleanly in order. The lesson is the cheap one: `alembic current` before
 `alembic downgrade`, because `-1` is relative to the database and not to the branch.
 
+**A worker that lost its lease could still mark a job succeeded, so a handler could run twice
+(ADR-032 addendum, slice S11.3).** Found by writing the crash-safety test the plan called for,
+which is the argument for writing it: the v3 doc listed F21's crash safety as something to build,
+the reality check found `reap_expired` already existed and was already called by the `Scheduler`,
+so the slice was a test -- and the test found a real hole next door.
+
+`queue.succeed()` had no ownership check, and `JobRunner._keep_lease` **deliberately tolerates a
+failed heartbeat** -- the comment says so, and it is right to, because a reaped-and-retried job is
+the queue working as designed. Together they left this: worker A claims a job, its lease lapses,
+`reap_expired` requeues it, worker B claims it and runs the handler, and then worker A finishes and
+records success for a job it no longer owns. **The handler ran twice and nothing about the queue
+looked wrong.** Nothing was ever *sent* twice -- that is the outbox's unique `idempotency_key`,
+tested with two concurrent claims -- but every other side effect was duplicated.
+
+`succeed()` now takes `worker_id`, scopes the UPDATE by `locked_by`, and returns whether the row
+was still ours. The runner passes its own id and raises on a `False` **inside** the transaction, so
+the handler's work is rolled back with the outcome it could not record. Only the worker that still
+owns the job leaves anything behind. The lost attempt is deliberately not routed through
+`_finish`: stamping an error there would mark a job the new owner is running and burn an attempt
+belonging to them, so it is counted as `lost`, separately from `failed`, because nothing went
+wrong with the work.
+
+**Red before green, on CI rather than locally.** The tests were pushed first with no fix, and CI
+recorded the discriminating failure in the right words -- *"a worker that no longer owns the job
+committed its work anyway"* -- while the `TestNothingIsLost` half passed, confirming the lease
+really did already return a vanished worker's job.
+
+**Why red-on-CI rather than red locally, and a real cost worth recording.** The local integration
+database breaks in a cascade: each interrupted run leaves a backend `idle in transaction` holding a
+lock on `app.events`, and every later `TRUNCATE` queues behind it forever. `pg_stat_activity` told
+the story -- Postgres at 0.03% CPU with sixteen blocked backends. That one cause had been
+masquerading as several different bugs for most of a session: deadlocks on the cleanup statement,
+foreign-key violations from stale snapshots, 500-second timeouts, and a `test_claiming_leases`
+failure recorded earlier in these notes as unexplained. **It is explained now, and it was never
+product code.** It is written up as DEV-1 in `ISSUES.md` with three candidate fixes; the cheapest,
+a `lock_timeout` on the cleanup connection, would have turned hours of confusion into one clear
+error.
+
+**And one self-inflicted lesson about exit codes.** A commit went out unformatted because the
+chain `ruff format --check . | tail -1 && git commit` reads as a pass: a pipeline's exit status is
+the *last* command's, and `tail` always succeeds. Check commands do not get piped from here on.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

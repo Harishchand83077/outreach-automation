@@ -154,3 +154,43 @@ Counts in this table are computed from the verdicts above, not maintained by han
 - `.env` is correctly gitignored and **no secrets appear anywhere in the 11-commit history**
   (verified by grep over `git log --all -p`).
 - Dependency direction is acyclic; no module imports upward into an entry point.
+
+---
+
+## Found while working, not part of the original register
+
+### DEV-1 — the integration test fixtures break the local database when a run is interrupted
+
+**Status:** open, local development only. No product impact.
+**Found:** 2026-10-31, slice S11.1/S11.3.
+
+Each integration test gets its own engine and ends by `TRUNCATE`ing eleven tables. If a run is
+interrupted — a timeout, a cancelled task, two runs overlapping — a backend is left `idle in
+transaction` holding a lock on `app.events`, and **every later run's `TRUNCATE` queues behind it
+forever**. Runs then cascade into timeouts, and the symptoms look like unrelated bugs: deadlocks
+on the cleanup statement, foreign-key violations from a stale snapshot, and tests that pass alone
+and fail in a file.
+
+Diagnosed from `pg_stat_activity`:
+
+```
+3901 | idle in transaction | Client | ClientRead | SELECT app.events...
+3888 | active              | Lock   | relation   | TRUNCATE TABLE app.worker_heartbeats, ...
+```
+
+Postgres was at 0.03% CPU with 16 backends: not working, blocked. This cost several hours across
+one session and produced at least three misattributed "flaky" failures before it was understood.
+
+**Recovery, until it is fixed:** `docker restart outreach-pg`, then
+`DROP DATABASE outreach_test` and let `conftest` rebuild it.
+
+**Candidate fixes, none applied yet** (each needs its own slice, and CI is unaffected because
+every run there starts on a fresh database):
+
+- One session-scoped engine with `NullPool` instead of an engine per test, so there is no pool to
+  leave a connection in.
+- `SET lock_timeout` on the cleanup connection, so a blocked `TRUNCATE` fails loudly in seconds
+  instead of hanging — this alone would have turned hours of confusion into one clear error.
+- `DELETE` in dependency order inside the test's own transaction rather than `TRUNCATE`, which
+  takes an `ACCESS EXCLUSIVE` lock. ADR-era note: `TRUNCATE` was chosen because several tests
+  deliberately commit, and that reason still holds, so this is the least likely of the three.

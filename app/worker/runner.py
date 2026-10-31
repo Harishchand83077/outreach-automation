@@ -60,6 +60,18 @@ class RunnerReport:
     failed: int = 0
     dead: int = 0
     errors: list[str] = field(default_factory=list)
+    #: Attempts abandoned because the lease had been reaped and somebody else owns the job now.
+    #: Counted separately from `failed`: nothing went wrong with the work, and the job is in
+    #: another worker's hands rather than in trouble.
+    lost: int = 0
+
+
+class _LeaseLost(Exception):
+    """Raised when the outcome cannot be recorded because the lease is no longer ours.
+
+    Carried by an exception rather than a return value on purpose: it has to unwind out of the
+    `session.begin()` block so the handler's work is rolled back with it.
+    """
 
 
 class JobRunner(WorkerTask):
@@ -128,6 +140,8 @@ class JobRunner(WorkerTask):
         for outcome in results:
             if outcome == "succeeded":
                 report.succeeded += 1
+            elif outcome == "lost":
+                report.lost += 1
             elif outcome == "dead":
                 report.dead += 1
                 report.failed += 1
@@ -161,8 +175,24 @@ class JobRunner(WorkerTask):
                     if job is None:
                         return "failed"
                     await handler(self.ctx, session, job)
-                    await queue.succeed(session, job_id)
+                    if not await queue.succeed(session, job_id, worker_id=self.worker_id):
+                        # **The lease is gone, so this attempt is not ours to finish.** The
+                        # heartbeat above is allowed to fail, which means a stalled worker can
+                        # reach here after `reap_expired` requeued the job and somebody else
+                        # claimed it. Raising rolls the handler's work back with the outcome it
+                        # could not record, so only the worker that still owns the job leaves
+                        # anything behind — without this, both would commit their side effects.
+                        raise _LeaseLost(job_id)
                 return "succeeded"
+            except _LeaseLost:
+                # Deliberately not routed through `_finish`: recording a failure here would
+                # stamp an error on a job the new owner is running, and burn an attempt that
+                # belongs to them. The new owner decides this job's outcome.
+                logger.warning(
+                    "job lease lost before the outcome could be recorded",
+                    extra={"job": str(job_id), "kind": kind, "worker": self.worker_id},
+                )
+                return "lost"
             except PermanentFailure as exc:
                 logger.warning(
                     "job permanently failed",
