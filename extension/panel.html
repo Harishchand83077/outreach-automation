@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Application answers</title>
+    <link rel="stylesheet" href="/panel.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Application answers</h1>
+      <p id="status" class="muted">Not connected.</p>
+    </header>
+
+    <section id="setup">
+      <h2>Connect</h2>
+      <label for="api">Your workspace API address</label>
+      <input id="api" type="url" placeholder="https://api.example.com" autocomplete="off" />
+      <label for="token">Extension token</label>
+      <input id="token" type="password" placeholder="oa_..." autocomplete="off" />
+      <p class="muted">
+        Mint one in the dashboard under Settings. It can only read your answer bank and record
+        what you did with a suggestion.
+      </p>
+      <div class="row">
+        <button id="connect" type="button">Connect</button>
+        <button id="forget" type="button" class="secondary">Forget token</button>
+      </div>
+    </section>
+
+    <section id="work" hidden>
+      <button id="suggest" type="button">Suggest answers for this page</button>
+      <p id="read-as" class="muted"></p>
+      <p id="partial" class="warn" hidden></p>
+      <ol id="suggestions"></ol>
+      <p class="muted">
+        Suggestions only. Nothing here fills in or submits the form: copy what you want, edit it,
+        and submit the page yourself.
+      </p>
+    </section>
+
+    <p id="error" class="error" hidden></p>
+    <script type="module" src="/src/panel.ts"></script>
+  </body>
+</html>

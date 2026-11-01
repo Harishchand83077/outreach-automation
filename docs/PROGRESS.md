@@ -2022,6 +2022,75 @@ an answer; the rest of an application page is the user's own data and somebody e
 asserts the stored row has no text, and `PRIVACY.md` now describes exactly what the extension
 sends and keeps.
 
+**The extension itself exists now, and its containment is an absence rather than a promise
+(F8, ADR-040, slice S13.4). Phase 13's F8 is complete.** `extension/`: MV3, TypeScript strict, a
+side panel, four saved application forms and 38 tests.
+
+**The manifest declares no content script.** The code that reads a page is injected by the panel
+on a button press, under `activeTab` -- which Chrome grants for one tab because the user clicked
+this extension's own button. So there is **no code path by which the extension could read a page
+nobody asked about**, which is a checkable statement where a privacy policy is not. It also ships
+with **no host permissions**: the user's own API origin is requested at the moment they save its
+address, so the install prompt covers nothing and the grant names one host. A packaged wildcard
+would be a permission over the entire web, accepted once for a reason nobody could evaluate.
+
+**Four absences are asserted over the package's source** -- no form submission, no assignment
+into a page's field, no file upload, and no read of a field's *contents*, with
+`getAttribute("value")` and `.checked` named because both are the back door round the assignment
+rule. Comments are stripped first, because the prose explaining each rule names every API it
+forbids. And the strongest form of "it cannot fill the form" is that **there is no channel back
+into the page**: nothing sends a message to the content script and the content script registers
+no listener, so a panel that wanted to has nothing to ask.
+
+**The guard is written twice on purpose.** `extension/tests/safety.test.ts` and
+`tests/unit/test_extension_package.py` assert the same four things. The npm suite needs `npm ci`
+in a second directory and is a CI job that can be skipped or reordered; the Python one runs in the
+suite that gates every change to this repository. The same bargain as
+`test_connect_sends_mailbox_id.py`. It was run against a planted `form.submit()` to watch it fail.
+
+**A page that cannot be fully read says so, and that is where the design decisions are.** Some
+boards render the form inside a **closed** shadow root, where `host.shadowRoot` is null by design.
+An open root is walked; a custom element with no open root is counted as a field we could not
+read. That **over-reports** -- not every `<x-y>` is a field -- and over-reporting leaves the panel
+saying the list may be incomplete, which is the harmless direction. Reporting a page we cannot see
+into as a complete form is the other one, and it was the first version's behaviour: the scan came
+back with zero questions, which is indistinguishable from a page that has none.
+
+**Two reading rules that are wrong in the obvious version.** A radio or checkbox takes its
+**fieldset's legend**, not its wrapping label -- Lever wraps each *option* in a label, so the
+obvious rule asks the answer bank about "A referral" once per option instead of asking the actual
+question once. And a control's `name` is **never** used: nobody wrote an answer to
+`job_application[answers_attributes][3][text_value]`. Nor is nearby text, because a `<div>` above
+an input is a question often enough to be tempting and wrong often enough to produce a
+confidently misapplied answer. No label of any kind means no question, counted and reported.
+
+**`form.ts` is separate from `collect.ts` for a mechanical reason that is easy to lose.**
+`chrome.scripting.executeScript({ files })` injects a **classic** script, so one `export`
+statement in that bundle is a syntax error at the moment of injection -- on a page the user is
+part-way through filling in. Keeping every export out of the entry means the built content script
+contains no module syntax at all, and `tests/build.test.ts` asserts that against the real build,
+along with the absence of a shared chunk. Which is why **CI builds before it tests**: with no
+`dist/` those three tests skip, so the order of the two steps is the assertion.
+
+**What the fixtures are, said plainly because it changes what the tests prove.**
+`docs/ATS_FEEDS.md` recorded the three *feed* shapes as live-tested -- those endpoints were called.
+These four forms are not that: they are hand-written to each board's published markup conventions,
+and `tests/fixtures/README.md` says so rather than implying more. So the tests prove the scanner's
+rules, not any live board's current markup. What makes that acceptable is the **`generic` mapper**,
+which scopes to the page's largest form -- so the per-board mappers are an optimisation over a
+fallback that works, and a markup change degrades into "some fields could not be read" rather than
+into wrong answers.
+
+**Playwright was considered and not taken.** It is the test that would prove the most, and it costs
+a browser download in CI plus a network request to somebody else's live application form on every
+run. jsdom against saved structures buys most of it for none of that, and `jsdom` and `vitest` were
+already dependencies of the dashboard -- so this added no new tooling and nothing paid.
+
+**A self-inflicted one worth recording.** `src/config.ts` would not compile, and the three errors
+pointed at an expression three lines below the real cause: a doc comment containing the literal
+host pattern `https://` + `*/*`, whose `*/` closed the block comment early. A comment that is about
+a glob needs to not contain one.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

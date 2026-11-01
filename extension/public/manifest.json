@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Outreach: application answers",
+  "version": "0.1.0",
+  "description": "Suggests answers to job-application questions from your own confirmed facts. It never fills in or submits a form.",
+  "minimum_chrome_version": "114",
+  "action": { "default_title": "Suggest answers" },
+  "side_panel": { "default_path": "panel.html" },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage"],
+  "host_permissions": [],
+  "optional_host_permissions": ["https://*/*"],
+  "content_scripts": [],
+  "web_accessible_resources": []
+}

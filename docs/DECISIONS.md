@@ -2471,3 +2471,93 @@ three (ADR-026): it says what the answer should have been.
 - **A model to answer unmatched questions.** The honest answer is "we do not have one", and the
   person reading the form is the one who can give it.
 - **Sending the whole page for form help.** Nothing needs it, and it is the user's own data.
+
+## ADR-040 — The extension is a side panel with no standing access
+
+**Date:** 2026-11-02
+**Status:** Accepted
+**Relates to:** F8, slice S13.4; implements the client half of ADR-039
+
+### Context
+
+ADR-039 built the gateway and argued the containment is the *token*: an `ext:suggest` credential
+can read the answer bank and record an outcome, and can reach neither `/api/v1` nor `/mcp`. That
+bounds what a stolen token achieves. It says nothing about what the extension itself can do to a
+page the user is looking at, and that is the larger surface: an extension with a content script
+on every page can read every page, whatever its server is allowed to answer.
+
+The feature also has to survive the Chrome Web Store's rules, which forbid remotely hosted code
+— so the logic that recognises a board cannot be served from our API.
+
+### Decision
+
+**No content script in the manifest.** `collect.js` is injected by the side panel on a button
+press, under `activeTab`. Chrome grants that for one tab, for as long as it stays on that page,
+and only because the user clicked this extension's own toolbar button. **There is no code path
+by which the extension could read a page nobody asked about** — which is a stronger statement
+than a privacy policy, because it is checkable.
+
+**No host permissions in the package.** `optional_host_permissions` only, and the user's own API
+origin is requested at the moment they save its address. So the install prompt covers nothing,
+and the grant names one host. A packaged wildcard would be a permission over the entire web,
+accepted once at install time for a reason nobody could evaluate.
+
+**The mappers ship inside the package.** Required by the store, and the better design regardless:
+a selector a server could change is a selector that can start reading the wrong element on a page
+the user is about to submit.
+
+**Four absences are asserted over the source**, with comments stripped first so the prose
+explaining a rule cannot satisfy it: no form submission, no assignment into a page's field, no
+file upload, and no read of a field's *contents* — `getAttribute("value")` and `.checked`
+included, since both are the back door round the assignment rule. The panel also has **no
+channel back into the page**: nothing sends a message to the content script and the content
+script registers no listener, so a panel that wanted to fill the form has nothing to ask.
+
+**A page that cannot be fully read is reported as incomplete.** Some boards render the form
+inside a closed shadow root, where `host.shadowRoot` is null by design. An open root is walked; a
+custom element with no open root is counted as a field we could not read. That **over-reports** —
+not every `<x-y>` is a field — and over-reporting leaves the panel saying the list may be
+incomplete, which is the harmless direction. Claiming a complete reading of a page we cannot see
+into is the other one.
+
+**A radio or checkbox takes its group's legend, not its wrapping label.** Lever wraps each
+*option* in a label, so the obvious rule asks the answer bank about "A referral" once per option
+instead of "How did you hear about this role?" once.
+
+**`name` is never used as a question.** `job_application[answers_attributes][3][text_value]` is
+not a question anybody wrote an answer to, and neither is nearby text: a `<div>` above an input is
+a question often enough to be tempting and wrong often enough to produce a confidently misapplied
+answer. No label of any kind means no question, counted and reported.
+
+**The token lives in `chrome.storage.local`.** `sync` would push a bearer credential through the
+user's Google account to every browser they sign into.
+
+### Consequences
+
+- The extension is useless until the user pastes an address and a token, and that is the install
+  experience: nothing is granted before there is something to grant it for.
+- `form.ts` exists separately from `collect.ts` for a mechanical reason that is easy to lose:
+  `executeScript({ files })` injects a **classic** script, so one `export` statement in that
+  bundle is a syntax error at the moment of injection. Keeping every export out of the entry
+  means the built content script has no module syntax at all, and `tests/build.test.ts` asserts
+  that against the real build — which is also why CI builds before it tests.
+- The scanner tests run against **hand-written** fixtures, not captured pages, and
+  `tests/fixtures/README.md` says so. They prove the scanner's rules, not any live board's
+  current markup. What makes that acceptable is the `generic` mapper, which takes the page's
+  largest form, so the per-board mappers are an optimisation over a fallback that works.
+- The safety guard is duplicated in `tests/unit/test_extension_package.py`. Deliberate: the npm
+  suite is a job that can be skipped or reordered, and the Python suite gates every change.
+
+### Rejected
+
+- **A declared content script on the boards we know.** Simpler, and it would mean the extension
+  reads every Greenhouse, Lever and Ashby page the user ever opens, whether they asked or not.
+- **Fetching the mappers from the API.** A store violation, and a way for a server change to
+  start reading the wrong element on somebody's half-filled application.
+- **Filling the fields.** The feature people would ask for next, and the one that turns a
+  suggestion the person read into an answer submitted in their name. The code for it is absent
+  and asserted absent.
+- **Playwright against the three live boards.** It is the test that would prove the most, and it
+  needs a browser download in CI and a network call to somebody else's application form on every
+  run. jsdom against saved structures, plus a fallback that does not depend on them, buys most of
+  it for none of that.

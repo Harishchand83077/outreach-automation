@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Software Engineer - Acme</title>
+  </head>
+  <body>
+    <header>
+      <form role="search" action="/search">
+        <label for="site-search">Search jobs</label>
+        <input id="site-search" name="q" type="search" />
+      </form>
+    </header>
+
+    <main>
+      <h1>Software Engineer</h1>
+      <form id="application_form" action="https://boards.greenhouse.io/acme/jobs/1/apply" method="post">
+        <div class="field">
+          <label for="first_name">First Name <span class="required">*</span></label>
+          <input id="first_name" name="job_application[first_name]" type="text" value="Priya" />
+        </div>
+        <div class="field">
+          <label for="last_name">Last Name *</label>
+          <input id="last_name" name="job_application[last_name]" type="text" value="Nair" />
+        </div>
+        <div class="field">
+          <label for="email">Email *</label>
+          <input id="email" name="job_application[email]" type="email" value="priya@example.com" />
+        </div>
+        <div class="field">
+          <label for="question_8471">Why do you want to work at Acme?</label>
+          <textarea id="question_8471" name="job_application[answers_attributes][0][text_value]">
+I have admired the work.</textarea
+          >
+        </div>
+        <div class="field">
+          <label for="question_8472">Are you authorised to work in India?</label>
+          <select id="question_8472" name="job_application[answers_attributes][1][boolean_value]">
+            <option value="1">Yes</option>
+            <option value="0">No</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="question_8473">Notice period (in days)</label>
+          <input id="question_8473" name="job_application[answers_attributes][2][text_value]" type="text" />
+        </div>
+        <div class="field">
+          <!-- A file input with no label at all: Greenhouse renders the resume control from a
+               widget, and this is the commonest shape of an unreadable field. -->
+          <input id="resume" name="job_application[resume]" type="file" />
+        </div>
+        <input type="hidden" name="authenticity_token" value="tok" />
+        <input type="submit" value="Submit Application" />
+      </form>
+    </main>
+  </body>
+</html>
