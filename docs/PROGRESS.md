@@ -2000,6 +2000,28 @@ mypy caught `SearchUsage.created_at`, which is `at` -- the same naming trap as `
 third time in this project and the third time found by the type checker rather than by a screen
 reporting zero for ever.
 
+**The extension has a gateway, and it is a third door (F8, ADR-039, slices S13.1-S13.3).**
+`/ext/v1` with its own scope `ext:suggest`, plus `captures` and `suggestions`.
+
+**Each key opens exactly one door.** A Supabase JWT opens the dashboard, an `mcp:` token opens the
+connector, an `ext:suggest` token opens the gateway, and none of them opens another. The one worth
+stating is that an extension token **cannot call `/mcp`**: if it could, a credential sitting in a
+browser on a laptop would read every campaign, lead and reply in the workspace. Five tests assert
+the matrix, and the minting route refuses to issue `ext:suggest` alongside an MCP scope at all --
+so there is no such thing as a token that can do both.
+
+`ALL_SCOPES` is one tuple and the database check constraint is built from it, so the constraint,
+the minting route and each door's gate cannot disagree about what a scope is.
+
+**An unmatched label comes back as `needs_user`, never as a guess**, and no model is reachable
+from this path at all. A guess dressed as an answer is worse than a blank, and guessing screening
+answers is precisely what the tools we are not copying do.
+
+**A form capture stores the labels and the URL and no page text.** Only labels are needed to match
+an answer; the rest of an application page is the user's own data and somebody else's copy. A test
+asserts the stored row has no text, and `PRIVACY.md` now describes exactly what the extension
+sends and keeps.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

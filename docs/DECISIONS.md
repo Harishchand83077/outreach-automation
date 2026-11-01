@@ -2415,3 +2415,59 @@ holding version N can trust that N still means what it meant.
   the DPDP Rules, and it stays unbuilt pending legal advice.
 - **A headcount instead of a size band.** A precise number is wrong within a month, and a shared
   wrong number is wrong for everybody.
+
+---
+
+## ADR-039 — The extension gateway is a third door
+
+**Date:** 2026-11-01
+**Status:** Accepted
+**Relates to:** F8, slices S13.1-S13.3; extends ADR-028's two-doors rule
+
+### Context
+
+The Chrome extension needs to ask this system for an answer to a form field. Its credential lives
+in a browser extension on somebody's laptop, which is the least defensible place a credential in
+this system will ever sit.
+
+### Decision
+
+A third door: `/ext/v1`, authenticated by an `oa_` token whose only scope is `ext:suggest`.
+
+**Each key opens exactly one door.** A Supabase JWT opens the dashboard, an `mcp:` token opens
+the connector, an `ext:suggest` token opens the gateway, and none of them opens another. The one
+worth stating is that an extension token **cannot** call `/mcp` — if it could, a token sitting in
+a browser would read every campaign, lead and reply in the workspace. Five tests assert the
+matrix, and the minting route refuses to issue `ext:suggest` alongside an MCP scope at all.
+
+`ALL_SCOPES` is one tuple, and the database's check constraint is built from it, so the
+constraint, the minting route and each door's gate cannot disagree about what a scope is.
+
+### What the gateway may do
+
+Suggest. There is no route that submits a form, uploads a file, fills a field, sends mail or
+approves anything, and a structural test asserts the module imports neither the mail services nor
+any HTTP client. **The server returns data, never rules** — the store's policy requires the
+extension's logic to ship inside the package, and a server that could send a rule is a server
+that could send a different one later.
+
+**An unmatched label comes back as `needs_user`, never as a guess.** No model is reachable from
+this path at all, which is deliberate: a guess dressed as an answer is worse than a blank, and
+guessing screening answers is exactly what the tools we are not copying do.
+
+### What it stores
+
+A form capture stores the **labels and the URL and no page text**. Only labels are needed to
+match an answer; the rest of an application page is the user's own data and somebody else's copy.
+Captures are kept for days, and `PRIVACY.md` says so.
+
+`suggestions.state` records accepted, edited or rejected. An edit is the most valuable of the
+three (ADR-026): it says what the answer should have been.
+
+### What was rejected
+
+- **One token for everything.** Convenient, and it would make the extension's token the most
+  valuable credential in the system.
+- **A model to answer unmatched questions.** The honest answer is "we do not have one", and the
+  person reading the form is the one who can give it.
+- **Sending the whole page for form help.** Nothing needs it, and it is the user's own data.

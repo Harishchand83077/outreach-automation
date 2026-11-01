@@ -32,6 +32,7 @@ from app.api.routers import (
     campaigns,
     candidate,
     connect,
+    extension,
     health,
     imports,
     jobposts,
@@ -205,6 +206,9 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     # necessity -- a recipient must be able to act without an account -- so the token carries
     # its own proof of which lead it names.
     application.include_router(unsubscribe.router)
+    # A third door (ADR-039): its own prefix, its own scope, and no reach into /api/v1 or
+    # /mcp. The router carries its own prefix because that prefix is part of the boundary.
+    application.include_router(extension.router)
     return application
 
 

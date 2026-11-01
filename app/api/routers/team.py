@@ -434,6 +434,7 @@ async def create_mcp_token(
     name: Annotated[str, Body(embed=True)] = "My Claude",
     ttl_days: Annotated[int | None, Body(embed=True)] = api_tokens.DEFAULT_TTL_DAYS,
     may_propose: Annotated[bool, Body(embed=True)] = False,
+    for_extension: Annotated[bool, Body(embed=True)] = False,
 ) -> dict[str, Any]:
     """Mint a token and return it **once**.
 
@@ -452,6 +453,40 @@ async def create_mcp_token(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="ttl_days must be between 1 and 365, or null for no expiry.",
         )
+
+    if for_extension:
+        # **Only the extension scope, never alongside the MCP ones.** A token that could do both
+        # would be a credential in a browser extension that also reads the whole workspace over
+        # MCP, which is the opposite of why there are separate doors (ADR-039).
+        minted = await api_tokens.create_token(
+            session,
+            org_id=user.org_id,
+            user_id=user.user_id,
+            name=name,
+            ttl_days=ttl_days,
+            scopes=[api_tokens.EXT_SUGGEST_SCOPE],
+        )
+        await record_event(
+            session,
+            org_id=user.org_id,
+            type="mcp.token_created",
+            actor="user",
+            actor_id=user.email or user.user_id,
+            data={
+                "token_id": str(minted.id),
+                "name": minted.name,
+                "prefix": minted.prefix,
+                "scopes": list(minted.scopes),
+            },
+        )
+        await session.commit()
+        return {
+            "id": str(minted.id),
+            "name": minted.name,
+            "token": minted.secret,
+            "expires_at": minted.expires_at.isoformat() if minted.expires_at else None,
+            "scopes": list(minted.scopes),
+        }
 
     scopes = [api_tokens.READ_SCOPE]
     if may_propose:

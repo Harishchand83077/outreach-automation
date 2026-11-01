@@ -54,6 +54,16 @@ PROPOSE_SCOPE = protocol.PROPOSE_SCOPE
 #: `SEND_MODE=disabled` and `SIGNUP_MODE=closed` are the same decision.
 DEFAULT_SCOPES: tuple[str, ...] = (READ_SCOPE,)
 
+#: The Chrome extension's scope (ADR-039). A **third door**: this token cannot call `/api/v1`
+#: and cannot call `/mcp`, and an `mcp:` token cannot call the extension gateway. Same reasoning
+#: as ADR-028's two doors -- a credential that works everywhere is one whose theft costs
+#: everything.
+EXT_SUGGEST_SCOPE = "ext:suggest"
+
+#: Every scope this table may hold, and the set the database's check constraint is built from.
+#: One tuple so the constraint, the minting route and each door's gate cannot disagree.
+ALL_SCOPES: tuple[str, ...] = (*protocol.SCOPES, EXT_SUGGEST_SCOPE)
+
 
 def hash_token(token: str) -> str:
     """`sha256` hex. See `ApiToken` for why this is not a password hash."""
@@ -136,10 +146,10 @@ async def create_token(
     requested = tuple(scopes) if scopes is not None else DEFAULT_SCOPES
     if not requested:
         raise ValueError("a token with no scopes could do nothing; ask for at least one")
-    if unknown := [scope for scope in requested if scope not in protocol.SCOPES]:
+    if unknown := [scope for scope in requested if scope not in ALL_SCOPES]:
         raise ValueError(
             f"unknown scope(s): {', '.join(sorted(unknown))}. "
-            f"This endpoint has {', '.join(protocol.SCOPES)} and nothing else."
+            f"This deployment has {', '.join(ALL_SCOPES)} and nothing else."
         )
     secret, prefix, digest = _mint()
     expires_at = moment + timedelta(days=ttl_days) if ttl_days else None
