@@ -860,6 +860,77 @@ class Suppression(Base):
     )
 
 
+class WatchedBoard(Base):
+    """A public ATS board this workspace wants polled daily (F5).
+
+    The slug is the board's own, taken from its URL. Two workspaces may watch the same board,
+    which is why job deduplication had to be scoped by org first (ADR-032): the poll's dedupe
+    key is built from the source and the slug, which they share.
+    """
+
+    __tablename__ = "watched_boards"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: What to call it on screen. The slug is rarely the company's name.
+    label: Mapped[str | None] = mapped_column(String(200))
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the last poll failed, if it did. Shown so a wrong slug is fixable rather than silent.
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "source", "slug", name="uq_watched_boards_org_source_slug"),
+        CheckConstraint(
+            "source IN ('greenhouse','lever','ashby')", name="ck_watched_boards_source"
+        ),
+    )
+
+
+class JobPost(Base):
+    """A job posting a candidate might pursue (F5).
+
+    From a public ATS feed or a URL the user pasted. `body_text` is cleared by the retention
+    sweep like researched page text, and is nullable from the start because Greenhouse's list
+    response carries no description at all (`docs/ATS_FEEDS.md`).
+    """
+
+    __tablename__ = "job_posts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: greenhouse | lever | ashby | pasted
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: The board's own id, or a hash of the URL for a pasted one.
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    company_domain: Mapped[str | None] = mapped_column(String(253))
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    location: Mapped[str | None] = mapped_column(String(500))
+    apply_url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    body_text: Mapped[str | None] = mapped_column(Text)
+    fetched_at: Mapped[datetime] = _now_col(nullable=False)
+    #: open | archived. A posting is never deleted on disappearing from a feed: a candidate may
+    #: have applied to it, and `applications` will point at it.
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "source", "external_id", name="uq_job_posts_org_source_ext"),
+        CheckConstraint(
+            "source IN ('greenhouse','lever','ashby','pasted')", name="ck_job_posts_source"
+        ),
+        CheckConstraint("status IN ('open','archived')", name="ck_job_posts_status"),
+        Index("ix_job_posts_org_fetched", "org_id", "fetched_at"),
+    )
+
+
 class MailboxHealth(Base):
     """One row per mailbox per day: how much it sent and how much came back (ADR-034).
 

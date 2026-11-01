@@ -20,6 +20,7 @@ settled; the runner simply never claims them.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any, Protocol
 
@@ -41,11 +42,16 @@ from app.domain.template import CampaignTemplates
 from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
 from app.services.drafting.prompts import reply_subject
+from app.services.jobposts.client import fetch_board
+from app.services.jobposts.feeds import FeedError
+from app.services.jobposts.intake import store
 from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
 from app.services.research.fetcher import Fetcher
 from app.services.research.service import research_lead
 from app.worker.context import WorkerContext
+
+logger = logging.getLogger(__name__)
 
 
 class PermanentFailure(Exception):
@@ -490,9 +496,41 @@ def campaign_settings(campaign: Campaign) -> CampaignSettings:
 
 #: The kinds the runner claims. Anything absent here is never picked up — see the module
 #: docstring for why `send_message` and `classify_reply` are not in it.
+async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
+    """Read one public ATS board and upsert its postings (F5).
+
+    The payload names the source and the board slug. A board we cannot read is a `PermanentFailure`
+    rather than a retry when the slug is wrong -- retrying a 404 five times will not make the
+    board exist -- and a transient network problem raises so the lease reaper requeues it.
+    """
+    source = str((job.payload or {}).get("source") or "")
+    slug = str((job.payload or {}).get("slug") or "")
+    if not source or not slug:
+        raise PermanentFailure("a feed poll needs a source and a slug")
+
+    try:
+        postings = await fetch_board(source, slug)
+    except FeedError as exc:
+        # The board does not exist, moved, or answered something we cannot parse. None of that
+        # is fixed by trying again, and the message says what to correct.
+        raise PermanentFailure(str(exc)) from exc
+
+    result = await store(session, OrgContext(org_id=job.org_id), postings)
+    logger.info(
+        "polled an ats board",
+        extra={
+            "source": source,
+            "slug": slug,
+            "created": result.created,
+            "updated": result.updated,
+        },
+    )
+
+
 HANDLERS: dict[str, Handler] = {
     JobKind.RESEARCH_LEAD: handle_research_lead,
     JobKind.DRAFT_LEAD: handle_draft_lead,
     JobKind.DRAFT_FOLLOWUP: handle_draft_followup,
     JobKind.DRAFT_REPLY: handle_draft_reply,
+    JobKind.POLL_ATS_FEED: handle_poll_ats_feed,
 }

@@ -33,6 +33,7 @@ from app.api.routers import (
     connect,
     health,
     imports,
+    jobposts,
     mcp,
     me,
     operations,
@@ -189,6 +190,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(campaigns.router, prefix="/api/v1")
     application.include_router(review.router, prefix="/api/v1")
     application.include_router(imports.router, prefix="/api/v1")
+    application.include_router(jobposts.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")

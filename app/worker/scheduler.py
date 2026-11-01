@@ -32,6 +32,7 @@ from app.db import queue
 from app.services import outcomes
 from app.services.campaign_clock import run_campaign_clock
 from app.services.deliverability.health import run_health_pass
+from app.services.jobposts.polling import enqueue_due_polls
 from app.services.lifecycle import run_lifecycle
 from app.services.mail.expiry import warn_about_expiring_grants
 from app.services.privacy import run_retention
@@ -72,6 +73,7 @@ class SchedulerReport:
     outcomes_resolved: int = 0
     #: Mailboxes this pass paused on their bounce rate. It never resumes one (ADR-034).
     mailboxes_paused: int = 0
+    feed_polls_queued: int = 0
     alerts: list[str] = field(default_factory=list)
 
 
@@ -178,6 +180,15 @@ class Scheduler(WorkerTask):
             report.alerts.extend(health.alerts)
         except Exception as exc:
             logger.warning("the mailbox health pass failed", extra={"error": type(exc).__name__})
+
+        # Daily poll of each watched ATS board. Enqueue only: the fetch is a job, because it
+        # calls somebody else's service and the scheduler must not wait on it.
+        try:
+            async with self.ctx.session_factory() as session, session.begin():
+                polls = await enqueue_due_polls(session, now=now)
+            report.feed_polls_queued = polls.enqueued
+        except Exception as exc:
+            logger.warning("the feed poll pass failed", extra={"error": type(exc).__name__})
 
         await self._maybe_warn_about_grants(report, now)
         await self._maybe_retain(report, now)

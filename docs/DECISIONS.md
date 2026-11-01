@@ -2287,3 +2287,35 @@ somebody to infer it from a single row.
 - **Hiding the shared-reputation and Postmaster limits** to keep the message simple. They are
   the real difference between sending from Gmail and sending from your own domain, and somebody
   choosing between the two deserves to know.
+
+---
+
+## ADR-036 — Public ATS feeds are the sanctioned substitute for scraping job boards
+
+**Date:** 2026-10-31
+**Status:** Accepted
+**Relates to:** F5, slices S12.1 and S12.2
+
+Greenhouse, Lever and Ashby publish JSON job feeds. We poll those for boards the user names, and
+for everything else — Naukri, Instahyre, a LinkedIn post — the user **pastes** the URL and the
+text. Nothing fetches a pasted URL, asserted by a structural test over the router: that is what
+keeps this on the right side of hard rule 4 and of each board's terms.
+
+**The endpoints were tested before anything was built on them**, because the v3 doc's URLs came
+from one third-party article. All three answer 200; `docs/ATS_FEEDS.md` records the shapes. The
+difference that mattered: **Lever returns a bare JSON array where the other two wrap theirs in
+`jobs`**, and its timestamps are epoch milliseconds. A parser written against an assumed shape
+would have failed for exactly one source, which reads like a bad slug rather than a bad
+assumption. Greenhouse's list response carries no description at all, so `body_text` is nullable
+from the first migration rather than discovered to be optional later.
+
+A response size cap as well as a timeout: one real Ashby board returned 2.8 MB for 171 postings.
+
+Postings upsert on `(org_id, source, external_id)` and are **archived, never deleted** — an
+`applications` row will point at one, and a posting vanishing from a feed is not a posting the
+candidate did not apply to. A feed that stops carrying descriptions does not blank text we
+already hold, because ours may be the only copy.
+
+Rejected: fetching a pasted URL "just to get the title", which is scraping with extra steps; and
+one parser with per-source `if`s inside it, which is how Lever's array shape would have become a
+special case nobody could see.
