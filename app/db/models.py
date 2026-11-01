@@ -860,6 +860,67 @@ class Suppression(Base):
     )
 
 
+class Capture(Base):
+    """A page the user deliberately sent from the extension (F8).
+
+    Created **only** by a button press, never by the extension watching a tab. Kept for days
+    rather than months and listed in `PRIVACY.md`: it is somebody's browsing, narrowed to the
+    one page they chose to share.
+    """
+
+    __tablename__ = "captures"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Which token sent it, so a device can be revoked and its captures identified.
+    token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.api_tokens.id", ondelete="SET NULL")
+    )
+    page_url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    page_text: Mapped[str | None] = mapped_column(Text)
+    #: form | posting
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    captured_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('form','posting')", name="ck_captures_kind"),
+        Index("ix_captures_org_at", "org_id", "captured_at"),
+    )
+
+
+class Suggestion(Base):
+    """One proposed answer to one form field (F8).
+
+    `state` records what the person did with it, which is the preference signal the dataset wants
+    (ADR-026) and the only reason to store a suggestion at all after it has been shown.
+    """
+
+    __tablename__ = "suggestions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    capture_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.captures.id", ondelete="CASCADE"), nullable=False
+    )
+    field_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    proposed_answer: Mapped[str | None] = mapped_column(Text)
+    fact_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    #: proposed | accepted | edited | rejected | needs_user
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('proposed','accepted','edited','rejected','needs_user')",
+            name="ck_suggestions_state",
+        ),
+    )
+
+
 class CompanyProfile(Base):
     """Public facts about a company, shared across every workspace (F19, ADR-038).
 

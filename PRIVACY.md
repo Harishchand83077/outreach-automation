@@ -162,3 +162,25 @@ every send — so an opt-out that arrives between approval and sending still sto
 Data or security concerns: open an issue in the repository, or write to the address in the footer
 of any message this system sent you. An opt-out reply to that message is honoured automatically
 and does not need a human to act on it.
+
+## The Chrome extension (F8, ADR-039)
+
+The extension sends two things, and only when the user presses a button:
+
+- **Form help:** the visible field *labels* and the page URL. **Not the values the user has
+  typed**, and not the rest of the page. Only labels are needed to match a stored answer, and the
+  rest of an application page is the user's own data and somebody else's copy, so a form capture
+  stores no page text at all -- which a test asserts.
+- **Capture:** the visible text of a job posting, when the user asks for that posting to be
+  stored.
+
+It never reads another tab, never watches a page in the background, and never submits a form or
+uploads a file.
+
+`captures` rows are kept for **days, not months**, and are removed by the retention sweep.
+`suggestions` records what the person did with each proposal -- accepted, edited or rejected --
+which is the only reason to keep one after it has been shown.
+
+The extension's token carries the scope `ext:suggest` and nothing else. It **cannot** call the
+dashboard API and **cannot** call the Claude connector, and neither an `mcp:` token nor a
+dashboard sign-in can call the extension gateway. Three credentials, three doors, one key each.
