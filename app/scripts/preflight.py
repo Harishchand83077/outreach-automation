@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 
 from app.core.settings import config  # noqa: E402
 from app.db.models import Campaign, Mailbox, Org, SendAllowlistEntry  # noqa: E402
+from app.domain.booking import opens_own_calendar  # noqa: E402
 from app.services.deliverability.sender_requirements import (  # noqa: E402
     DnsTxtResolver,
     Verdict,
@@ -105,15 +106,9 @@ def assess_booking_url(booking_url: str | None, cta_text: str | None) -> Line:
             )
         return Line("Booking link", FAIL, "Neither a booking URL nor a written ask.")
 
-    lowered = url.lower()
-    # Known shapes that open the reader's own calendar rather than the sender's availability.
-    own_calendar = (
-        "calendar.google.com/calendar/u/",
-        "calendar.google.com/calendar/r",
-        "outlook.live.com/calendar/0/view",
-        "outlook.office.com/calendar/view",
-    )
-    if any(shape in lowered for shape in own_calendar):
+    # The shapes live in `app.domain.booking`, which `Persona` validation also reads, so the
+    # gate and the save-time refusal cannot disagree about what a usable link is.
+    if opens_own_calendar(url):
         return Line(
             "Booking link",
             FAIL,

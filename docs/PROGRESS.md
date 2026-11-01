@@ -1894,6 +1894,27 @@ is the second time today that pipeline has lied to me.
 `mailboxes`. Being made to look showed that `unavailable_reason` already existed and was the right
 thing to call, so the type error prevented a second copy of a rule rather than just a crash.
 
+**Phase 10's code half is done (F1, slices S10.2 and S10.3).**
+
+**A booking link is now refused at save if it books nothing.** `Persona` validation rejects a URL
+that opens the reader's own calendar -- the live campaign's was
+`calendar.google.com/calendar/u/0/r`. The shapes live in `app/domain/booking.py`, which both the
+validator and the go-live gate read, so the two cannot drift. A `cta_text` with no link is still
+valid, as it has been since Phase 2.
+
+**`python -m app.scripts.rehearsal_report --since <date>`** lists every outbound message in a
+window with whether its recipient was on the allowlist, and exits non-zero if any *delivered*
+message went to an address that was not. A **blocked** send to an unlisted address is the gate
+working and does not fail the report -- a rehearsal in allowlist mode should be full of them.
+
+mypy caught two wrong column assumptions in these two scripts (`SendAllowlistEntry.value`, which
+is `email_norm`, and `invalid_reason` on the wrong model), which is the fourth and fifth time it
+has caught that class this week.
+
+**What is left of F1 is not code.** Connect a mailbox whose address matches the account that
+authenticates, confirm `DKIM: PASS` in Show original on a received message, and replace the
+booking URL. The gate reports all three and cannot do any of them.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
