@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <title>Backend Engineer - Globex</title>
+  </head>
+  <body>
+    <div class="content-wrapper">
+      <form class="application-form" method="POST" action="https://jobs.lever.co/globex/abc/apply">
+        <ul class="application-fields">
+          <li class="application-question">
+            <label class="application-label">
+              <span class="text">Full name</span>
+              <input type="text" name="name" required />
+            </label>
+          </li>
+          <li class="application-question">
+            <label class="application-label">
+              <span class="text">Email</span>
+              <input type="email" name="email" required />
+            </label>
+          </li>
+          <li class="application-question">
+            <fieldset>
+              <legend>How did you hear about this role?</legend>
+              <label><input type="radio" name="source" value="referral" /> A referral</label>
+              <label><input type="radio" name="source" value="search" /> I searched</label>
+            </fieldset>
+          </li>
+          <li class="application-question">
+            <label class="application-label" for="additional">
+              <span class="text">Additional information</span>
+            </label>
+            <textarea id="additional" name="comments"></textarea>
+          </li>
+          <li class="application-question">
+            <!-- Lever labels its resume control with aria-label only. -->
+            <input type="file" name="resume" aria-label="Resume/CV" />
+          </li>
+        </ul>
+        <button type="submit" class="template-btn-submit">Submit application</button>
+      </form>
+    </div>
+  </body>
+</html>

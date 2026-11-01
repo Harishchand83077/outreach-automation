@@ -1,0 +1,169 @@
+/* The side panel is ~360px wide and lives next to a page somebody is filling in, so it is one
+   column, nothing fixed-width, and it inherits the browser's own light or dark preference. */
+:root {
+  --bg: #ffffff;
+  --fg: #16181d;
+  --muted: #5d6470;
+  --line: #e2e5ea;
+  --accent: #1f5ae0;
+  --warn-fg: #7a4a00;
+  --warn-bg: #fff6e5;
+  --error-fg: #96191c;
+  --error-bg: #fdeceb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171b;
+    --fg: #e9ebef;
+    --muted: #9aa2af;
+    --line: #2b2f36;
+    --accent: #7ea4ff;
+    --warn-fg: #ffd9a0;
+    --warn-bg: #3a2c12;
+    --error-fg: #ffb3b1;
+    --error-bg: #3a1b1c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h1 {
+  margin: 0;
+  font-size: 15px;
+}
+
+h2 {
+  margin: 18px 0 8px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+label {
+  display: block;
+  margin: 10px 0 4px;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+}
+
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+button {
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+#suggest {
+  width: 100%;
+}
+
+ol {
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+li {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+li .question {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+li textarea {
+  width: 100%;
+  min-height: 64px;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  resize: vertical;
+}
+
+li .facts {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 6px;
+}
+
+li.needs-user {
+  border-style: dashed;
+}
+
+.warn,
+.error {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.warn {
+  color: var(--warn-fg);
+  background: var(--warn-bg);
+}
+
+.error {
+  color: var(--error-fg);
+  background: var(--error-bg);
+}

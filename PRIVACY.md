@@ -177,6 +177,30 @@ The extension sends two things, and only when the user presses a button:
 It never reads another tab, never watches a page in the background, and never submits a form or
 uploads a file.
 
+**That is enforced by the package rather than promised by it**, and the distinction is the whole
+point of this section. The extension declares **no content script**: the code that reads a page
+is injected by the side panel when the button is pressed, under `activeTab`, which Chrome grants
+for one tab because the user clicked this extension's own button. There is therefore no code
+path by which it could read a page nobody asked about. It also ships with **no host
+permissions** — the address of the user's own API is requested at the moment they save it, so
+the install prompt covers nothing and the grant names one host.
+
+Four APIs are asserted to be absent from the package's source, with comments stripped first so
+the prose explaining the rule cannot satisfy it: form submission, assignment into a page's
+field, file upload, and any read of a field's *contents* (including `.checked`). The panel also
+has **no channel back into the page** — nothing in the package sends a message to the content
+script and the content script registers no listener — so even a panel that wanted to fill the
+form has nothing to ask. `extension/tests/safety.test.ts` and
+`tests/unit/test_extension_package.py` check this, deliberately twice: the second runs in the
+suite that gates every change to the repository.
+
+A page the extension cannot fully read is reported as **incomplete** rather than as a short
+complete list, and a question with no approved answer comes back blank and marked as needing the
+user. **No model is reachable from this path at all.**
+
+The token is stored in `chrome.storage.local` and never `chrome.storage.sync`, which would push
+a bearer credential through the user's Google account to every browser they sign into.
+
 `captures` rows are kept for **days, not months**, and are removed by the retention sweep.
 `suggestions` records what the person did with each proposal -- accepted, edited or rejected --
 which is the only reason to keep one after it has been shown.

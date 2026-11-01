@@ -88,6 +88,31 @@ jobs:
       - run: npm run build
         working-directory: frontend
 
+  extension:
+    name: extension types, build and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - run: npm ci
+        working-directory: extension
+
+      # Build **before** the tests, not after: `tests/build.test.ts` asserts two properties of
+      # the built content script that no source test can see -- no module syntax and no shared
+      # chunk -- and both of them fail at the one moment nobody is watching, the first injection
+      # into a real page. With no `dist/` those tests skip, so the order is the assertion.
+      - run: npm run build
+        working-directory: extension
+
+      - run: npm test
+        working-directory: extension
+
   deploy-artifacts:
     name: image and deploy config
     runs-on: ubuntu-latest
