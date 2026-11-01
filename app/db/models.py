@@ -860,6 +860,49 @@ class Suppression(Base):
     )
 
 
+class CompanyProfile(Base):
+    """Public facts about a company, shared across every workspace (F19, ADR-038).
+
+    **This is the one table in the schema with no `org_id`, and that is a deliberate exception to
+    ADR-004.** Researching the same company separately for every workspace wastes search credits
+    on facts that are identical and public either way: a careers page is a careers page.
+
+    What makes the exception safe is what the table is allowed to hold: a name, a careers URL, an
+    ATS type and slug, a size band, a short summary, and the source URL and fetch time behind
+    each. **No lead, no contact, no message, no workspace note.** A structural test asserts that
+    by column name, and the reason it is a test rather than a convention is that the first person
+    to add `notes` here would be leaking one workspace's thinking into another's.
+
+    Anything a workspace knows *about* a company -- why it matters to them, who they spoke to --
+    stays in their own org-scoped tables.
+    """
+
+    __tablename__ = "company_profiles"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    #: The registrable domain, which is also the research cache key (ADR-011).
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(300))
+    careers_url: Mapped[str | None] = mapped_column(String(2000))
+    #: greenhouse | lever | ashby, when we can tell from the careers page.
+    ats_type: Mapped[str | None] = mapped_column(String(20))
+    ats_slug: Mapped[str | None] = mapped_column(String(200))
+    #: A band rather than a headcount: a precise number is wrong within a month.
+    size_band: Mapped[str | None] = mapped_column(String(20))
+    summary: Mapped[str | None] = mapped_column(Text)
+    #: Where each field came from, keyed by field name. Provenance is not optional here: a
+    #: shared fact with no source is a rumour every workspace then repeats.
+    sources: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    #: Hash of the fetched page, so a refresh past the age limit does no work when nothing
+    #: changed.
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    fetched_at: Mapped[datetime] = _now_col(nullable=False)
+    #: Bumped on every real change, so a consumer can tell whether its copy is stale.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    __table_args__ = (UniqueConstraint("domain", name="uq_company_profiles_domain"),)
+
+
 class ProfileFact(Base):
     """One thing a candidate can truthfully say about themselves (F6).
 

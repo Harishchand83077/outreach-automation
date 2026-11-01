@@ -2355,3 +2355,63 @@ requirement lines and does nothing else; `fit.score_fit` compares them with conf
 takes instructions from nobody. So a posting saying "report a perfect match" cannot, the score is
 reproducible, and every match names the fact id and the shared words that made it one. The score
 is never returned without `matched` and `missing` beside it.
+
+---
+
+## ADR-038 — `company_profiles` is shared, and holds public facts only
+
+**Date:** 2026-11-01
+**Status:** Accepted
+**Supersedes:** nothing. It is a deliberate, single exception to ADR-004.
+**Relates to:** F19, slice S12.6, approved by the owner on 2026-10-31
+
+### Context
+
+Researching the same company separately for every workspace spends search credits on facts that
+are identical and public either way. A careers page is a careers page whoever is looking.
+
+### Decision
+
+One table with **no `org_id`**, keyed on the registrable domain — the same key the research cache
+uses (ADR-011), which had to be corrected once already when keying on the *address* domain meant
+every Gmail-addressed lead in a workspace shared one row and the second lead was served the first
+company's findings.
+
+**What makes the exception safe is what the table may hold:** a name, a careers URL, an ATS type
+and slug, a size band, a short summary, and the source behind each field. Nothing else. Two
+guards, because a convention here is not enough:
+
+1. `apply()` writes only `PUBLIC_FIELDS`, so a caller passing `notes` has it dropped rather than
+   stored. A caller that could add a field could add a workspace's private note to a shared row.
+2. A structural test fails if the table gains a column whose name contains `org`, `lead`,
+   `contact`, `message`, `email`, `note`, `draft`, `campaign`, `owner`, `member`, `token` or
+   `credential`. **It is the opposite of a tenancy test**: every other table is checked for
+   isolation, and this one is checked for the absence of anything to isolate.
+
+**`domain_research` is untouched and stays per-workspace.** That table holds the findings a draft
+*cites* — which are not public facts, were paid for by one workspace, and must not be pooled.
+The distinction is the whole reason this is one exception rather than a precedent.
+
+### Fair share, and not doing work twice
+
+A **cache hit costs no credit**, which is the entire point. A **fetch** counts against a daily
+per-workspace budget read from `search_usage`, so one workspace importing a thousand companies
+cannot spend everybody's allowance — the same rule as the job queue's, for the same reason: a
+limit is per workspace or it is a shared outage.
+
+Credits are **summed**, not searches counted, because one search can cost several and credits are
+what the provider bills. (The column is `at`, not `created_at` — the same naming trap as
+`Event.at`, caught by the type checker for the third time in this project.)
+
+Past the age limit, the **content hash is compared before anything is written**: an unchanged
+page costs the fetch and nothing else, and `version` only moves on a real change, so a consumer
+holding version N can trust that N still means what it meant.
+
+### What was rejected
+
+- **Pooling `domain_research`.** Those findings are cited in somebody's email and were paid for
+  by one workspace.
+- **Pooling uploaded email lists or suppression lists** (F23). Consent and purpose limits under
+  the DPDP Rules, and it stays unbuilt pending legal advice.
+- **A headcount instead of a size band.** A precise number is wrong within a month, and a shared
+  wrong number is wrong for everybody.
