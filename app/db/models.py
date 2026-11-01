@@ -860,6 +860,37 @@ class Suppression(Base):
     )
 
 
+class WatchedBoard(Base):
+    """A public ATS board this workspace wants polled daily (F5).
+
+    The slug is the board's own, taken from its URL. Two workspaces may watch the same board,
+    which is why job deduplication had to be scoped by org first (ADR-032): the poll's dedupe
+    key is built from the source and the slug, which they share.
+    """
+
+    __tablename__ = "watched_boards"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    slug: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: What to call it on screen. The slug is rarely the company's name.
+    label: Mapped[str | None] = mapped_column(String(200))
+    last_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the last poll failed, if it did. Shown so a wrong slug is fixable rather than silent.
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "source", "slug", name="uq_watched_boards_org_source_slug"),
+        CheckConstraint(
+            "source IN ('greenhouse','lever','ashby')", name="ck_watched_boards_source"
+        ),
+    )
+
+
 class JobPost(Base):
     """A job posting a candidate might pursue (F5).
 

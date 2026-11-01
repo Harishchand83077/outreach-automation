@@ -1937,6 +1937,24 @@ A test caught a real hole: an unknown source whose payload happened to have the 
 returned **zero postings** rather than an error, which is indistinguishable from an empty board.
 The source is now validated before parsing.
 
+**Boards are polled daily now (F5, slice S12.3).** `watched_boards` holds the boards a workspace
+wants read, the `Scheduler` enqueues one `poll_ats_feed` job per board per day, and the handler
+fetches and upserts.
+
+**This is the slice ADR-032 had to land before.** The dedupe key is `feed:{source}:{slug}`, built
+from values two workspaces genuinely share -- two candidates watching the same company is the
+ordinary case. Before dedupe was scoped by org, the second workspace's poll would have been
+refused and its postings would simply never have arrived, with nothing anywhere saying so. There
+is now a test for exactly that.
+
+`last_polled_at` is stamped **on enqueue, not on success**, so a board whose poll keeps failing is
+retried once a day rather than on every scheduler pass. A wrong slug is a `PermanentFailure`
+rather than a retry, because trying a 404 five more times will not make the board exist, and the
+route validates a slug with the same `feed_url` the poll uses -- so a board that saves is a board
+that can be polled.
+
+Adding the handler needed a module logger in `app/worker/handlers.py`, which had none at all.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
