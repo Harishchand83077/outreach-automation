@@ -96,7 +96,10 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          # 22, not 20: `jsdom` 30 pulls in a build of `undici` that throws on load under
+          # Node 20 (`Cannot read properties of undefined (reading 'bind')`), which arrives as
+          # vitest failing to start a worker rather than as a version complaint.
+          node-version: '22'
           cache: npm
           cache-dependency-path: extension/package-lock.json
 
