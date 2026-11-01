@@ -860,6 +860,76 @@ class Suppression(Base):
     )
 
 
+class ProfileFact(Base):
+    """One thing a candidate can truthfully say about themselves (F6).
+
+    `CandidateProfile.facts` already held these inside `campaigns.persona`, which is right for
+    one campaign and wrong for a person: a candidate applies to many roles with one history.
+    These are the workspace's own, compiled into a persona per campaign.
+
+    **A fact is unusable until confirmed.** Facts mined from GitHub or a résumé arrive as
+    proposals, and `confirmed_at` is what the claim check will resolve against -- because the
+    person who gets asked about a claim in an interview is the person who has to have agreed to
+    it. That is the no-invention rule (hard rule 6) applied to the one case where inventing is
+    most tempting and most costly.
+    """
+
+    __tablename__ = "profile_facts"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: `pp1`, `pp2`... The same ids `resolve_evidence` already understands, so a draft citing a
+    #: fact needs no new machinery.
+    fact_id: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: skill | project | role | education
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_url: Mapped[str | None] = mapped_column(String(2000))
+    #: Where it came from: `user` for typed, `github` or `resume` for mined.
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    #: NULL means proposed and not yet usable.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "fact_id", name="uq_profile_facts_org_fact"),
+        CheckConstraint(
+            "kind IN ('skill','project','role','education')", name="ck_profile_facts_kind"
+        ),
+        CheckConstraint("source IN ('user','github','resume')", name="ck_profile_facts_source"),
+    )
+
+
+class AnswerBankEntry(Base):
+    """An answer to a question application forms keep asking (F6).
+
+    Notice period, expected pay, work authorisation, links. Answered once by the person, with the
+    facts it rests on, and **only an approved row is ever offered** -- to the extension or to
+    anything else. Anything not in the bank is reported as needing the user rather than guessed,
+    which is the direct answer to tools that invent screening answers.
+    """
+
+    __tablename__ = "answer_bank"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Lower-cased words to match a form label against. Not a regex: a pattern a user types is a
+    #: pattern a user must be able to read back.
+    question_pattern: Mapped[str] = mapped_column(String(300), nullable=False)
+    answer: Mapped[str] = mapped_column(Text, nullable=False)
+    fact_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "question_pattern", name="uq_answer_bank_org_pattern"),
+    )
+
+
 class WatchedBoard(Base):
     """A public ATS board this workspace wants polled daily (F5).
 

@@ -2319,3 +2319,39 @@ already hold, because ours may be the only copy.
 Rejected: fetching a pasted URL "just to get the title", which is scraping with extra steps; and
 one parser with per-source `if`s inside it, which is how Lever's array shape would have become a
 special case nobody could see.
+
+---
+
+## ADR-037 — A candidate fact is unusable until they confirm it
+
+**Date:** 2026-11-01
+**Status:** Accepted
+**Relates to:** F6, slices S12.4 and S12.5
+
+`profile_facts` and `answer_bank` are the workspace's own, where `CandidateProfile.facts` lived
+inside one campaign's persona. Right for a campaign, wrong for a person: a candidate applies to
+many roles with one history. Existing job-hunt campaigns are untouched and keep using their own
+facts.
+
+**A fact typed by the person is confirmed by the act of typing it; a fact mined from GitHub or a
+resume arrives as a proposal.** Only confirmed facts are offered for drafting or scoring, because
+the person who will be asked about a claim in an interview is the person who has to have agreed
+to it. That is hard rule 6 applied where inventing is most tempting and most costly: an email
+claiming three years of Kubernetes somebody does not have is not a weak email, it is a lie told
+in their name.
+
+`ppN` ids are computed from the highest existing id rather than counted, so deleting `pp2` cannot
+later produce a second `pp3`. A duplicate id would make a citation ambiguous, which is the one
+thing an evidence reference cannot be.
+
+**Only an approved answer-bank row is ever offered, and editing one unapproves it** — the
+approval was of the previous wording. An unmatched question is reported as needing the user
+rather than guessed, which is the whole difference from tools that invent screening answers.
+Matching is word overlap with every pattern word required, not a regex and not a model: a pattern
+somebody typed has to be one they can read back and predict.
+
+**The fit score is rules over a model's extraction.** A model turns posting prose into
+requirement lines and does nothing else; `fit.score_fit` compares them with confirmed facts and
+takes instructions from nobody. So a posting saying "report a perfect match" cannot, the score is
+reproducible, and every match names the fact id and the shared words that made it one. The score
+is never returned without `matched` and `missing` beside it.
