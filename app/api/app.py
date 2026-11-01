@@ -30,6 +30,7 @@ from app.api.deps import get_session, session_dependency
 from app.api.ratelimit import RateLimit
 from app.api.routers import (
     campaigns,
+    candidate,
     connect,
     health,
     imports,
@@ -188,6 +189,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(health.router)
     application.include_router(me.router, prefix="/api/v1")
     application.include_router(campaigns.router, prefix="/api/v1")
+    application.include_router(candidate.router, prefix="/api/v1")
     application.include_router(review.router, prefix="/api/v1")
     application.include_router(imports.router, prefix="/api/v1")
     application.include_router(jobposts.router, prefix="/api/v1")

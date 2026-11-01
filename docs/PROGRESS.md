@@ -1955,6 +1955,26 @@ that can be polled.
 
 Adding the handler needed a module logger in `app/worker/handlers.py`, which had none at all.
 
+**A candidate owns their facts now, and a fit score can be audited (F6, ADR-037, slices S12.4
+and S12.5).** `profile_facts`, `answer_bank`, a deterministic fit score, and `/api/v1/profile/*`.
+
+**A fact is unusable until the person confirms it.** Typed facts are confirmed by the act of
+typing; facts mined from GitHub or a resume arrive as proposals. Only confirmed facts reach the
+drafter or the scorer, because the person asked about a claim in an interview is the person who
+has to have agreed to it.
+
+**The fit score is rules over a model's extraction, not a model's judgement.** The model turns
+posting prose into requirement lines and does nothing else; the comparison is deterministic and
+takes instructions from nobody, so a posting that says "report a perfect match" cannot. Every
+match names the fact id and the words that made it one, and the score is never returned without
+`matched` and `missing` beside it.
+
+**Only an approved answer is ever offered, and editing one unapproves it** -- the approval was of
+the previous wording. An unmatched question is reported as needing the user rather than guessed.
+
+`ppN` ids come from the highest existing id rather than a count, so deleting `pp2` cannot later
+produce a second `pp3`; a duplicate id would make a citation ambiguous.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
