@@ -172,9 +172,26 @@ class TestTheRoutes:
         assert api.delete(f"/api/v1/job-posts/{row.id}", headers=owner).status_code == 404
 
     async def test_the_route_never_fetches_the_url(self):
-        """Nothing scrapes a job board: the user supplies the text (hard rule 4 and their terms)."""
-        source = Path("app/api/routers/jobposts.py").read_text(encoding="utf-8")
-        code = "\n".join(line for line in source.splitlines() if not line.lstrip().startswith("#"))
+        """Nothing scrapes a job board: the user supplies the text (hard rule 4 and their terms).
 
-        assert "httpx" not in code
-        assert "fetch" not in code
+        Asserted over the imports rather than by substring. The first version checked that
+        "fetch" did not appear in the source and failed on `fetched_at` in the serialiser -- the
+        same mistake as asserting the word "signed" was absent from a sentence that denies
+        signing. A substring is a poor stand-in for a dependency.
+        """
+        import ast
+
+        tree = ast.parse(Path("app/api/routers/jobposts.py").read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                imported.add(node.module or "")
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names)
+
+        for name in ("httpx", "requests", "urllib", "urllib.request", "aiohttp"):
+            assert name not in imported, f"the job-post router imports {name}"
+        # The fetch client is its own module precisely so a route cannot reach it by accident.
+        assert "app.services.jobposts.client" not in imported
+        assert "fetch_board" not in imported
