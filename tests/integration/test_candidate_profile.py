@@ -225,7 +225,10 @@ class TestTheRoutes:
         ).json()["answer"]
 
         assert made["approved"] is False
-        assert api.post(f"/api/v1/profile/answers/{made['id']}/approve", headers=owner).ok
+        assert (
+            api.post(f"/api/v1/profile/answers/{made['id']}/approve", headers=owner).status_code
+            == 200
+        )
         after = api.get("/api/v1/profile/answers", headers=owner).json()["answers"]
         assert after[0]["approved"] is True
 
