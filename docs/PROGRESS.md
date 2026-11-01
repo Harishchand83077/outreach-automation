@@ -1975,6 +1975,31 @@ the previous wording. An unmatched question is reported as needing the user rath
 `ppN` ids come from the highest existing id rather than a count, so deleting `pp2` cannot later
 produce a second `pp3`; a duplicate id would make a citation ambiguous.
 
+**One company, researched once, for everybody (F19, ADR-038, slice S12.6). Phase 12 is
+complete.** `company_profiles` is the only table in this schema with **no `org_id`** -- the single
+deliberate exception to ADR-004, approved by the owner.
+
+**What makes the exception safe is what the table may hold**: a name, a careers URL, an ATS type
+and slug, a size band, a summary, and the source behind each field. Two guards rather than a
+convention: `apply()` writes only `PUBLIC_FIELDS`, so a caller passing `notes` has it dropped; and
+a structural test fails if the table gains a column named anything like `org`, `lead`, `contact`,
+`message`, `note` or `credential`. **It is the opposite of a tenancy test** -- every other table
+is checked for isolation and this one is checked for having nothing to isolate.
+
+`domain_research` stays per-workspace and untouched. Those are the findings a draft *cites*: not
+public facts, paid for by one workspace, and not ours to pool. That distinction is why this is one
+exception and not a precedent.
+
+**A cache hit costs no credit**, which is the entire point; a fetch counts against a daily
+per-workspace budget, so one workspace importing a thousand companies cannot spend everybody's
+allowance. Credits are summed rather than searches counted, because one search can cost several.
+Past the age limit the content hash is compared before anything is written, so an unchanged page
+costs the fetch and nothing else and `version` only moves on a real change.
+
+mypy caught `SearchUsage.created_at`, which is `at` -- the same naming trap as `Event.at`, for the
+third time in this project and the third time found by the type checker rather than by a screen
+reporting zero for ever.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
