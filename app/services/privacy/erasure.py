@@ -36,11 +36,11 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import Select, func, select, text
+from sqlalchemy import Select, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Draft, Event, Lead, Message, Research, Suppression
+from app.db.models import BookingEvent, Draft, Event, Lead, Message, Research, Suppression
 from app.db.repo import OrgContext
 
 logger = logging.getLogger(__name__)
@@ -129,6 +129,17 @@ async def erase_lead(
             )
             .on_conflict_do_nothing(index_elements=["org_id", "kind", "value"])
         )
+
+    # **A booking row survives the lead** (`ON DELETE SET NULL`), because erasing somebody must
+    # not erase the record that a meeting happened -- that is a business event, and the funnel it
+    # feeds has to stay auditable. The one field on it that would still identify them is the
+    # address they booked with, so it is cleared here. Without this the erasure would be
+    # decorative for exactly the leads who got furthest, which is the worst place to be wrong.
+    await session.execute(
+        update(BookingEvent)
+        .where(BookingEvent.lead_id == lead_id)
+        .values(invitee_email_norm=None, invitee_name=None)
+    )
 
     # `events` is append-only, enforced by a trigger. The migration that created it left exactly
     # one escape hatch, for exactly this case. SET LOCAL, so it lasts only this transaction.

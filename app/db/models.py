@@ -1962,3 +1962,111 @@ class CampaignMailbox(Base):
         ),
         Index("ix_campaign_mailboxes_mailbox", "org_id", "mailbox_id"),
     )
+
+
+#: What a booking tool tells us happened. `cancelled` is recorded and **does not move the lead**
+#: -- see ADR-045: `MEETING_BOOKED` is terminal, and a meeting that was booked was booked.
+BOOKING_EVENT_KINDS: tuple[str, ...] = ("booked", "rescheduled", "cancelled")
+
+#: How a booking was tied to a lead, in words, because the user is the one deciding whether we
+#: got it right. `unmatched` is a first-class value: a booking from somebody who is not in the
+#: workspace at all is kept and shown, never dropped.
+BOOKING_MATCHES: tuple[str, ...] = ("email", "in_conversation", "unmatched")
+
+
+class BookingWebhook(Base):
+    """One workspace's booking-webhook secret, encrypted at rest (F15, ADR-045).
+
+    **The same scheme as `mail_credentials` and `provider_credentials`**: Fernet, the key in the
+    environment, ciphertext in its own table, `__repr__` never near the plaintext. One answer to
+    "where are the secrets", one key to rotate.
+
+    **There is no deployment-wide booking secret**, for ADR-023's reason: as long as one identity
+    lives in the environment, every question about who may use it is a rule somebody maintains.
+    A workspace that has not generated one cannot receive a booking, and the route says so.
+
+    One live row per workspace by a partial unique index, so "regenerate" replaces rather than
+    accumulates -- a second live secret would mean a revoked one still worked.
+    """
+
+    __tablename__ = "booking_webhooks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Ciphertext of the shared secret the booking tool signs each body with.
+    secret: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - defensive
+        return f"<BookingWebhook org={self.org_id} live={self.revoked_at is None}>"
+
+    __table_args__ = (
+        Index(
+            "uq_booking_webhooks_live",
+            "org_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+
+class BookingEvent(Base):
+    """A meeting a booking tool says was booked (F15, ADR-045).
+
+    **Every verified booking is stored, matched or not.** A booking from an address that is in no
+    campaign is the interesting case rather than the error case -- somebody forwarded the link, or
+    the lead replied from a different address -- and dropping it would repeat the job-post
+    intake's expensive lesson: an empty result that is indistinguishable from nothing happening.
+
+    `external_id` is the provider's own id for the booking, and the unique index on it is what
+    makes a retried delivery harmless. Booking tools retry; a second row would be a second
+    meeting in every funnel this feeds.
+
+    **The payload is not stored.** Only the fields this system uses: who, when, and the link to
+    the lead. A booking payload carries a provider's words and the invitee's own text, and
+    ADR-026's argument about the dataset applies here too -- a column nobody reads is a column
+    nobody is protecting.
+    """
+
+    __tablename__ = "booking_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: NULL for a booking we could not tie to anybody. Kept rather than refused.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    #: Which tool sent it, as the tool named itself. Free text because there is no allowlist of
+    #: booking tools: the webhook is generic on purpose (ADR-045).
+    provider: Mapped[str] = mapped_column(String(40), nullable=False, default="unknown")
+    #: The provider's id for this booking. Its uniqueness is what makes a retry idempotent.
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False, default="booked")
+    invitee_email_norm: Mapped[str | None] = mapped_column(String(320))
+    invitee_name: Mapped[str | None] = mapped_column(String(300))
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: One of `BOOKING_MATCHES`, in words, so a person reviewing a funnel can see *why* this
+    #: booking was attributed to this lead rather than trusting that it was.
+    matched_by: Mapped[str] = mapped_column(String(20), nullable=False, default="unmatched")
+    received_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "provider", "external_id", name="uq_booking_events_org_provider_ext"
+        ),
+        CheckConstraint(
+            "kind IN ('booked','rescheduled','cancelled')", name="ck_booking_events_kind"
+        ),
+        CheckConstraint(
+            "matched_by IN ('email','in_conversation','unmatched')",
+            name="ck_booking_events_matched_by",
+        ),
+        Index("ix_booking_events_org_received", "org_id", "received_at"),
+    )

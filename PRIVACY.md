@@ -287,3 +287,35 @@ nightly dump; it is not uploaded to any object store or third party.
 **Only the user records an application as sent.** The routes are on the dashboard sign-in, and the
 browser extension's `ext:suggest` token cannot reach them (ADR-039). A tracker whose dates were
 written by something other than the person is a record of claims they did not make.
+
+## The booking webhook (F15, ADR-045)
+
+A workspace may connect its own booking tool so that a meeting somebody books is recorded without
+an operator having to notice the calendar invite and click a button.
+
+**What arrives and what is kept.** The booking tool's payload carries the provider's own ids, the
+invitee's answers to the booking form and often the organiser's calendar. **Only four things are
+stored**: the provider's booking id, the invitee's email address and name, and the start time. The
+payload is not retained -- a column nobody reads is a column nobody is protecting.
+
+**The address is the point of it.** It is what ties the booking to a lead, and without it the
+meeting cannot be attributed to the campaign that produced it. It is the same address that is
+already in `leads`, from the same person, for the same purpose.
+
+**A booking from somebody who is in no campaign is kept and shown.** Usually they replied from a
+second address or somebody forwarded the link. Dropping it would hide a meeting that happened;
+keeping it means holding one address for somebody who booked time with the workspace's owner,
+which is why `DELETE /bookings` is not needed -- the whole table goes with the workspace.
+
+**Erasing a lead clears the booking's address.** The row survives, because erasing somebody must
+not erase the record that a meeting happened -- that is a business event and the funnel it feeds
+has to stay auditable -- but the invitee's name and address are cleared. Without that, erasure
+would be decorative for exactly the leads who got furthest.
+
+**No lead is ever created by a booking.** Somebody who books a meeting has asked to talk, not to
+be added to a sending pipeline.
+
+**The secret, and what the URL is.** The webhook URL contains a signed token identifying the
+workspace; it is not secret and is pasted into a third party's settings page. The secret that
+signs each delivery's body is generated here, shown once, and stored encrypted with the same
+Fernet key as mailbox credentials. A leaked URL alone cannot record a booking.

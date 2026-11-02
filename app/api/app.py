@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse, Response
 from app.api.deps import get_session, session_dependency
 from app.api.ratelimit import RateLimit
 from app.api.routers import (
+    booking,
     campaigns,
     candidate,
     connect,
@@ -208,6 +209,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(contacts.router, prefix="/api/v1")
     application.include_router(referrals.router, prefix="/api/v1")
     application.include_router(resumes.router, prefix="/api/v1")
+    application.include_router(booking.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
@@ -220,6 +222,10 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     # necessity -- a recipient must be able to act without an account -- so the token carries
     # its own proof of which lead it names.
     application.include_router(unsubscribe.router)
+    # The second unauthenticated write, and the last one (ADR-045). A booking tool posts from
+    # its own servers with no session, so the token in the URL says which workspace and the
+    # body's signature says it really came from that workspace's tool.
+    application.include_router(booking.hooks)
     # A third door (ADR-039): its own prefix, its own scope, and no reach into /api/v1 or
     # /mcp. The router carries its own prefix because that prefix is part of the boundary.
     application.include_router(extension.router)

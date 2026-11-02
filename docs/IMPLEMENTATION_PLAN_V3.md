@@ -135,7 +135,7 @@ through OAuth, check `Show original` for DKIM pass, replace the booking URL with
 | # | Slice | Tests | Moves |
 |---|---|---|---|
 | S14.1 | **`campaign_mailboxes` + `leads.mailbox_id`** (ADR-044), weighted rotation, sticky sender. `campaigns.mailbox_id` stays the primary and is always a pool member, so the migration backfills nothing and changes no campaign's behaviour | two mailboxes share a campaign; a lead's follow-ups stay on its first mailbox; the per-mailbox cap still binds | F7 **H** |
-| S14.2 | **F15 signed booking webhook** → `MEETING_BOOKED` | a valid signature sets it; a bad signature is refused; **a reply still cannot set it** (existing test extended) | F15 **H** |
+| S14.2 | **F15 signed booking webhook** (ADR-045) -> `MEETING_BOOKED`. Found that the state was unreachable from `SENT`, so the commonest success -- a booking from a first email with no reply -- could not be recorded; the missing edges were added | a valid signature sets it; a bad signature is refused; **a reply still cannot set it** (existing test extended) | F15 **H** |
 | S14.3 | **F17 ordered provider lookups** behind the research interface, short-circuiting on first hit, on the user's keys | the second provider is not called after a hit; a cache hit calls none | F17 |
 
 ### P15 — signals and graph (F11, F12, F13, F22)
