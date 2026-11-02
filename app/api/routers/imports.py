@@ -17,16 +17,14 @@ parser. The prototype wrote the client-supplied filename to disk (issue C2), whi
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from pydantic import ValidationError
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import Campaign
-from app.db.queue import JobKind, QueueFull, enqueue
-from app.domain.campaign import CampaignSettings
+from app.db.queue import QueueFull
+from app.services.importer import first_job
 from app.services.importer import service as importer
 from app.services.importer.service import ImportPreview
 from app.services.importer.sheet import SheetError
@@ -121,33 +119,6 @@ async def preview_import(
     return _serialise(result)
 
 
-#: One day of work queued ahead of what can be sent, so there is always a drafted queue to
-#: approve from without a thousand leads racing the free tier on day one.
-HEAD_START_DAYS = 1
-
-
-def _due_at(offset: int, campaign: Campaign, *, template_mode: bool) -> datetime | None:
-    """When the nth lead's first job becomes runnable.
-
-    `None` -- runnable now -- for a template campaign: rendering is local and instant, costs no
-    quota, and a thousand drafts in seconds is the point of that mode.
-
-    For a research campaign the pace is the campaign's own daily cap, because that is the real
-    ceiling on how many of these leads can ever be emailed.
-    """
-    if template_mode:
-        return None
-    try:
-        settings = CampaignSettings.model_validate(campaign.settings or {})
-    except ValidationError:
-        settings = CampaignSettings()
-    per_day = max(settings.daily_cap, 1)
-    day = max(offset // per_day - HEAD_START_DAYS, 0)
-    if day == 0:
-        return None
-    return datetime.now(tz=UTC) + timedelta(days=day)
-
-
 @router.post("/campaigns/{campaign_id}/imports/commit")
 async def commit_import(
     campaign_id: uuid.UUID,
@@ -185,19 +156,10 @@ async def commit_import(
         # There is no value in researching a thousand leads today when at most `daily_cap` can
         # be emailed. `run_after` spreads them over the days they could actually be sent, with
         # one day of head start so there is always a drafted queue to approve from.
-        template_mode = campaign.mode == "template"
-        kind = JobKind.DRAFT_LEAD if template_mode else JobKind.RESEARCH_LEAD
-        prefix = "draft" if template_mode else "research"
-        for offset, lead in enumerate(leads):
-            await enqueue(
-                session,
-                org_id=user.org_id,
-                kind=kind,
-                lead_id=lead.id,
-                payload={"lead_id": str(lead.id)},
-                dedupe_key=f"{prefix}:{lead.id}",
-                run_after=_due_at(offset, campaign, template_mode=template_mode),
-            )
+        # `first_job.queue_for` rather than the rules inline: importing a contact a provider
+        # proposed (F9) creates a lead too, and two copies of "which job, and when" would be
+        # this project's signature defect in a place where one copy would get corrected.
+        await first_job.queue_for(session, org_id=user.org_id, campaign=campaign, leads=leads)
         await session.commit()
     except SheetError as exc:
         await session.rollback()

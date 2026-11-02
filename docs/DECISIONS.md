@@ -2561,3 +2561,143 @@ user's Google account to every browser they sign into.
   needs a browser download in CI and a network call to somebody else's application form on every
   run. jsdom against saved structures, plus a fallback that does not depend on them, buys most of
   it for none of that.
+
+## ADR-041 — Contact lookups are a button press on the user's own key
+
+**Date:** 2026-11-02
+**Status:** Accepted
+**Relates to:** F9, slice S13.5; `docs/CONTACT_PROVIDERS.md`
+
+### Context
+
+A job-hunt campaign needs somebody to write to, and a posting gives a company rather than a
+person. Apollo, Hunter and Snov all answer that question, for money.
+
+Two things make this different from every other integration in this system. **It spends the
+user's money**, not ours — so the question is not only "is it correct?" but "can it bill somebody
+for work they did not ask for?". And **it returns personal data about people who have not heard of
+us**, arriving from a third party, which is a privacy surface before it is a feature.
+
+The owner holds no provider key (plan question 3, answered "none"), so the whole thing had to be
+buildable, testable and demonstrable without one.
+
+### Decision
+
+**Nothing but a person starts a lookup.** There is no job kind, no scheduler pass, and no worker
+module that imports the lookup. `tests/unit/test_contacts_button_press_only.py` asserts all three
+over the source tree with `ast`, and asserts *positively* that the only caller of `lookup.run` is
+the contacts router — so a caller added later fails rather than being quietly allowed. A lookup
+that could run by itself is one that bills somebody in the background, and the evidence would be
+a provider's invoice.
+
+**No `GET` on this router talks to a provider.** `GET /mailboxes` is non-networked because
+refreshing it would mint OAuth tokens; here the stake is higher, because a `GET` that called a
+provider would spend the user's credits every time somebody pressed F5.
+
+**There is no shared key.** No `APOLLO_API_KEY` in `Settings`, no deployment credential, no
+fallback. The same argument as ADR-023, which removed the deployment's mailbox: as long as one
+identity lives in the environment, every question about who may use it — which org, which address,
+what if two match — is a rule somebody has to hold in their head and a guard somebody has to
+maintain. A workspace with no key gets a refusal naming what to do.
+
+**Hard rule 8 is in the schema, not in a code path.** A partial unique index on
+`(org_id, provider) WHERE revoked_at IS NULL` makes holding several live keys for one provider
+inexpressible, so "rotate five keys to dodge a free tier" is not a loop somebody writes later.
+Saving a key revokes the previous row rather than deleting it, so the change stays auditable.
+
+**Three refusals before any network call**, cheapest first: no key or a key the provider already
+refused; over the daily budget; no domain. Calling with a key we know is dead spends a request to
+be told what we recorded last time.
+
+**The budget and the audit trail are the same fact.** 25 lookups per workspace per rolling 24
+hours, counted from `events` rows of type `contact.lookup`. `events` refuses UPDATE and DELETE by
+trigger, so the count cannot drift — where a counter column incremented at call time can, and the
+mailbox health rollup already chose recomputation over a counter for exactly that reason. It also
+means a lookup that spent a credit and left no trace is impossible: **this is the one audit write
+in the system that is allowed to fail its request.** Everywhere else the work is the point and the
+record of it is not; here the record *is* the accounting.
+
+**A rolling window, not a calendar day**, because a midnight reset in one timezone is a free second
+allowance for anybody who waits for it, and this budget exists to stop a loop rather than to
+apportion a day.
+
+**A proposal is not a lead.** `contact_candidates` is not `leads`, so nothing a provider proposed
+can be picked up by the send loop. Turning one into a lead is a separate explicit action.
+
+**And that action goes through the ordinary importer, as a one-row CSV.** This is the decision most
+worth defending, because it looks like indirection for its own sake. `importer.commit` is where the
+suppression check, the MX check, the already-in-this-campaign check, the free-mail warning and the
+batch id that makes an import undoable all live. A second `Lead(...)` insert would be a second
+place every one of those could be forgotten — and **the one that would get forgotten is the
+suppression check**, which is the one that must not be: a provider will cheerfully propose somebody
+who asked us never to write again, because it has no idea they did.
+`test_a_suppressed_address_is_refused` is the most important test in this slice.
+
+**The importer needs a company name and a provider does not give one.** The shared public-company
+cache (F19) usually has it, since this is a company somebody has already looked at. When it does
+not, the fallback is **the domain itself** — a true fact about the company. Deriving a trading name
+from it (`acme.test` → "Acme") would be inventing one, and hard rule 6 applies even to a field this
+minor.
+
+**`email_status` is a column, not a note inside a confidence score.** Several providers return
+`first.last@domain` built from a naming convention and present it beside a verified address.
+Mailing a guess is how a bounce rate rises, which now pauses a mailbox by itself (ADR-034), so the
+distinction has to survive into the review screen rather than being folded into a number.
+
+**Apollo's locked placeholder is stored as no address at all.** `email_not_unlocked@domain.com`
+sitting in an email column is an address something eventually tries to mail. The proposal keeps its
+name and title, which is still something a person can act on, and the import route refuses it with
+a sentence rather than a validation error.
+
+**A response we cannot read raises.** `ProviderUnreadable`, naming the provider and the missing
+field. The job-post intake taught this: an unknown source whose payload happened to have the right
+shape returned **zero postings**, indistinguishable from an empty board. Here the equivalent reads
+as "nobody works at this company", and somebody would believe it.
+
+**No raw provider payload is stored.** It would be the fastest way to debug a shape change, and it
+is a third party's personal data about people who have not heard of us. The fields we chose are the
+fields we keep.
+
+**The key travels in a header.** Hunter documents `api_key` as a query parameter; a credential in a
+URL is a credential in an access log, a proxy log and a browser history. A test asserts the key
+does not appear in the request URL.
+
+**`mock` is a first-class provider, in the check constraint.** Without it the feature would be
+unreachable and untestable on this deployment, and its first run would be against a paid account.
+
+### Consequences
+
+- **`SettingsDep` exists because of this slice, and it closes a real gap.** Sealing a provider key
+  needs `CREDENTIAL_KEY`, and routers until now reached for the module-level `config` singleton —
+  so an app constructed with its own `Settings` was partially ignoring them. That is the signature
+  shape again: a correct producer (`create_app(settings)`) and consumers reading a different
+  object. New routers take `SettingsDep`; the older ones still import `config` and that is recorded
+  rather than silently left.
+- **It surfaced a hard-rule-2 near miss.** The global `config` is built at **import time** and does
+  read `.env`, which `tests/conftest.py`'s session-scoped `hermetic_settings` cannot reach — so a
+  failing assertion in this session printed a real provider key into the terminal. Exactly the
+  incident that fixture was written for, in the one place it does not cover.
+- **Verification is a real lookup**, because none of the three offers a "is this key valid?"
+  endpoint. It therefore counts against the budget and may spend a credit, and the response says so
+  rather than presenting it as free. The default domain is `example.com`, reserved by RFC 2606, so
+  the check does not spend a credit on a real company nobody asked about.
+- **The shapes are from documentation, not from calls.** `docs/CONTACT_PROVIDERS.md` is a table of
+  what is verified and what is disputed — the Apollo path and the Snov flow both have sources that
+  disagree. Each provider's response is read in exactly one function, so a wrong one is one
+  function and one test.
+- A `.test` domain cannot be imported: the importer's address validator refuses reserved TLDs,
+  correctly. Tests use `example.com`, as hard rule 9 requires anyway.
+
+### Rejected
+
+- **A deployment-wide key with per-workspace quotas.** Cheaper for the user and it recreates every
+  problem ADR-020 and ADR-023 were written to remove, plus a new one: hard rule 8's one-account
+  rule would be broken by the architecture rather than by a user.
+- **Verifying a key on save, silently.** A write with a cost nobody asked for. It is a button.
+- **Enriching automatically after a feed poll.** The obvious next feature, and it is a background
+  process spending the user's money on companies they have not looked at yet.
+- **Storing the raw provider payload for debugging.** See above.
+- **A second `Lead(...)` insert for imported contacts.** Shorter, and it would eventually mail
+  somebody who had opted out.
+- **Buying an account to live-test the three endpoints.** Hard rule 5. The honest alternative is the
+  `mock` provider plus a table saying which shapes are assumed, and that is what shipped.

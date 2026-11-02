@@ -32,6 +32,7 @@ from app.api.routers import (
     campaigns,
     candidate,
     connect,
+    contacts,
     extension,
     health,
     imports,
@@ -88,6 +89,14 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
         redoc_url=None,
         openapi_url=None if production else "/openapi.json",
     )
+
+    # **The settings this app was built with, reachable from a route.** Until now a router that
+    # needed configuration imported the module-level `config` singleton, so an app constructed
+    # with its own `Settings` -- every test app, and anything embedding the factory -- was
+    # partially ignoring them. That is this project's signature shape once more: a correct
+    # producer (`create_app(settings)`) and consumers reading a different object. New routers
+    # take `SettingsDep`; the older ones still import `config` and are listed in `PROGRESS.md`.
+    application.state.settings = settings
 
     origins = allowed_origins(settings)
     if origins:
@@ -194,6 +203,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(review.router, prefix="/api/v1")
     application.include_router(imports.router, prefix="/api/v1")
     application.include_router(jobposts.router, prefix="/api/v1")
+    application.include_router(contacts.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
