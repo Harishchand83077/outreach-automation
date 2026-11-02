@@ -1705,3 +1705,56 @@ class ContactCandidate(Base):
         ),
         Index("ix_contact_candidates_org_state", "org_id", "state"),
     )
+
+
+class Connection(Base):
+    """One person from the user's own LinkedIn connections export (F10, ADR-042).
+
+    **The only way LinkedIn data enters this system.** Hard rule 4 says `linkedin_url` is stored
+    and displayed and never fetched; ADR-038 added that LinkedIn data arrives only through a file
+    the user uploads. This table is that file, parsed. Nothing here is fetched, enriched or
+    verified against anything.
+
+    **The export's `Email Address` column is deliberately not stored.** LinkedIn includes it for
+    connections who allow it, and it is the one column that would turn a referral finder into a
+    contact database -- somebody's whole address book, belonging to people who agreed to connect
+    with *them* and have never heard of us. The feature does not need it: a referral is asked for
+    by the user, on LinkedIn, through a link they open themselves. `parse_export` drops the
+    column before anything is written, and a test asserts an address in the file reaches no row.
+
+    `company_norm` exists because matching has to work across "Acme, Inc.", "Acme Inc" and
+    "ACME" -- the same registrable-key idea as `domain_research` (ADR-011), applied to a name
+    because a connections export has no domains in it.
+    """
+
+    __tablename__ = "connections"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    full_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: The public profile URL from the export. **Stored and shown, never fetched** (hard rule 4).
+    profile_url: Mapped[str | None] = mapped_column(String(2000))
+    company: Mapped[str | None] = mapped_column(String(300))
+    #: Lower-cased, punctuation and company suffixes removed. The matching key.
+    company_norm: Mapped[str | None] = mapped_column(String(300))
+    position: Mapped[str | None] = mapped_column(String(300))
+    connected_on: Mapped[date | None] = mapped_column(Date)
+    #: Which upload this row came from, so a re-import can replace rather than accumulate and a
+    #: person can delete one upload without losing the others.
+    import_batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # One row per person per workspace. A second export of a grown network must update rather
+        # than double every connection the user already had.
+        Index(
+            "uq_connections_profile",
+            "org_id",
+            "profile_url",
+            unique=True,
+            postgresql_where=text("profile_url IS NOT NULL"),
+        ),
+        Index("ix_connections_org_company", "org_id", "company_norm"),
+    )

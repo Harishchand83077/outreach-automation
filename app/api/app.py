@@ -41,6 +41,7 @@ from app.api.routers import (
     me,
     operations,
     platform,
+    referrals,
     review,
     team,
     unsubscribe,
@@ -204,6 +205,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(imports.router, prefix="/api/v1")
     application.include_router(jobposts.router, prefix="/api/v1")
     application.include_router(contacts.router, prefix="/api/v1")
+    application.include_router(referrals.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
