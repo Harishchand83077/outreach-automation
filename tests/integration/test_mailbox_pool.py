@@ -56,11 +56,7 @@ async def pair(db, org, campaign):
     primary = await _mailbox(db, org, f"primary-{uuid.uuid4().hex[:8]}@outreach.example")
     second = await _mailbox(db, org, f"second-{uuid.uuid4().hex[:8]}@outreach.example")
     campaign.mailbox_id = primary.id
-    db.add(
-        CampaignMailbox(
-            org_id=org.id, campaign_id=campaign.id, mailbox_id=second.id, weight=1
-        )
-    )
+    db.add(CampaignMailbox(org_id=org.id, campaign_id=campaign.id, mailbox_id=second.id, weight=1))
     await db.commit()
     return primary, second
 
@@ -106,9 +102,7 @@ class TestThePool:
     ) -> None:
         primary, _ = pair
         db.add(
-            CampaignMailbox(
-                org_id=org.id, campaign_id=campaign.id, mailbox_id=primary.id, weight=5
-            )
+            CampaignMailbox(org_id=org.id, campaign_id=campaign.id, mailbox_id=primary.id, weight=5)
         )
         await db.commit()
 
@@ -156,9 +150,7 @@ class TestTwoMailboxesShareACampaign:
             )
             # Which of them is offered the lead is the rotation's business; what matters here is
             # that the campaign is visible from both, where it used to be visible from one.
-            assert campaign.id in await pool.campaign_ids_for(
-                db, org_id=org.id, mailbox_id=box.id
-            )
+            assert campaign.id in await pool.campaign_ids_for(db, org_id=org.id, mailbox_id=box.id)
             assert isinstance(found, list)
 
     async def test_an_unassigned_lead_is_offered_to_exactly_one_member(
@@ -188,9 +180,7 @@ class TestTwoMailboxesShareACampaign:
         loner = await _mailbox(db, org, f"loner-{uuid.uuid4().hex[:8]}@outreach.example")
         await _approved(db, org, lead_factory, email="ben@example.com")
 
-        found = await send_loop.find_candidates(
-            db, org_id=org.id, mailbox_id=loner.id, now=INSIDE
-        )
+        found = await send_loop.find_candidates(db, org_id=org.id, mailbox_id=loner.id, now=INSIDE)
 
         assert found == []
 
@@ -264,9 +254,7 @@ class TestTheStickySender:
         theirs = await send_loop.find_candidates(
             db, org_id=org.id, mailbox_id=second.id, now=INSIDE
         )
-        mine = await send_loop.find_candidates(
-            db, org_id=org.id, mailbox_id=primary.id, now=INSIDE
-        )
+        mine = await send_loop.find_candidates(db, org_id=org.id, mailbox_id=primary.id, now=INSIDE)
 
         assert lead.id not in {candidate.lead.id for candidate in theirs}
         assert lead.id in {candidate.lead.id for candidate in mine}
@@ -341,9 +329,7 @@ class TestTheCapStillBinds:
         assert second_cap == second.daily_cap
         # And the counts are separate, which is what makes the two caps mean two things.
         assert (
-            await send_loop.sent_today(
-                db, mailbox_id=primary.id, settings=settings, now=INSIDE
-            )
+            await send_loop.sent_today(db, mailbox_id=primary.id, settings=settings, now=INSIDE)
             == 0
         )
 
@@ -423,8 +409,7 @@ class TestThePoolRoutes:
         _, second = pair
 
         assert (
-            api.get(f"/api/v1/campaigns/{campaign.id}/mailboxes", headers=member).status_code
-            == 200
+            api.get(f"/api/v1/campaigns/{campaign.id}/mailboxes", headers=member).status_code == 200
         )
         assert (
             api.put(
@@ -484,9 +469,7 @@ class TestNothingChangedForAPoolOfOne:
         await db.commit()
         lead, _ = await _approved(db, org, lead_factory, email="ben@example.com")
 
-        found = await send_loop.find_candidates(
-            db, org_id=org.id, mailbox_id=box.id, now=INSIDE
-        )
+        found = await send_loop.find_candidates(db, org_id=org.id, mailbox_id=box.id, now=INSIDE)
 
         assert lead.id in {candidate.lead.id for candidate in found}
 
@@ -547,9 +530,7 @@ class TestTheOrgContextIsNeverTakenFromACaller:
         mine = await _mailbox(db, org, f"mine-{uuid.uuid4().hex[:8]}@outreach.example")
         theirs = await _mailbox(db, other, f"not-mine-{uuid.uuid4().hex[:8]}@outreach.example")
 
-        usable = await pool.usable_ids(
-            db, org_id=org.id, mailbox_ids=[mine.id, theirs.id]
-        )
+        usable = await pool.usable_ids(db, org_id=org.id, mailbox_ids=[mine.id, theirs.id])
 
         assert usable == {mine.id}
         assert OrgContext(org_id=org.id).org_id == org.id
