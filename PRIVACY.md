@@ -163,6 +163,32 @@ Data or security concerns: open an issue in the repository, or write to the addr
 of any message this system sent you. An opt-out reply to that message is honoured automatically
 and does not need a human to act on it.
 
+## The referral finder (F10, ADR-042)
+
+A user may upload their own LinkedIn connections export so the system can say who they already
+know at a company. That file is a few thousand people who agreed to connect with **them** and
+have never heard of us, so three things are stated plainly.
+
+**The `Email Address` column is discarded before anything is written.** LinkedIn includes it for
+connections who allow it. Keeping it would make this a contact database rather than a referral
+finder, and it is the one dataset here that a later owner could pool or sell. The parser drops
+it, the `connections` table has no column for it, and a test uploads a file containing an address
+and checks the stored row.
+
+**Nothing is fetched.** Not the profiles, not the company pages, nothing. The package imports no
+HTTP client at all and no LinkedIn hostname appears anywhere in it, both asserted over the source.
+A profile URL is stored and shown so the user can open it themselves -- the same rule
+`linkedin_url` has followed since the first migration (hard rule 4).
+
+**Nothing is sent.** The suggested note is text the user edits and sends themselves on LinkedIn.
+It is built by substitution from stored values, with no model involved, so it cannot invent a
+shared project in a message to somebody who would know it had not happened.
+
+What is stored per connection: their name, their public profile URL, the company and job title
+they wrote on their own profile, and when they connected. `DELETE /connections` removes all of it
+for real -- unlike a suppression, forgetting a connection cannot cause anybody to be contacted,
+so there is nothing to keep a tombstone for.
+
 ## Contact lookups (F9, ADR-041)
 
 A workspace may connect its own Apollo, Hunter or Snov key and press a button to ask who hires at

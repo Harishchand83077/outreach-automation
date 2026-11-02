@@ -2186,6 +2186,64 @@ assertion in this session printed a real provider key into the terminal: the inc
 was written for, in the one place it does not cover. The slice's own tests now build their app with
 an explicit test key and never touch the singleton, and the gap is written down.
 
+**The referral finder reads a file and never a profile (F10, ADR-042, slice S13.6). Phase 13 is
+three slices from done.** `connections`, a parser for the LinkedIn export, a company-name
+matcher, a rule-built note, and `/api/v1/connections` and `/api/v1/referrals`.
+
+**Nothing in this package can fetch anything** -- not "does not", cannot. No module imports
+`httpx`, `requests`, `urllib`, `aiohttp` or `socket`, and no LinkedIn hostname appears in any
+form; `tests/unit/test_referrals_never_fetch.py` asserts both with `ast` over the package and its
+router. Hard rule 4 has forbidden scraping LinkedIn since the first commit and ADR-038 restated
+that its data enters only through a file the user uploads; this is that rule made structural.
+The `profile_url` in a response came out of the user's own file and is shown for them to open.
+
+**The export's `Email Address` column is dropped before anything is written, and that is the
+decision the feature turns on.** A connections export is a few thousand people who agreed to
+connect with *the user* and have never heard of us. Keeping their addresses would make this a
+contact database with a different name -- and it is the one dataset in this system that somebody
+who came after us could pool or sell. Three independent guards: the parser drops the column,
+`connections` has no column to put it in, and a test uploads a file containing an address and
+checks the stored row for it.
+
+**The note is built by rules, not by a model**, and a test asserts no model is reachable from the
+package at all. Every substitution is a value from a row: the connection's own name, their own
+company and title as *they* wrote them, the posting's title and link, and one **confirmed**
+`profile_facts` entry when there is one. Hard rule 6 forbids inventing facts about the sender;
+here the reader is a friend who would notice, so the cost of a fabricated line is not a weak
+email but the user telling somebody something untrue about themselves.
+
+**The export begins with a preamble, and the header row is found rather than assumed.** LinkedIn
+writes a `Notes:` block and a blank line before the headers, so a parser taking line 1 as the
+header reads the whole file as one unnamed column and reports **zero connections** --
+indistinguishable from an empty network, and the same silent wrong answer as the ATS feed that
+returned no postings. A file with no recognisable header is an error with a sentence, **never**
+an empty result: "we read your file and you know nobody" is the one answer this must not give to
+somebody who uploaded an invoice by mistake.
+
+**Company names are normalised, and the normalisation refuses to empty a name.** The export says
+whatever the connection typed on their own profile, so "Acme, Inc.", "Acme Pvt Ltd" and "ACME"
+have to be one key. Suffixes are stripped repeatedly -- but **stripping stops at the last word**,
+because "Technology Group Ltd" is somebody's actual company and reducing it to nothing would
+match it against every other all-suffix name. That is the worst kind of match available here:
+confident, wrong, and about a person the user is one click from messaging. Each match also carries
+its reason in words -- exact, or containment in either direction -- because the user is the one
+deciding whether a subsidiary counts, and a bare list gives them nothing to judge with.
+
+**A second export updates rather than inserts**, since a re-export is mostly the same people and
+inserting would show each of them twice in a shortlist, which reads as broken rather than long.
+The newer row wins on title and company: a note quoting a job somebody left two years ago is
+worse than one with no title at all.
+
+**`GET /connections` returns a count, not a list**, and `DELETE /connections` is a real delete.
+A route paging through thousands of named people would be the contact database this is carefully
+not; and unlike a suppression, forgetting a connection cannot cause anybody to be contacted, so
+there is nothing worth a tombstone.
+
+**One of my own tests broke its own rule.** The guard asserting no response mentions an address
+failed on the router's **note saying that addresses are discarded** -- prose about a rule
+satisfying the guard for it. It now ignores string constants, which is the same lesson as
+stripping comments before a structural assertion, learned again in the same afternoon.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

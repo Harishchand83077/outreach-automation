@@ -2701,3 +2701,106 @@ unreachable and untestable on this deployment, and its first run would be agains
   somebody who had opted out.
 - **Buying an account to live-test the three endpoints.** Hard rule 5. The honest alternative is the
   `mock` provider plus a table saying which shapes are assumed, and that is what shipped.
+
+## ADR-042 — The referral finder reads a file and never a profile
+
+**Date:** 2026-11-02
+**Status:** Accepted
+**Relates to:** F10, slice S13.6; applies hard rule 4 and ADR-038
+
+### Context
+
+The strongest thing a job applicant has is somebody on the inside. LinkedIn knows who that is,
+and every tool in this category gets it by scraping — which hard rule 4 has forbidden since the
+first commit, and which ADR-038 restated: LinkedIn data enters this system only through a file
+the user uploads.
+
+So the feature is: the user downloads their own connections export, uploads it, and the system
+says who they already know at a company and suggests something to say.
+
+### Decision
+
+**Nothing in this package can fetch anything.** Not "does not" — cannot: no module imports
+`httpx`, `requests`, `urllib`, `aiohttp` or `socket`, and `tests/unit/test_referrals_never_fetch.py`
+asserts that with `ast` over the package and its router, along with the absence of any LinkedIn
+hostname in any form. The `profile_url` that reaches a response came out of the user's own file
+and is shown for them to open.
+
+**Nothing here sends anything either.** A referral ask is a LinkedIn message the user sends under
+their own name. The tree-wide send guard already covers the package; this adds the narrower claim
+that nothing here names the outbox, the message builder or the send loop.
+
+**The export's `Email Address` column is dropped before anything is written.** This is the
+decision the feature turns on. A connections export is a few thousand people who agreed to
+connect with *the user* and have never heard of us; keeping their addresses would make this a
+contact database with a different name, and it is the one dataset in this system that could be
+pooled or sold by somebody who came after us. Three independent guards: the parser drops the
+column, `connections` has no column to put it in, and a test parses a file containing an address
+and checks the stored row for it.
+
+**The note is built by rules, not by a model.** Every substitution is a value from a row: the
+connection's own name, their own company and title as *they* wrote them, the posting's title and
+link, and one **confirmed** `profile_facts` entry when there is one. Hard rule 6 forbids
+inventing facts about the sender; here the reader is a friend who would notice, and the cost is
+not a weak email but the user telling somebody something untrue about themselves. A test asserts
+no model is reachable from the package at all.
+
+**The export begins with a preamble, and the header row is found rather than assumed.** LinkedIn
+writes a `Notes:` block and a blank line before the headers. A parser taking line 1 as the header
+reads the whole file as one unnamed column and reports **zero connections** — indistinguishable
+from an empty network, and the same silent wrong answer as the ATS feed that returned no
+postings. A file with no recognisable header is an error with a sentence, **never** an empty
+result: "we read your file and you know nobody" is the one answer this must not give to somebody
+who uploaded the wrong CSV.
+
+**Company names are normalised, and the normalisation refuses to empty a name.** The export says
+whatever the connection typed into their own profile, so "Acme, Inc.", "Acme Pvt Ltd" and "ACME"
+have to be one key. Suffixes are stripped repeatedly — but **stripping stops at the last word**,
+because "Technology Group Ltd" is somebody's actual company and reducing it to nothing would
+match it against every other all-suffix name. That would be the worst kind of match: confident,
+wrong, and about a person the user is about to message.
+
+**Each match carries its reason in words.** Exact, or containment in either direction, said
+plainly — the user is the one deciding whether a subsidiary or a similarly named company counts,
+and a bare list gives them nothing to judge with.
+
+**A second export updates rather than inserts.** A re-export is mostly the same people, and
+inserting would show each of them twice in a shortlist, which reads as broken rather than long.
+The newer row wins on title and company, because a note quoting a job somebody left two years ago
+is worse than one with no title at all.
+
+**`DELETE /connections` is a real delete.** Unlike a suppression, forgetting a connection cannot
+cause anybody to be contacted, so there is nothing worth a tombstone — and the person who
+uploaded a few thousand strangers must be able to take them out completely.
+
+**`GET /connections` returns a count, not a list.** A route that paged through thousands of named
+people would be the contact database this is carefully not. The question somebody actually has is
+"did the upload work?", and then they search it by company.
+
+### Consequences
+
+- The feature is only as current as the user's last export, and that is visible rather than
+  hidden: the upload reports what it stored and updated, and nothing refreshes by itself.
+- A connection whose profile has no company is stored and matches nothing. Dropping them would
+  make a re-export look as though people had left.
+- A row with no profile URL cannot be deduplicated, so a re-export inserts it again. Rare — the
+  export has carried the URL for years — and a duplicate is better than dropping somebody.
+- `sender_name` is an explicit parameter and is **not** `user.email`: signing a note with an
+  address reads oddly and would put the user's address into text they paste into somebody else's
+  message box. With no name the note ends "Thanks," and the person types their own.
+- A test of mine failed on the router's own note saying addresses are discarded — prose about a
+  rule breaking the rule's own guard. The check now ignores string constants, which is the same
+  lesson as stripping comments before a structural assertion.
+
+### Rejected
+
+- **Fetching a profile to refresh a job title.** The whole rule, in one convenient exception.
+- **Keeping the email column "in case we need it later".** That is how a referral finder becomes a
+  contact database, and "later" is a decision nobody would be present for.
+- **Asking a model to write the note.** It would read better and it would occasionally invent a
+  shared project, in a message to somebody who would know it had not happened.
+- **Fuzzy name matching (edit distance, token overlap).** It finds more and it proposes strangers
+  at similarly named companies as though they were friends. Exact and containment, with the reason
+  shown, keeps the judgement with the person.
+- **Matching connections against leads automatically.** A background pass over the user's whole
+  network, producing suggestions nobody asked for. The user names the company.
