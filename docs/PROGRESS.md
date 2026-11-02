@@ -2244,6 +2244,113 @@ failed on the router's **note saying that addresses are discarded** -- prose abo
 satisfying the guard for it. It now ignores string constants, which is the same lesson as
 stripping comments before a structural assertion, learned again in the same afternoon.
 
+**A tailored resume is an ordered selection of confirmed facts, and nothing else can get a line
+into it (F20, ADR-043, slice S13.7). Phase 13 is complete.** `resume_versions`, `resume_renders`,
+`applications`, a validator, a hand-written PDF writer, two job kinds and
+`/api/v1/resume-versions`, `/api/v1/applications` and `POST /job-posts/{id}/tailor`.
+
+**The model proposes edit operations, not prose.** `include` a fact in a section, optionally
+reworded, or `drop` it with a reason; the order of the `include` ops *is* the order of the
+document. There is no operation that writes a heading and no field anywhere for a header --
+`ProposedEdits` has `kind`, `fact_id`, `section`, `text` and `reason`, and the sections are a
+fixed tuple. The same device as `propose_reply` having no `subject` (ADR-030): the mistake is not
+expressible rather than caught. One line of unanchored prose is all an invention needs, and a
+"summary" field is exactly where somebody would put "8 years of experience".
+
+**A rewording may not assert anything its fact does not**, and the two checks are the slice.
+Numbers are compared after stripping thousands separators and a trailing `%`, so "2,000" against
+"2000" is one quantity and "42%" out of nowhere is refused. **Named things** -- tokens that are
+capitalised, all-capitals, or carry an internal digit or `+`, `#` or `.` -- must appear in the
+fact: `AWS`, `Python`, `C++`, `k8s`, `Node.js`, `Acme`. Between them those are the three
+inventions that matter on a resume: a skill, a product and an employer.
+
+**Position in the sentence is deliberately not used, and that was the one real design call.**
+Exempting the first token is the obvious way to let a rewording start with a capital letter, and
+it leaves unchecked the one bullet somebody would actually write -- the one opening on a
+technology they want to be seen to have. So every capitalised token is checked, which means a
+rewording must begin with a word the fact already uses. A real constraint, in the recoverable
+direction: a refused rewording costs one edit, or the fact goes in verbatim, while an invented
+skill costs the user their credibility in a room we are not in.
+
+**What this cannot catch is written down rather than discovered later:** a lower-case
+exaggeration, "led a team" from a fact about writing code. No deterministic check could. That is
+why a version is shown to the person before anything is attached, and why `created_by` records
+whether the model or the person produced it -- so the dataset (ADR-026) never counts a machine
+selection as somebody's own choice.
+
+**Validated twice, and the second time is the point.** `validate_ops` checks the plan;
+`check_rendered` checks the finished document line by line -- every line must be the person's own
+header, a heading from the fixed list, or exactly the bullet of an included op. `create_version`
+runs it on the text it is about to store **whatever produced that text**. It looks redundant,
+because `render` builds its input, and it is the check that holds the first time somebody adds a
+second producer. That is this project's dominant defect for the ninth time, pre-empted rather
+than repeated.
+
+**Only confirmed facts are shown to the model at all**, so the rule is true one step before the
+validator: a model cannot choose a fact it was never offered. The validator still checks, because
+a rule enforced in one place is a rule with one bug -- and it refuses by name, so "pp3 is still a
+proposal" is actionable where "no such fact" sends somebody hunting a typo that is not there.
+
+**One retry with the refusals fed back, then a recorded refusal, and the job succeeds.** The
+commonest failure is one invented number in one bullet, and a model told which bullet and which
+number returns the fact unchanged. A second refusal writes a `resume.tailor_refused` event with
+the reasons: nothing went wrong with the work, the validator did its job, and a dead job is where
+somebody looks for a fault.
+
+**`resume_versions` is immutable, by a trigger.** An `applications` row points at the exact
+document that was sent, so "what did they actually read?" has no answer if the row can be edited
+afterwards. A change makes a new row. The escape hatch is `app.allow_resume_version_delete`,
+exactly as `app.events` has one, so an accidental `DELETE FROM` fails loudly while a lawful
+erasure stays possible and obvious in the code that performs it. The test for this is a real
+`UPDATE` against real Postgres, because a test that only checked there is no edit route proves
+nothing about the thing somebody will actually reach for.
+
+**The PDF is its own table, and the immutability is the reason before the size is.** A rendering
+happens after the version exists, so there is nowhere on an unupdatable row to put it; and
+`bytea` on the version would travel with every row of the versions list, which is ADR-016's
+argument for keeping an attachment off `campaigns`. A re-render replaces, and a failed render
+leaves the previous bytes alone -- a document somebody is about to attach is worse missing than
+stale.
+
+**The PDF writer is 150 lines of ours and adds no dependency.** `reportlab` and `weasyprint` are
+large trees for laying out images, tables and flowing HTML, none of which a plain-text resume
+has; what this needs is short lines in Helvetica, one of the fourteen fonts a reader is required
+to provide, so nothing is embedded and nothing is licensed. **The caps are the memory limit** the
+implementation plan asked for on a 2 GB host (§4 risk 6): the text and the line count are checked
+before anything is allocated, and the renderer has its own job kind with a concurrency of one.
+
+**And `(`, `)` and `\` are escaped, which is a defect rather than a nicety.** They are structural
+in a PDF string literal, and a resume says "(remote)" and "C:\\" often enough that an unescaped
+writer produces a file that opens as garbage -- looking like our bug and being a quoting one.
+There is a test for each, plus one that walks the cross-reference table and checks every offset
+points at the object it claims, because a readable PDF with a wrong xref is the failure that
+opens in one viewer and not another.
+
+**Only a person marks an application applied.** The routes are on the dashboard door, and ADR-039
+refuses an `ext:suggest` token at every door but `/ext/v1` -- asserted here specifically, not
+only in general, with a minted extension token getting 401 on the tracker and on the versions
+list. Nothing on `/ext/v1` names these tables, checked structurally over the gateway *and* the
+browser package. The reason is not tidiness: an extension that could mark an application sent
+would have the tracker claim the user did something they did not do, which destroys the only
+thing a tracker is for. And `applied_at` cannot disagree with the status, by a check constraint
+rather than by the route remembering both -- the same device as `ck_lead_outcomes_censoring`. An
+applied row **cannot go back to `planned`**, because the one thing a tracker must not do is
+forget that somebody sent a document to a company.
+
+**Two of my own tests were bad proxies and were caught before being kept.** One asserted the page
+count with `b"/Count 4" in out or b"/Count 5" in out or b"/Count 3" in out`, which would pass
+against a writer that put everything on one page -- the same shape as the `tools/list` assertion
+that compared a list with itself. It derives the count from the page geometry now. The other
+checked a transliterated rupee sign with two alternatives joined by `or`; it asserts the exact
+rendered line.
+
+**The validator was run against itself broken**, to see the tests discriminate: removing the
+named-things check leaves the four invention tests failing with the right words -- an invented
+`Kubernetes` sailing through as a clean report -- and nothing else moves.
+
+77 new tests (19 validation, 10 structural, 12 PDF, 9 tailoring, 27 integration), ruff and mypy
+strict clean, and the migration applies and reverses cleanly against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

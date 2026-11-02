@@ -43,6 +43,13 @@ class JobKind:
     #: Poll one public ATS board (F5). Its dedupe key is built from the board slug, which
     #: two workspaces can share -- which is why ADR-032 had to scope dedupe by org first.
     POLL_ATS_FEED = "poll_ats_feed"
+    #: Ask a model which confirmed facts belong in a resume for one posting (F20). Its own kind
+    #: so a backlog of resumes cannot starve drafting, which is what actually sends email.
+    TAILOR_RESUME = "tailor_resume"
+    #: Render one immutable resume version to a PDF (F20). **Its own kind because of memory
+    #: rather than fairness**: the host has about 1 GB free beside Postgres and the worker, so
+    #: this runs one at a time with its own caps (`services/resume/pdf.py`).
+    RENDER_RESUME_PDF = "render_resume_pdf"
 
 
 class QueueFull(Exception):
