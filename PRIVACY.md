@@ -261,3 +261,29 @@ which is the only reason to keep one after it has been shown.
 The extension's token carries the scope `ext:suggest` and nothing else. It **cannot** call the
 dashboard API and **cannot** call the Claude connector, and neither an `mcp:` token nor a
 dashboard sign-in can call the extension gateway. Three credentials, three doors, one key each.
+
+## Tailored resumes and the application tracker (F20, ADR-043)
+
+Everything here is the user's **own** data about themselves: the facts they recorded, the resume
+versions assembled from them, and the postings they are pursuing. No third party's personal data
+enters this feature.
+
+**A resume version is immutable, which is a retention statement as much as an audit one.** An
+`applications` row points at the exact document that was sent, and the row cannot be edited -- a
+change makes a new version. Erasing one is still possible: the trigger lets a DELETE through when
+the session sets `app.allow_resume_version_delete`, so a data-subject request can be honoured
+while an accident cannot. The same bargain `app.events` already makes, and `DELETE /leads/{id}`'s
+erasure path does not touch these rows, because a resume is not a lead's data.
+
+**A posting's text goes to a model; the facts go only to a provider cleared for personal data.**
+Tailoring sends the candidate's confirmed facts, which are their career, so that call is marked
+as containing personal data and the LLM router will not route it to an entry with
+`allow_pii=false`. The posting itself is public text about a role and is wrapped in `<untrusted>`
+delimiters, because somebody else wrote it (hard rule 7).
+
+**The PDF is stored in Postgres beside the version and nowhere else.** It is covered by the
+nightly dump; it is not uploaded to any object store or third party.
+
+**Only the user records an application as sent.** The routes are on the dashboard sign-in, and the
+browser extension's `ext:suggest` token cannot reach them (ADR-039). A tracker whose dates were
+written by something other than the person is a record of claims they did not make.
