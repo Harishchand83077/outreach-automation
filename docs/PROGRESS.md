@@ -2351,6 +2351,84 @@ named-things check leaves the four invention tests failing with the right words 
 77 new tests (19 validation, 10 structural, 12 PDF, 9 tailoring, 27 integration), ruff and mypy
 strict clean, and the migration applies and reverses cleanly against the development database.
 
+**A campaign can send from several mailboxes, and a lead keeps the one that first wrote to it
+(F7, ADR-044, slice S14.1).** `campaign_mailboxes`, `leads.mailbox_id`, weighted selection, and
+`GET/PUT/DELETE /campaigns/{id}/mailboxes`.
+
+**The sticky sender is the half that goes wrong in every tool that does this.** Rotating addresses
+naively means a recipient gets the first email from one person and the follow-up from another,
+which threads separately in their client whatever `References` says and reads as two strangers
+writing about one thing. So `leads.mailbox_id` is written **by `claim_send`, under the lead's row
+lock, and nowhere else** -- the only point where the assignment and the outbox row that justifies
+it land in one transaction, so two mailboxes that both believed an unassigned lead was theirs are
+serialised and the second one's `why_not_sendable` refuses it by name. Deciding it where the lead
+is *selected* would be the lazy-`Candidate.persona` mistake again: a rule evaluated where its
+failure cannot be contained, which is what once crash-looped every mailbox in the deployment.
+
+**`campaigns.mailbox_id` stays the primary and is always a member of its own pool**, and that is
+the decision the migration rests on. Making `campaign_mailboxes` the sole authority would have
+needed a backfill *and* a change to every path that attaches a mailbox -- `POST /campaigns`,
+`PATCH`, and whatever comes next -- and the path that forgot would have stopped sending with
+nothing on screen saying why. As it stands the migration is one empty table and one nullable
+column, and a campaign created tomorrow by code that knows nothing about pools still sends.
+`TestNothingChangedForAPoolOfOne` asserts that rather than assuming it, including that a lead
+with `mailbox_id` NULL -- which is every lead in the live database -- is still sendable. Treating
+NULL as "not yet eligible" would have stopped an in-flight campaign at deploy.
+
+**One function answers "what is this campaign's pool?", and one answers the inverse.**
+`pool.pool_for` and `pool.campaign_ids_for` live in the same module because the send loop works
+mailbox by mailbox and therefore asks the question the other way round. Each caller joining
+`campaign_mailboxes` itself is this project's dominant defect waiting to happen: the first
+condition added to the rule would reach one caller and not the other, and the symptom would be a
+campaign sending from a mailbox the screen says it does not use.
+
+**Selection is by lowest weighted load, with no stored cursor.** Today's count per member comes
+from `messages`, which is already the only source for the cap (§9.2) -- so the rotation and the
+cap can never tell different stories about how much a mailbox has sent, and there is no second
+number to keep right. The member with the smallest `sent_today / weight` goes next, and **ties
+break on the lowest mailbox id**: a tie broken at random would hand the same unassigned lead to
+two mailboxes in one pass, and the claim would then refuse one of them for no reason anybody
+could see.
+
+**The cap stays per mailbox.** A pool spreads a campaign's sends over several reputations; it does
+not raise any one of them. Two mailboxes capped at 100 are not one campaign sending 200 from
+addresses that each promised 100 -- which is the number ADR-034 pauses a mailbox over.
+
+**An unusable member is skipped rather than fatal, and a partly broken pool is not called
+blocked.** The campaign's blockers gain `pool_member_unavailable`, naming the affected addresses
+and saying how many can still send; `mailbox_unavailable` stays for the case where none can.
+Degrading to a smaller pool is the point of having one, and ADR-034 pauses a mailbox that is
+bouncing badly -- a pool that stopped because one member was paused would turn that safety signal
+into an outage, and a campaign that reported itself blocked over one of three mailboxes would
+have somebody stop a campaign that was sending perfectly well.
+
+**Removing a mailbox from a pool leaves its leads on it, and the response says so.** Reassigning
+them would do the exact thing the sticky sender exists to prevent, to the people furthest along
+in a conversation. Removal stops a mailbox taking *new* leads; the threads it already owns finish
+on it. The primary cannot be removed this way at all -- its membership comes from
+`campaigns.mailbox_id`, and changing that is `PATCH /campaigns/{id}`, where a screen can explain
+what it does.
+
+**Weights are bounded 1-100 by a check constraint built from the constants in `models.py`**, so
+the constraint and the route that validates a weight cannot disagree -- the cure adopted after
+`reason="one-click unsubscribe"` made every opt-out a 500.
+
+**One of my own tests was wrong about the thing it was testing**, and it is worth recording
+because the code was right. I traced weight 3 against weight 1 as "three sends in a row", which
+is not what proportional load means: after one send from the heavy mailbox its load is 1/3 and the
+light one's is 0, so the light one goes next. The test asserts the **share over eighty sends**
+now, which is what the weights actually promise, instead of a hand-traced sequence of two.
+
+**And one nearly-wrong assertion in the F7 blockers.** My first version asked
+`unavailable_reason` about each pool member and reported nothing for a *paused* one -- because
+that function answers a different question, whether the credential can log in. A paused mailbox
+and an unauthenticated one are the same thing from a campaign's point of view, and the test for
+the ADR-034 case is what showed it: `pool_member_unavailable` was absent for a mailbox paused on
+bounce rate, which is the commonest way a member drops out.
+
+34 new tests (10 weighted-selection unit, 24 integration), ruff and mypy strict clean, migration
+applied and reversed against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

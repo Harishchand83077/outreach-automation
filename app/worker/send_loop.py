@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import config
@@ -55,6 +55,7 @@ from app.services.mail.message import Attachment as OutgoingAttachment
 from app.services.mail.message import FooterIdentity, build_message
 from app.services.mail.message import Mailbox as MailboxIdentity
 from app.services.mail.smtp import SmtpOutcome, SmtpSender
+from app.services.mailboxes import pool
 
 #: Priority order when capacity is short (§9.2): a reply to someone who wrote to us first, then
 #: a due follow-up, then a new lead. Ignoring someone who replied is the worst outcome
@@ -171,7 +172,22 @@ async def find_candidates(
 
     Joined on the draft rather than scanning leads, because an `APPROVED` lead with no approved
     draft is not sendable and should not occupy a slot in the queue.
+
+    **The campaigns considered are the ones whose *pool* contains this mailbox** (F7, ADR-044),
+    not only the ones whose `mailbox_id` is it. `pool.campaign_ids_for` is the one function that
+    answers that, and `pool.pool_for` answers the inverse, so the two directions of the same
+    rule cannot disagree.
+
+    **A lead that has already been sent from a mailbox stays on it.** `leads.mailbox_id` is the
+    sticky sender: a follow-up arriving from a second address shows the recipient one
+    conversation from two strangers, and breaks the thread in their client. A lead with no sender
+    yet is offered to whichever pool member weighted selection picks -- a proposal only, since
+    `claim_send` makes the assignment under the lead's lock.
     """
+    campaign_ids = await pool.campaign_ids_for(session, org_id=org_id, mailbox_id=mailbox_id)
+    if not campaign_ids:
+        return []
+
     rows = (
         await session.execute(
             select(Lead, Draft, Campaign)
@@ -179,17 +195,24 @@ async def find_candidates(
             .join(Campaign, Campaign.id == Lead.campaign_id)
             .where(
                 Lead.org_id == org_id,
-                Campaign.mailbox_id == mailbox_id,
+                Campaign.id.in_(campaign_ids),
                 Campaign.paused.is_(False),
                 Campaign.status == "running",
                 Lead.paused.is_(False),
                 Draft.status == "approved",
                 Lead.state.in_(("APPROVED", "SENT", "REPLIED")),
+                # Sticky, or not yet assigned. The unassigned ones are filtered again below by
+                # weighted selection; this only keeps another mailbox's leads out of the query.
+                or_(Lead.mailbox_id.is_(None), Lead.mailbox_id == mailbox_id),
             )
             .order_by(Draft.approved_at)
             .limit(limit)
         )
     ).all()
+
+    #: Computed once per pass rather than per lead: it is the same answer for every unassigned
+    #: lead of a campaign, and it costs a count per pool member.
+    assignee: dict[uuid.UUID, uuid.UUID | None] = {}
 
     candidates: list[Candidate] = []
     for lead, draft, campaign in rows:
@@ -226,6 +249,17 @@ async def find_candidates(
         if not in_window(now, settings):
             continue
 
+        # A lead with no sender yet belongs to whichever pool member weighted selection picks.
+        # With a pool of one -- every campaign until somebody adds a second mailbox -- this is
+        # always this mailbox, so the ordinary case behaves exactly as it did before F7.
+        if lead.mailbox_id is None:
+            if campaign.id not in assignee:
+                assignee[campaign.id] = await _assignee_for(
+                    session, org_id=org_id, campaign=campaign, settings=settings, now=now
+                )
+            if assignee[campaign.id] != mailbox_id:
+                continue
+
         candidates.append(
             Candidate(
                 lead=lead,
@@ -240,6 +274,39 @@ async def find_candidates(
     # Replies first, then due follow-ups, then new leads (§9.2) — and within a kind, one from
     # each campaign in turn.
     return _interleave(candidates, now)
+
+
+async def _assignee_for(
+    session: AsyncSession,
+    *,
+    org_id: uuid.UUID,
+    campaign: Campaign,
+    settings: CampaignSettings,
+    now: datetime,
+) -> uuid.UUID | None:
+    """Which pool member the campaign's next unassigned lead should go to (F7, ADR-044).
+
+    Weighted by today's load, which is counted from `messages` -- the same source as the cap, so
+    the rotation and the cap can never tell different stories about how much a mailbox has sent.
+    A stored cursor would be a second number to keep right, and the one thing §9.2 is explicit
+    about is not keeping send counts as counters.
+    """
+    members = await pool.pool_for(session, org_id=org_id, campaign=campaign)
+    if len(members) <= 1:
+        # The ordinary case, and worth short-circuiting: no pool rows means no counts to run.
+        return members[0].mailbox_id if members else None
+
+    usable = await pool.usable_ids(
+        session, org_id=org_id, mailbox_ids=[member.mailbox_id for member in members]
+    )
+    counts = {
+        member.mailbox_id: await sent_today(
+            session, mailbox_id=member.mailbox_id, settings=settings, now=now
+        )
+        for member in members
+        if member.mailbox_id in usable
+    }
+    return pool.choose(members, counts=counts, usable=usable)
 
 
 def _interleave(candidates: list[Candidate], now: datetime) -> list[Candidate]:

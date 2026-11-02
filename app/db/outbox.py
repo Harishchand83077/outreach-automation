@@ -298,7 +298,7 @@ async def why_not_sendable(
     if campaign.paused:
         return "the campaign is paused"
 
-    mailbox_id = mailbox_id or campaign.mailbox_id
+    mailbox_id = mailbox_id or lead.mailbox_id or campaign.mailbox_id
     if mailbox_id is None:
         return "the campaign has no mailbox attached"
     mailbox = await session.get(Mailbox, mailbox_id)
@@ -306,6 +306,17 @@ async def why_not_sendable(
         return "the campaign's mailbox is missing"
     if mailbox.paused:
         return f"the mailbox is paused ({mailbox.pause_reason or 'no reason given'})"
+
+    # **The sticky sender** (F7, ADR-044). Once a lead has been sent from one mailbox, every
+    # later message to that person comes from the same address -- a follow-up arriving from a
+    # second one shows the recipient a single conversation from two strangers, and threads
+    # separately in their client whatever the `References` header says.
+    #
+    # Reported as a refusal rather than silently redirected, because the caller asked to send
+    # from a specific mailbox and quietly using a different one is how a cap gets exceeded on a
+    # mailbox nobody was watching.
+    if lead.mailbox_id is not None and lead.mailbox_id != mailbox_id:
+        return "this lead's earlier messages were sent from a different mailbox in the pool"
 
     if await is_suppressed(session, org_id=org_id, email=lead.email_norm):
         return "this address is on the suppression list"
@@ -381,9 +392,18 @@ async def claim_send(
 
     campaign = await session.get(Campaign, lead.campaign_id)
     assert campaign is not None, "why_not_sendable returned None, so the campaign exists"
-    mailbox_id = mailbox_id or campaign.mailbox_id
+    mailbox_id = mailbox_id or lead.mailbox_id or campaign.mailbox_id
     mailbox = await session.get(Mailbox, mailbox_id)
     assert mailbox is not None, "why_not_sendable returned None, so the mailbox exists"
+
+    # **The sticky sender is written here, under the lead's row lock, and nowhere else**
+    # (F7, ADR-044). This is the only point at which the assignment and the outbox row that
+    # justifies it land in one transaction -- so two mailboxes that both believed an unassigned
+    # lead was theirs are serialised, and the second one's `why_not_sendable` above refuses it.
+    # Deciding it where the lead is *selected* instead would be the lazy-`persona` mistake
+    # again: a rule evaluated where its failure cannot be contained.
+    if lead.mailbox_id is None:
+        lead.mailbox_id = mailbox_id
 
     sequence = await _next_sequence(session, lead_id, kind)
     message = Message(
