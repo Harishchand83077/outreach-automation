@@ -73,14 +73,53 @@ class TestIllegalMoves:
         for state in LeadState:
             assert not is_allowed(state, state), f"{state} -> itself should be refused"
 
-    def test_meeting_booked_is_never_reached_from_a_machine_state(self):
-        """B4: the prototype inferred MEETING_BOOKED from an LLM label. Only a human may set it,
-        and only from REPLIED or IN_CONVERSATION — never from SENT or anywhere automated."""
+    def test_meeting_booked_is_never_inferred(self):
+        """B4: the prototype inferred MEETING_BOOKED from an LLM label.
+
+        **This test used to assert the wrong thing, and F15 is what showed it.** It checked that
+        the state was unreachable from `SENT`, as a proxy for "only a human may set it" -- and
+        the proxy was wrong in a way that mattered: the commonest success this system has is
+        somebody clicking the booking link in a *first* email and never replying, and that could
+        not be recorded at all. The real property is about **who** may declare a meeting, not
+        where the lead happened to be, so that is what is asserted now.
+
+        The same shape as `test_mcp_safety`'s "every tool is read-only", which was a proxy for
+        "nothing can send or approve" and had to break the moment anything wrote.
+        """
         assert LeadState.MEETING_BOOKED in HUMAN_ONLY
-        assert not is_allowed(LeadState.SENT, LeadState.MEETING_BOOKED)
-        assert not is_allowed(LeadState.APPROVED, LeadState.MEETING_BOOKED)
+
+        # A person's click, or a signed booking webhook (ADR-045), from anywhere a conversation
+        # can plausibly be open -- including a lead that only ever received one email.
+        assert is_allowed(LeadState.SENT, LeadState.MEETING_BOOKED)
+        assert is_allowed(LeadState.FOLLOWUP_SENT, LeadState.MEETING_BOOKED)
         assert is_allowed(LeadState.REPLIED, LeadState.MEETING_BOOKED)
         assert is_allowed(LeadState.IN_CONVERSATION, LeadState.MEETING_BOOKED)
+        assert is_allowed(LeadState.NO_RESPONSE, LeadState.MEETING_BOOKED)
+
+        # Never from a lead that has not been written to, and never from a terminal refusal: a
+        # webhook that could move an opted-out lead would be a way to resurrect a suppressed
+        # person from outside the system.
+        assert not is_allowed(LeadState.NEW, LeadState.MEETING_BOOKED)
+        assert not is_allowed(LeadState.APPROVED, LeadState.MEETING_BOOKED)
+        assert not is_allowed(LeadState.OPTED_OUT, LeadState.MEETING_BOOKED)
+        assert not is_allowed(LeadState.BOUNCED, LeadState.MEETING_BOOKED)
+
+        # And it never reopens, so a cancellation cannot be made to move it either.
+        for state in LeadState:
+            assert not is_allowed(LeadState.MEETING_BOOKED, state)
+
+    def test_no_reply_label_can_produce_a_meeting(self):
+        """The half of the old test that was actually about the rule.
+
+        A reply is somebody's words; a system that read a warm one as a meeting would inflate
+        every funnel it ever reported. No label's policy names the state, so there is no
+        classifier output that could reach it.
+        """
+        from app.domain.reply import POLICY, ReplyLabel
+
+        for label in ReplyLabel:
+            assert "MEETING_BOOKED" not in repr(POLICY[label])
+            assert "meeting_booked" not in repr(POLICY[label])
 
     def test_assert_allowed_raises_with_a_useful_message(self):
         with pytest.raises(IllegalTransition) as exc:

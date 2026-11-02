@@ -2429,6 +2429,102 @@ bounce rate, which is the commonest way a member drops out.
 34 new tests (10 weighted-selection unit, 24 integration), ruff and mypy strict clean, migration
 applied and reversed against the development database.
 
+**A booking tool can now tell us a meeting was booked, and the state machine could not record
+the commonest one (F15, ADR-045, slice S14.2).** `booking_webhooks`, `booking_events`,
+`POST /hooks/booking/{token}`, and `/booking-webhook` plus `/bookings` on the dashboard.
+
+**The headline is the defect this slice found in the system it was added to.**
+`MEETING_BOOKED` was reachable only from `REPLIED` and `IN_CONVERSATION` -- so the outcome this
+whole product exists to produce, somebody clicking the booking link in a **first** email and
+taking a slot without ever replying, **could not be recorded at all**. The webhook's own first
+test found it: the booking was verified, stored, matched the right lead, and the lead sat in
+`SENT`. `SENT`, `FOLLOWUP_SENT` and `NO_RESPONSE` allow it now; `NEW`, `APPROVED`, `OPTED_OUT`
+and `BOUNCED` do not, and it still never reopens.
+
+**And the test that should have caught it asserted the wrong thing.**
+`test_meeting_booked_is_never_reached_from_a_machine_state` checked that `SENT -> MEETING_BOOKED`
+was illegal, *as a proxy for* "only a human may set it". The real property is about **who** may
+declare a meeting, not where the lead happened to be. It is rewritten to assert that, with a new
+test that no reply label's policy names the state -- the half that was actually about the rule.
+This is the same shape as `test_mcp_safety`'s "every tool is read-only", which was a proxy for
+"nothing can send or approve" and had to break the moment anything wrote. **That is now the sixth
+test in this project found to be encoding something other than the rule it was named for.**
+
+**A booking is reported, not inferred, and that is the whole argument for touching the locked
+rule.** A third party says a calendar slot was taken, signed with a secret this workspace pasted
+into its own tool. A reply is somebody's words being interpreted -- which is what the prototype
+did (issue B4) and what inflates every funnel it touches. So the rule stands as written and gains
+a second producer that is not an inference.
+
+**Two independent proofs, and neither alone is enough.** The URL carries an HMAC over the org id
+under a key **derived** from `CREDENTIAL_KEY` -- the unsubscribe link's device (ADR-033), because
+a public route must never take an `org_id` from a caller. And the body must be signed with that
+workspace's own secret, HMAC-SHA256 over the **raw bytes**. A URL-only scheme makes the URL the
+credential, and that URL ends up in a third party's settings page, their delivery logs and
+anybody's screenshot of either.
+
+**The raw bytes, never a re-serialised object.** Verifying against JSON we parsed and dumped
+again is the classic way a correct-looking implementation accepts a forged body: key order,
+spacing and number formatting all change under the round trip, so the only way to make it work is
+to be lax, and lax is what the signature was for.
+
+**Deliberately the scheme Cal.com already implements** -- `X-Cal-Signature-256` *is* HMAC-SHA256
+of the raw body with your secret -- so the commonest tool needs no adapter, while nothing here is
+specific to it. A timestamp, when a tool sends one, is part of the signed payload so it cannot be
+edited forward, and a delivery more than fifteen minutes old is refused. **A delivery with no
+timestamp is still accepted**, named as a compromise rather than left implicit: Cal.com signs the
+body alone, so requiring one would mean refusing the tool this is built for. Retries -- which
+every provider does and some do on a 2xx -- are handled by the unique key, so a second delivery
+lands on the row it already wrote.
+
+**Every refusal answers 204, having done nothing**, and a test asserts all four refusals are
+indistinguishable. A public endpoint that tells an unknown workspace from a bad signature from an
+unreadable body is an oracle for all three, and a provider reads any non-2xx as "retry". The
+symptom an operator sees instead is a screen saying no booking has arrived -- which is why
+`last_delivery_at` exists: it is the cheapest way to tell "no meetings yet" from "this was pasted
+into the wrong field". A *verified* body we cannot read is the one case worth a log line, because
+the signature proved it came from this workspace's own tool, so it is a shape we should support
+and do not.
+
+**There is no `GET` on the public path**, and that is a safety property. The unsubscribe endpoint
+has one because a human clicks that link; nobody clicks a webhook URL, and the things that do
+fetch URLs found in text -- scanners, link previews, a provider's own test button -- would
+otherwise reach a write path.
+
+**`intake` had a `BOOKABLE_FROM` set and it was deleted before it was committed.** It was a
+second copy of `_ALLOWED`, and the first thing it did was disagree with it, claiming `NEW` was
+bookable. The move is attempted and `IllegalTransition` is caught instead -- which is also how
+the missing edge was found rather than papered over, and it is why an opted-out lead is still
+refused without this file holding a list of who may be refused.
+
+**A cancellation is recorded and does not move the lead.** `MEETING_BOOKED` is terminal with no
+exits by construction; a meeting that was booked was booked, and widening a terminal state is a
+change to a locked product rule rather than a side effect of adding a webhook. Stated as a limit
+rather than discovered later.
+
+**Every verified booking is stored, matched or not**, and the unmatched ones are what `GET
+/bookings` is mostly for -- usually the lead replied from a second address or forwarded the link,
+and dropping them leaves a funnel quietly one meeting short. Matching is on the address, with the
+**conversation** breaking ties: when the same person is in several campaigns, the lead we most
+recently wrote to wins, because taking the oldest or newest would attribute the meeting to a
+campaign that never contacted them. `matched_by` records which rule applied, in words.
+
+**It never creates a lead** -- that would put somebody into a sending pipeline for having asked
+to talk -- and **nothing in the package can send**, asserted over its imports.
+
+**Lead erasure now reaches a booking.** The row survives (`ON DELETE SET NULL`), because erasing
+somebody must not erase the record that a meeting happened, and the invitee's address and name
+are cleared. Without that the erasure would be decorative for exactly the leads who got furthest,
+which is the worst available place to be wrong.
+
+**And the F9 gap was closed in the one place it would have been silent.** `receive` takes
+`SettingsDep` rather than the module-level `config`: the URL token is signed when the secret is
+generated and verified when a delivery arrives, so if those two read different `Settings` objects
+every delivery is refused -- answering 204, with nothing anywhere saying why.
+
+67 new tests (39 signature and payload unit tests, 28 integration), ruff and mypy strict clean,
+migration applied and reversed against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

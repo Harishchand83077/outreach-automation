@@ -134,6 +134,14 @@ _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
             # through REPLIED would briefly mark it as needing a human, and there is nothing
             # for a person to decide about "we already have a vendor for this".
             LeadState.NOT_INTERESTED,
+            # **The commonest success this whole system has, and it was unreachable** (F15,
+            # ADR-045). The point of a booking link in a first email is that somebody clicks it
+            # and books -- they never reply. Until the booking webhook was built, the only edges
+            # into MEETING_BOOKED were from REPLIED and IN_CONVERSATION, so the one outcome the
+            # product exists to produce could not be recorded unless the person also wrote back.
+            # Found by the webhook's own test: the booking was stored, matched the right lead,
+            # and the lead sat in SENT.
+            LeadState.MEETING_BOOKED,
         }
     ),
     LeadState.FOLLOWUP_SENT: frozenset(
@@ -142,6 +150,8 @@ _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
             LeadState.NO_RESPONSE,
             LeadState.BOUNCED,
             LeadState.NOT_INTERESTED,
+            # Same case, one email later: the follow-up is often the one that gets clicked.
+            LeadState.MEETING_BOOKED,
         }
     ),
     LeadState.REPLIED: frozenset(
@@ -162,8 +172,9 @@ _ALLOWED: dict[LeadState, frozenset[LeadState]] = {
             LeadState.NO_RESPONSE,
         }
     ),
-    # A late reply reopens a lead we had given up on.
-    LeadState.NO_RESPONSE: frozenset({LeadState.REPLIED}),
+    # A late reply -- or a late booking -- reopens a lead we had given up on. Somebody who books
+    # three weeks after the follow-up has booked a meeting, whatever our silence timer decided.
+    LeadState.NO_RESPONSE: frozenset({LeadState.REPLIED, LeadState.MEETING_BOOKED}),
     # Human-recoverable terminals go back to the start of the pipeline.
     LeadState.FAILED: frozenset({LeadState.NEW, LeadState.SKIPPED}),
     LeadState.SKIPPED: frozenset({LeadState.NEW}),
@@ -183,8 +194,11 @@ _ALWAYS_REACHABLE: frozenset[LeadState] = frozenset(
     }
 )
 
-#: Only a person — or a booking webhook — may declare a meeting booked. It is never inferred
-#: from a positive reply, which is exactly what the prototype did (issue B4).
+#: Only a person — or a signed booking webhook (F15, ADR-045) — may declare a meeting booked. It
+#: is never inferred from a positive reply, which is exactly what the prototype did (issue B4).
+#: **The edges into this state say where a lead may be when it happens; this set says who may
+#: say so**, and the two are different questions. Nothing in the reply path targets it, which a
+#: structural test asserts over the whole tree.
 HUMAN_ONLY: frozenset[LeadState] = frozenset({LeadState.MEETING_BOOKED})
 
 

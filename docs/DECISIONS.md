@@ -3057,3 +3057,149 @@ reviewing for it.
   prevent, inflicted on the people furthest along.
 - **Rotating on every message instead of per lead.** It is the thing that looks like a pool and is
   actually a broken thread.
+
+## ADR-045 — A signed booking webhook is the second producer of `MEETING_BOOKED`, and the last
+
+**Date:** 2026-11-03
+**Status:** Accepted
+**Relates to:** F15, slice S14.2; amends the locked product rule and the state machine
+
+### Context
+
+`MEETING_BOOKED` has had exactly one producer since Phase 6: a person clicking it. That is a
+locked product rule and the reason for it is sound — the prototype inferred a meeting from a
+model's reading of a reply (issue B4), and a system that does that inflates every funnel it ever
+reports.
+
+But the outcome this whole system exists to produce is somebody clicking a booking link and
+taking a slot, and nothing told us when that happened. The operator had to notice a calendar
+invite and go and click a button, which means the funnel was only ever as good as somebody's
+diligence.
+
+### Decision
+
+**A booking is reported, not inferred, and that distinction is the whole ADR.** A third party says
+a calendar slot was taken, signed with a secret this workspace generated and pasted into its own
+booking tool. A reply is somebody's words being interpreted; a webhook is a fact about a calendar.
+So the locked rule stands as written — the state is never inferred — and gains a second producer
+that is not an inference.
+
+**Two independent proofs, and neither alone is enough.**
+
+1. **The URL names a workspace, provably.** `/hooks/booking/{token}` carries an HMAC over the org
+   id under a key *derived* from `CREDENTIAL_KEY` — the same device as the one-click unsubscribe
+   link (ADR-033), and for the same reason: a public route must never take an `org_id` from a
+   caller (ADR-004). The token says whose secret to check with; it is not the authorisation.
+2. **The body is signed with that workspace's own secret**, HMAC-SHA256 over the **raw bytes**,
+   in a header. A URL-only scheme makes the URL the credential, and that URL ends up in a third
+   party's settings page, their delivery logs and anybody's screenshot of either. A leaked URL
+   alone books nothing.
+
+**The raw bytes, never a re-serialised object.** Verifying against JSON we parsed and dumped again
+is the classic way a correct-looking implementation accepts a forged body: key order, spacing and
+number formatting all change under the round trip, so the only way to make it work is to be lax,
+and lax is what the signature was for.
+
+**Deliberately the scheme Cal.com already implements.** `X-Cal-Signature-256` *is* "HMAC-SHA256 of
+the raw body with your secret", so the commonest tool needs no adapter — and nothing here is
+Cal.com-specific. `X-Booking-Signature` is the generic alternative, an `sha256=` prefix is
+accepted because refusing it would be a refusal nobody could debug from the sender's side, and a
+provider-specific signature scheme (Calendly signs with *its* secret, not ours) is a translation
+layer for later rather than a second trust path now.
+
+**Replay is bounded by a signed timestamp; idempotency is a database constraint.** The timestamp
+is part of the signed payload so it cannot be edited forward, and a delivery outside fifteen
+minutes is refused. A delivery with **no** timestamp is still accepted, which is a stated
+compromise rather than an oversight: Cal.com signs the body alone, so requiring one would mean
+refusing the tool this is built for. What such a delivery loses is the replay bound, not the
+secret. Retries — which every provider does, some even on a 2xx — are handled by
+`uq_booking_events_org_provider_ext`, so a second delivery lands on the row it already wrote.
+
+**Every refusal answers 204, having done nothing.** An unknown workspace, a bad signature, an
+unreadable body: all the same. A public endpoint that distinguishes them is an oracle for all
+three, and a provider reads any non-2xx as "retry", so answering 401 to a body we will never
+accept buys a retry storm as well. The symptom an operator sees instead is the dashboard saying
+no booking has ever arrived — which is the thing they can act on, and why `last_delivery_at`
+exists: it is the cheapest way to tell "no meetings yet" from "this was never wired up".
+
+**There is no `GET` on the public path**, and that is a safety property rather than an omission.
+The unsubscribe endpoint has one because a human clicks that link. Nobody clicks a webhook URL,
+and the things that *do* fetch URLs found in text — scanners, link previews, a provider's own
+test button — would otherwise reach a write path.
+
+**The state machine gained the edges it was always missing, and that is the most important thing
+in this slice.** `MEETING_BOOKED` was reachable only from `REPLIED` and `IN_CONVERSATION`. So the
+commonest success this product has — somebody clicks the link in the *first* email, books, and
+never replies — could not be recorded at all. The webhook's own test found it: the booking was
+stored, matched the right lead, and the lead sat in `SENT`. `SENT`, `FOLLOWUP_SENT` and
+`NO_RESPONSE` now allow it; `NEW`, `APPROVED`, `OPTED_OUT` and `BOUNCED` do not, and it still
+never reopens.
+
+**And the test that should have caught it asserted the wrong thing.**
+`test_meeting_booked_is_never_reached_from_a_machine_state` checked that `SENT -> MEETING_BOOKED`
+was illegal, as a proxy for "only a human may set it". The real property is about **who** may
+declare a meeting, not where the lead happened to be. It is rewritten to assert that, plus a new
+test that no reply label's policy names the state — the half that was actually about the rule.
+The same shape as `test_mcp_safety`'s "every tool is read-only", which was a proxy for "nothing
+can send or approve" and had to break the moment anything wrote.
+
+**The state machine is the only authority on where a lead may be.** `intake` had a
+`BOOKABLE_FROM` set first; it was deleted before it was committed, because it was a second copy
+of `_ALLOWED` and the first thing it did was disagree with it — claiming `NEW` was bookable. The
+move is attempted and `IllegalTransition` is caught, which is also how the missing edge was found
+rather than papered over.
+
+**A cancellation is recorded and does not move the lead.** `MEETING_BOOKED` is terminal with no
+exits by construction. A meeting that was booked *was* booked, the funnel counts an event that
+happened, and widening a terminal state is a change to a locked product rule rather than a side
+effect of adding a webhook. The cancellation lands on the booking row and as an event, so
+somebody can see it.
+
+**Every verified booking is stored, matched or not.** A booking from an address in no campaign is
+the interesting case rather than the error case — the lead replied from a second address, or
+forwarded the link — and dropping it would repeat the job-post intake's expensive lesson: an empty
+result indistinguishable from nothing happening. `GET /bookings` exists mostly for those.
+
+**It never creates a lead**, which would put somebody into a sending pipeline because they booked
+a meeting — the opposite of what they asked for. And nothing in the package can send: a test
+asserts it imports neither the outbox, the message builder nor the send loop.
+
+**Matching is on the address, with the conversation breaking ties.** When the same person is in
+several campaigns — the ordinary case, and the reason the per-person cool-down exists — the lead
+we most recently *wrote to* wins. Taking the oldest or newest lead instead would attribute the
+meeting to a campaign that never contacted them. `matched_by` records which rule applied, in
+words, because a funnel somebody cannot audit is a funnel they will not trust.
+
+**There is no deployment-wide booking secret**, for ADR-023's reason, and **no workspace gains a
+webhook by being migrated**: an admin generates a secret, which is shown exactly once. A second
+live secret per workspace is unexpressible by a partial unique index, so revoking means revoked.
+
+### Consequences
+
+- The public surface grows by one unauthenticated write, and that is now the complete list: the
+  one-click unsubscribe and this.
+- Lead erasure reaches a booking: the row survives (`ON DELETE SET NULL`), because erasing
+  somebody must not erase the record that a meeting happened, and the invitee's address and name
+  are cleared. Without that the erasure would be decorative for exactly the leads who got
+  furthest.
+- A cancellation after the fact leaves a lead in `MEETING_BOOKED`. Stated as a limit; changing it
+  means deciding what a cancelled meeting's state *is*, which is a product question.
+- A workspace whose booking tool signs with its own secret (Calendly) cannot use this yet. The
+  shape of the fix is a per-provider verifier behind the same route, and the URL token already
+  identifies the workspace it would need.
+- `PUBLIC_API_URL` is required for the URL to be shown at all, exactly as ADR-033 requires it for
+  the unsubscribe header. An unset base shows no URL rather than one built on a guess.
+
+### Rejected
+
+- **Accepting the URL alone as authorisation.** The URL is not a secret; it is pasted into a third
+  party's settings page.
+- **Verifying against re-serialised JSON.** The forgery-shaped mistake.
+- **A provider allowlist.** Any tool that can sign a body with a secret you give it should work;
+  an allowlist would be a list to maintain and a reason to refuse a tool that works.
+- **Returning 401 or 400 on a refusal.** An oracle, and a retry storm.
+- **Inferring a meeting from a positive reply.** The rule this ADR is careful not to weaken.
+- **Letting a cancellation reopen a lead.** A separate decision, and not one a webhook gets to
+  make.
+- **Creating a lead for an unmatched booking.** It puts somebody into a sending pipeline for
+  having asked to talk.
