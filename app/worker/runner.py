@@ -44,6 +44,11 @@ CONCURRENCY: dict[str, int] = {
     JobKind.VALIDATE_DRAFT: 2,
     JobKind.CLASSIFY_REPLY: 2,
     JobKind.DRAFT_REPLY: 2,
+    JobKind.TAILOR_RESUME: 1,
+    # One at a time, deliberately. The cap here is memory on a 2 GB host, not quota: two
+    # renderings of a long resume at once is the only concurrency in this table that could
+    # matter to Postgres sitting next to it.
+    JobKind.RENDER_RESUME_PDF: 1,
 }
 
 IDLE_WAIT = timedelta(seconds=10)

@@ -1758,3 +1758,147 @@ class Connection(Base):
         ),
         Index("ix_connections_org_company", "org_id", "company_norm"),
     )
+
+
+#: Where a bullet may be placed. A **fixed vocabulary**, not whatever the model writes: a heading
+#: is the one line of a resume that is not a fact, so letting a proposal invent one would give it
+#: a free line of prose outside the claim check.
+RESUME_SECTIONS: tuple[str, ...] = ("Summary", "Experience", "Projects", "Skills", "Education")
+
+#: `include` puts a fact in the resume, optionally rephrased **inside that one fact**; `drop`
+#: records a fact the proposal deliberately left out, with its reason. Order is the order of the
+#: `include` ops, so "reorder" needs no operation of its own.
+RESUME_OP_KINDS: tuple[str, ...] = ("include", "drop")
+
+#: planned -> applied -> interviewing -> closed, and `closed` is reachable from any of them.
+#: **Only a person sets `applied`** (ADR-043): there is no route outside the dashboard door that
+#: can write this column, and the extension's token cannot open that door.
+APPLICATION_STATUSES: tuple[str, ...] = ("planned", "applied", "interviewing", "closed")
+
+
+class ResumeVersion(Base):
+    """One tailored resume, as the operations that produced it (F20, ADR-043).
+
+    **Immutable, enforced by a trigger rather than by convention.** An application points at the
+    exact version that was sent, and the one question somebody asks months later -- "what did
+    they actually see?" -- has no answer if this row can be edited afterwards. A change makes a
+    new row. The same device as `app.events`, and for the same reason.
+
+    `rendered_text` is stored rather than recomputed because the facts it cites can be edited or
+    deleted later: a version regenerated from today's facts would not be the document that was
+    sent. `fact_ids` records what it rested on, so a fact that has since changed is findable.
+
+    **The PDF is not here.** A rendering is a derived artefact that can be redone, and this row
+    cannot be updated -- so it lives in `resume_renders`, which can.
+    """
+
+    __tablename__ = "resume_versions"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The posting it was tailored for, when there was one. `SET NULL` rather than cascade: a
+    #: posting archived or removed must not take the document that was sent with it.
+    job_post_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="SET NULL")
+    )
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: Name and contact details: the only lines in the document that are not facts. Supplied by
+    #: the person, never by a proposal -- `ProposedEdits` has no field for it.
+    header: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    edit_ops: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    rendered_text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Every confirmed fact this document cites, in the order it cites them.
+    fact_ids: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    #: `user:<id>` for a version the person assembled, `model` for one a proposal produced and
+    #: the validator accepted. A dataset distinction (ADR-026) as much as an audit one.
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (Index("ix_resume_versions_org_created", "org_id", "created_at"),)
+
+
+class ResumeRender(Base):
+    """The PDF of one resume version, rendered by its own job (F20, ADR-043).
+
+    Separate from `ResumeVersion` for two independent reasons, and either alone would be enough:
+    the version row cannot be updated, so a PDF produced afterwards has nowhere to go on it; and
+    a `bytea` column on the version would travel with every row of the versions list.
+
+    One row per version, replaced on a re-render. A failed render leaves the previous bytes in
+    place rather than truncating them, because a resume somebody is about to attach is worse
+    missing than stale.
+    """
+
+    __tablename__ = "resume_renders"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    resume_version_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.resume_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (UniqueConstraint("resume_version_id", name="uq_resume_renders_version"),)
+
+
+class Application(Base):
+    """A posting the candidate is pursuing, and the exact resume they sent (F20, ADR-043).
+
+    **`applied_at` and the status cannot disagree**, by a check constraint rather than by the
+    route remembering to set both -- the same device as `ck_lead_outcomes_censoring`. A funnel
+    counted off a status while the date says otherwise is a funnel nobody can audit.
+
+    **Only a person marks a row applied.** The extension holds an `ext:suggest` token, which
+    ADR-039 refuses at every door but `/ext/v1`, and nothing on `/ext/v1` names this table. The
+    reason is not tidiness: an extension that could mark an application sent would make the
+    tracker claim the user did something they did not do, and they would stop trusting it.
+    """
+
+    __tablename__ = "applications"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    job_post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: `SET NULL` rather than cascade, so an erased version cannot erase the record that the
+    #: person applied. Which document it was is then unknown, and that is the honest answer.
+    resume_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.resume_versions.id", ondelete="SET NULL")
+    )
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    follow_up_due: Mapped[date | None] = mapped_column(Date)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    updated_at: Mapped[datetime] = _now_col(nullable=False, onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_post_id", name="uq_applications_org_post"),
+        CheckConstraint(
+            "status IN ('planned','applied','interviewing','closed')",
+            name="ck_applications_status",
+        ),
+        # Applied and interviewing mean a date exists; planned means it does not. `closed` is
+        # deliberately unconstrained: a posting can be closed without ever having been applied to.
+        CheckConstraint(
+            "(status IN ('applied','interviewing') AND applied_at IS NOT NULL) "
+            "OR (status = 'planned' AND applied_at IS NULL) "
+            "OR status = 'closed'",
+            name="ck_applications_applied_at",
+        ),
+        Index("ix_applications_org_status", "org_id", "status"),
+    )
