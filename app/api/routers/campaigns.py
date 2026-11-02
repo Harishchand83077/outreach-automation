@@ -36,7 +36,10 @@ from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db import attachments as attachment_store
 from app.db import outbox
 from app.db.models import (
+    MAX_MAILBOX_WEIGHT,
+    MIN_MAILBOX_WEIGHT,
     Campaign,
+    CampaignMailbox,
     Draft,
     Event,
     Lead,
@@ -58,6 +61,7 @@ from app.domain.template import CampaignTemplates
 from app.services.mail.connection import unavailable_reason
 from app.services.mail.expiry import grant_status
 from app.services.mail.smtp import effective_send_mode
+from app.services.mailboxes import pool
 from app.services.privacy import erase_lead
 
 router = APIRouter(tags=["campaigns"])
@@ -277,12 +281,44 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
     # would drift from it. `login_for` is the one place that decides whether a mailbox can log in
     # at all; anything else here would be this project's signature defect again -- a correct
     # producer and a correct consumer with nothing checking that they agreed.
-    if campaign.mailbox_id is not None:
-        mailbox = await session.get(Mailbox, campaign.mailbox_id)
-        if mailbox is not None:
-            reason = await unavailable_reason(session, mailbox=mailbox)
-            if reason:
-                found.append({"code": "mailbox_unavailable", "message": reason})
+    #
+    # **Asked of every pool member, not only the primary** (F7, ADR-044). A pool with one broken
+    # member keeps sending from the others, so an unavailable member is reported *by address* and
+    # only becomes a blocker when it is the last one -- a pool reporting itself blocked because
+    # one of three mailboxes needs reconnecting would have somebody stop a campaign that is
+    # sending perfectly well.
+    members = await pool.pool_for(session, org_id=campaign.org_id, campaign=campaign)
+    unavailable: list[str] = []
+    usable = 0
+    for member in members:
+        mailbox = await session.get(Mailbox, member.mailbox_id)
+        if mailbox is None:
+            continue
+        # Paused is asked here rather than inside `unavailable_reason`, which answers a
+        # different question -- whether the credential can log in. ADR-034 pauses a mailbox that
+        # is bouncing badly, and from a campaign's point of view a paused member and a member
+        # that cannot authenticate are the same thing: it is not sending today.
+        reason = (
+            f"paused ({mailbox.pause_reason or 'no reason given'})"
+            if mailbox.paused
+            else await unavailable_reason(session, mailbox=mailbox)
+        )
+        if reason:
+            unavailable.append(f"{mailbox.from_email}: {reason}")
+        else:
+            usable += 1
+    if unavailable and usable == 0:
+        found.append({"code": "mailbox_unavailable", "message": "; ".join(unavailable[:4])})
+    elif unavailable:
+        found.append(
+            {
+                "code": "pool_member_unavailable",
+                "message": (
+                    f"{usable} of {len(members)} mailboxes in this campaign's pool can send. "
+                    "The rest need attention: " + "; ".join(unavailable[:4])
+                ),
+            }
+        )
 
     org = await session.get(Org, campaign.org_id)
     if org is not None and org.paused:
@@ -1514,6 +1550,174 @@ async def set_schedule(
     )
     await session.commit()
     return campaign_summary(campaign)
+
+
+@router.get("/campaigns/{campaign_id}/mailboxes")
+async def list_pool(
+    campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Every mailbox this campaign may send from, with its share and whether it can send.
+
+    **Non-networked**, like `GET /mailboxes` and for the same reason: a refresh of this screen
+    would otherwise mint an OAuth token per member.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+    members = await pool.pool_for(session, org_id=user.org_id, campaign=campaign)
+
+    rows: list[dict[str, Any]] = []
+    for member in members:
+        mailbox = await session.get(Mailbox, member.mailbox_id)
+        if mailbox is None:
+            continue
+        reason = await unavailable_reason(session, mailbox=mailbox)
+        rows.append(
+            {
+                "mailbox_id": str(member.mailbox_id),
+                "from_email": mailbox.from_email,
+                "weight": member.weight,
+                # Which one detaching the campaign's mailbox would remove. Presenting the pool
+                # as a flat list would make "remove" look equally safe for all of them.
+                "primary": member.primary,
+                # The reason itself is deliberately not echoed anywhere a provider's words could
+                # travel into a screenshot; `usable` is the answer a picker needs.
+                "usable": reason is None,
+                "paused": mailbox.paused,
+            }
+        )
+
+    return {
+        "mailboxes": rows,
+        "note": (
+            "A campaign spreads its sends across these mailboxes in proportion to their "
+            "weights. The daily cap stays on each mailbox: a pool shares the work out, it does "
+            "not raise anybody's limit. Once a lead has been emailed from one of them, every "
+            "later message to that person comes from the same address."
+        ),
+    }
+
+
+@router.put("/campaigns/{campaign_id}/mailboxes/{mailbox_id}")
+async def set_pool_member(
+    campaign_id: uuid.UUID,
+    mailbox_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    weight: Annotated[int, Body(embed=True)] = pool.DEFAULT_WEIGHT,
+) -> dict[str, Any]:
+    """Add a mailbox to the pool, or change its share. Admin, because it changes who sends.
+
+    A row for the campaign's **primary** mailbox is allowed and is how its weight is set to
+    anything but 1 -- `pool.pool_for` treats the primary as a member whether or not a row exists,
+    so adding one here changes its share rather than its membership.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+    if not MIN_MAILBOX_WEIGHT <= weight <= MAX_MAILBOX_WEIGHT:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"A weight is between {MIN_MAILBOX_WEIGHT} and {MAX_MAILBOX_WEIGHT}. "
+                "It is a share relative to the other mailboxes, not a daily limit."
+            ),
+        )
+    mailbox = await session.scalar(
+        select(Mailbox).where(Mailbox.id == mailbox_id, Mailbox.org_id == user.org_id)
+    )
+    if mailbox is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mailbox not found.")
+
+    row = await session.scalar(
+        select(CampaignMailbox).where(
+            CampaignMailbox.org_id == user.org_id,
+            CampaignMailbox.campaign_id == campaign.id,
+            CampaignMailbox.mailbox_id == mailbox_id,
+        )
+    )
+    if row is None:
+        row = CampaignMailbox(
+            org_id=user.org_id, campaign_id=campaign.id, mailbox_id=mailbox_id, weight=weight
+        )
+        session.add(row)
+    else:
+        row.weight = weight
+
+    await record_event(
+        session,
+        org_id=user.org_id,
+        campaign_id=campaign.id,
+        type="campaign.pool_member_set",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={"mailbox_id": str(mailbox_id), "weight": weight},
+    )
+    await session.commit()
+    return {"mailbox_id": str(mailbox_id), "weight": weight}
+
+
+@router.delete("/campaigns/{campaign_id}/mailboxes/{mailbox_id}")
+async def remove_pool_member(
+    campaign_id: uuid.UUID,
+    mailbox_id: uuid.UUID,
+    session: SessionDep,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+) -> dict[str, Any]:
+    """Take a mailbox out of the pool.
+
+    **Leads already assigned to it keep it**, and that is the decision rather than an oversight.
+    Reassigning them would send somebody's follow-up from an address their first email never
+    came from, which is the exact failure the sticky sender exists to prevent -- and it would do
+    it to the people furthest along in a conversation. Removing a mailbox stops it taking *new*
+    leads; the threads it already owns finish on it.
+
+    The campaign's primary mailbox cannot be removed here, because its membership comes from
+    `campaigns.mailbox_id`. Changing that is `PATCH /campaigns/{id}`, which is where the screen
+    can explain what it does.
+    """
+    campaign = await _owned_campaign(session, user, campaign_id)
+    if campaign.mailbox_id == mailbox_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "This is the campaign's own mailbox. Point the campaign at a different one to "
+                "change it; removing it here would leave the campaign with no sender."
+            ),
+        )
+
+    row = await session.scalar(
+        select(CampaignMailbox).where(
+            CampaignMailbox.org_id == user.org_id,
+            CampaignMailbox.campaign_id == campaign.id,
+            CampaignMailbox.mailbox_id == mailbox_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="That mailbox is not in this pool."
+        )
+    await session.delete(row)
+    assigned = await session.scalar(
+        select(func.count())
+        .select_from(Lead)
+        .where(Lead.org_id == user.org_id, Lead.mailbox_id == mailbox_id)
+    )
+    await record_event(
+        session,
+        org_id=user.org_id,
+        campaign_id=campaign.id,
+        type="campaign.pool_member_removed",
+        actor="user",
+        actor_id=user.email or user.user_id,
+        data={"mailbox_id": str(mailbox_id), "leads_still_assigned": int(assigned or 0)},
+    )
+    await session.commit()
+    return {
+        "removed": True,
+        # Said rather than left to be discovered: this mailbox will keep sending for a while.
+        "leads_still_assigned": int(assigned or 0),
+        "note": (
+            "No new leads will go to this mailbox. Conversations already started on it finish "
+            "on it, because a follow-up from a new address breaks the thread."
+        ),
+    }
 
 
 def _as_utc(moment: datetime | None) -> datetime | None:

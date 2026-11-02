@@ -2938,3 +2938,122 @@ to a company.
   something that is a list of lines.
 - **Rendering the PDF in the request.** It is the one piece of this feature with a memory profile
   worth bounding, on a host with about 1 GB free beside Postgres and the worker.
+
+## ADR-044 — A campaign sends from a pool, and a lead keeps the mailbox that first wrote to it
+
+**Date:** 2026-11-03
+**Status:** Accepted
+**Relates to:** F7, slice S14.1; extends PR #67's cap reasoning and ADR-034
+
+### Context
+
+One campaign on one mailbox is capped at that mailbox's daily limit, and the limit exists to
+protect a sending reputation. A workspace that wants to send more has to spread the work across
+several addresses — which is what every tool in this category does, and what PR #67 already
+settled half of: the cap belongs to the **mailbox**, because reputation attaches to the address
+and not to how many campaigns somebody split the work into.
+
+The other half is the one that goes wrong. Rotating addresses naively means a recipient gets the
+first email from one person and the follow-up from another, which threads separately in their
+client whatever `References` says, and reads as two strangers writing about one thing.
+
+### Decision
+
+**`campaigns.mailbox_id` stays the campaign's primary mailbox, and is always a member of its own
+pool.** `campaign_mailboxes` holds the additional members, and a row for the primary is allowed —
+that is how its weight becomes anything but 1.
+
+**The rule is computed in exactly one function**, `services/mailboxes/pool.pool_for`, with its
+inverse `campaign_ids_for` beside it because the send loop works mailbox by mailbox and therefore
+asks the question the other way round. Both in one module, so a change to the rule is a change to
+both. Each caller joining the table itself is this project's dominant defect waiting to happen:
+the first condition added to the rule would reach one caller and not another, and the symptom
+would be a campaign sending from a mailbox the screen says it does not use.
+
+**Making `campaign_mailboxes` the sole authority was rejected.** It would need a backfill *and* a
+change to every path that attaches a mailbox — `POST /campaigns`, `PATCH /campaigns/{id}`, and
+whatever comes next — and the path that forgot would stop sending with nothing on screen saying
+why. ADR-010 and ADR-017 both took the same line: the migration that quietly changes who can send
+is the worst kind this project can ship. As it stands the migration is one empty table and one
+nullable column, and a campaign created tomorrow by code that knows nothing about pools still
+sends.
+
+**`leads.mailbox_id` is the sticky sender, written by `claim_send` under the lead's row lock and
+nowhere else.** That is the only point where the assignment and the outbox row that justifies it
+land in one transaction, so two mailboxes that both believed an unassigned lead was theirs are
+serialised and the second one's `why_not_sendable` refuses it. Deciding it where the lead is
+*selected* would be the lazy-`Candidate.persona` mistake again — a rule evaluated where its
+failure cannot be contained, which once crash-looped every mailbox in the deployment.
+
+It is **never changed once set**. A send from a different member is refused by name rather than
+silently redirected: the caller asked for a specific mailbox, and quietly using another is how a
+cap is exceeded on a mailbox nobody was watching.
+
+**Selection is by lowest weighted load, with no stored cursor.** Today's count per member comes
+from `messages`, which is already the only source for the cap (§9.2) — so the rotation and the cap
+can never tell different stories about how much a mailbox has sent, and there is no second number
+to keep right. The member with the smallest `sent_today / weight` goes next; **ties break on the
+lowest mailbox id**, because a tie broken at random would hand the same unassigned lead to two
+mailboxes in one pass and the claim would have to refuse one of them for no reason.
+
+**An unusable member is skipped, not fatal.** Paused, unconnected or missing, the pool sends from
+whoever is left. Degrading to a smaller pool is the whole point of having one, and ADR-034 pauses
+a mailbox that is bouncing badly — a pool that stopped because one member was paused would turn
+that safety signal into an outage.
+
+**A partly broken pool is reported without being called blocked.** The campaign's blockers gain
+`pool_member_unavailable`, which names the affected addresses and says how many can still send;
+`mailbox_unavailable` is kept for the case where none can. A campaign reporting itself blocked
+because one of three mailboxes needs reconnecting would have somebody stop a campaign that is
+sending perfectly well.
+
+**Removing a mailbox from a pool leaves its leads on it**, and the response says so. Reassigning
+them would do the exact thing the sticky sender exists to prevent, to the people furthest along in
+a conversation. Removal stops a mailbox taking *new* leads; the threads it already owns finish on
+it.
+
+**The cap stays per mailbox.** A pool spreads a campaign's sends across several reputations; it
+does not raise any one of them. Two mailboxes capped at 100 are not one campaign sending 200 from
+addresses that each promised 100.
+
+**Weights are bounded 1–100 by a check constraint built from the constants in `models.py`**, so
+the constraint and the route that validates a weight cannot disagree about what a weight is — the
+cure this project adopted after `reason="one-click unsubscribe"` made every opt-out a 500.
+
+**Adding or reweighting a member is `admin`; reading the pool is not.** Who sends is a rule about
+the workspace, the same line ADR-023 drew for the allowlist. Understanding a campaign is part of
+reviewing for it.
+
+### Consequences
+
+- Every existing campaign has a pool of one and behaves exactly as it did, asserted by
+  `TestNothingChangedForAPoolOfOne` rather than assumed.
+- Every existing lead has `mailbox_id` NULL, which is the truth: those sends happened when the
+  campaign had one mailbox, and `messages.mailbox_id` already records which address each message
+  went from. A NULL lead takes the pool's choice on its next send, which with a pool of one is the
+  mailbox it has always used. A test asserts a NULL lead is still sendable, because treating NULL
+  as "not yet eligible" would have stopped an in-flight campaign at deploy.
+- `ON DELETE SET NULL` rather than CASCADE: deleting a mailbox must not delete the leads it wrote
+  to. They become unassigned and the pool picks again — the address they knew is gone either way,
+  and the record of what was sent to whom must remain attributable.
+- A claim that is then blocked by `SEND_MODE`, or fails at SMTP, still leaves the lead assigned.
+  Correct: the claim committed a `sending` row, and ADR-002 is explicit that such a message may
+  still have left.
+- The rotation is evaluated once per campaign per send pass rather than per lead, which costs one
+  count per pool member and is skipped entirely for a pool of one.
+- A downgrade collapses every pool to its primary and loses the assignments, so a lead
+  mid-conversation could have its next follow-up sent from a different address. That is a visible
+  consequence for a recipient, and the migration says so.
+
+### Rejected
+
+- **Pooling the cap.** It is the one number that protects an address, and it is per address.
+- **A stored round-robin cursor.** A second count to keep right, and §9.2's whole argument is that
+  send counts are recomputed rather than stored. A crash between the send and the increment leaves
+  a cursor wrong for ever and nothing notices.
+- **Random selection among members.** Simpler, and it makes the share of a weighted pool a
+  question nobody can answer for a given day, and it hands one lead to two mailboxes in one pass.
+- **Reassigning a lead when its mailbox leaves the pool.** The failure the sticky sender exists to
+  prevent, inflicted on the people furthest along.
+- **Rotating on every message instead of per lead.** It is the thing that looks like a pool and is
+  actually a broken thread.

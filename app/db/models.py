@@ -352,6 +352,14 @@ class Lead(Base):
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     flags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: **The sticky sender** (F7, ADR-044). NULL until the first send, then never changed: a
+    #: follow-up has to come from the address that sent the first email, or the recipient sees
+    #: one conversation arriving from two strangers and the thread breaks in their client.
+    #: Written by `outbox.claim_send` under the lead's row lock, which is the only place that
+    #: can make the assignment and the outbox row land together.
+    mailbox_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
@@ -1901,4 +1909,56 @@ class Application(Base):
             name="ck_applications_applied_at",
         ),
         Index("ix_applications_org_status", "org_id", "status"),
+    )
+
+
+#: A pool member's share of a campaign's sends, relative to the other members. 1 is the default
+#: and the only value anybody needs until a mailbox is being warmed up beside an established one.
+MIN_MAILBOX_WEIGHT = 1
+MAX_MAILBOX_WEIGHT = 100
+
+
+class CampaignMailbox(Base):
+    """One mailbox in a campaign's sending pool, with its share (F7, ADR-044).
+
+    **`campaigns.mailbox_id` is still the campaign's primary mailbox and is always a member of
+    its own pool**, whether or not it has a row here. That is deliberate: making this table the
+    sole authority would mean every existing campaign, every `POST /campaigns` and every
+    `PATCH` that attaches a mailbox had to write a row too, and the campaign that forgot would
+    simply stop sending with nothing on screen saying why. So the rule is computed in **one**
+    function, `services/mailboxes/pool.pool_for`, and read by everything -- the send loop, the
+    campaign blockers and the dashboard.
+
+    A row for the primary is therefore allowed, and is how its weight is set to anything but 1.
+
+    **The cap stays on the mailbox** (ADR-034, and PR #67's reasoning before it). A pool spreads
+    a campaign's sends over several reputations; it does not raise any one of them.
+    """
+
+    __tablename__ = "campaign_mailboxes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mailbox_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.mailboxes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "mailbox_id", name="uq_campaign_mailboxes_pair"),
+        CheckConstraint(
+            f"weight BETWEEN {MIN_MAILBOX_WEIGHT} AND {MAX_MAILBOX_WEIGHT}",
+            name="ck_campaign_mailboxes_weight",
+        ),
+        Index("ix_campaign_mailboxes_mailbox", "org_id", "mailbox_id"),
     )
