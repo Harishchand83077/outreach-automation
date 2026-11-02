@@ -2804,3 +2804,137 @@ people would be the contact database this is carefully not. The question somebod
   shown, keeps the judgement with the person.
 - **Matching connections against leads automatically.** A background pass over the user's whole
   network, producing suggestions nobody asked for. The user names the company.
+
+## ADR-043 — A tailored resume is an ordered selection of confirmed facts, never a rewrite
+
+**Date:** 2026-11-02
+**Status:** Accepted
+**Relates to:** F20, slice S13.7; applies hard rules 5, 6 and 7, and ADR-037
+
+### Context
+
+Every tool in this category rewrites a resume with a model, and the output reads well. The cost
+is invisible until an interview: a number the candidate cannot account for, a tool they have
+never used, an employer they did not work at. Hard rule 6 forbids inventing facts about the
+sender, and this is the sharpest case of it in the whole system — the reader is a hiring manager
+who will ask, and the person answering is the user.
+
+ADR-037 already put the machinery in place: `profile_facts` holds what the candidate can
+truthfully say, and a fact is unusable until they have confirmed it, because the person who gets
+asked about a claim is the person who has to have agreed to it.
+
+### Decision
+
+**A resume is an ordered selection of confirmed facts, and nothing else can get a line into it.**
+The model proposes **edit operations** — `include` a fact in a section, optionally reworded, or
+`drop` it with a reason — and the order of the `include` ops *is* the order of the document. There
+is no operation that writes a heading, and no field anywhere for a header: `ProposedEdits` has
+`kind`, `fact_id`, `section`, `text` and `reason`, and the sections are a fixed tuple. The same
+device as `propose_reply` having no `subject` argument (ADR-030) — the mistake is not expressible
+rather than caught.
+
+**A rewording may not assert anything the fact does not.** Two checks against the fact being
+reworded:
+
+1. **Numbers**, compared after stripping thousands separators and a trailing `%` or `+`, so
+   "2,000" against "2000" is one quantity and "42%" out of nowhere is refused.
+2. **Named things** — tokens that are capitalised, all-capitals, or carry an internal digit or
+   `+`, `#` or `.`: `AWS`, `Python`, `C++`, `k8s`, `Node.js`, `Acme`. Between them those cover the
+   three inventions that matter on a resume: a skill, a product and an employer.
+
+Lower-case connective rewording is free. So a rewording may use the fact's own vocabulary plus
+lower-case words, which is a real constraint — it must begin with a word the fact already uses.
+**Position in the sentence is deliberately not used.** Exempting the first token is the obvious
+way to allow a capital letter at the start, and it leaves unchecked the one bullet somebody would
+actually write: the one opening on a technology they want to be seen to have.
+
+**What this honestly cannot catch**, stated here rather than discovered later: a lower-case
+exaggeration — "led a team" from a fact about writing code. No deterministic check could. That is
+why a version is shown to the person before anything is attached, and why `created_by` records
+whether a model or the person produced it.
+
+**Validated twice, and the second one is the point.** `validate_ops` checks the plan;
+`check_rendered` checks the finished document line by line, and `store.create_version` runs it on
+the text it is about to write **whatever produced that text**. It looks redundant because `render`
+builds the input to it, and it is the check that holds when a second producer appears — this
+project's dominant defect, now at nine instances, is a correct producer and a correct consumer
+with nothing checking that they agreed.
+
+**Only confirmed facts are shown to the model at all**, which makes the rule true one step
+earlier: a model cannot choose a fact it was never offered. The validator still checks, because a
+rule enforced in one place is a rule with one bug — and it refuses a proposal **by name**, so
+"pp3 is still a proposal" is actionable where "no such fact" sends somebody looking for a typo.
+
+**One retry, with the refusals fed back, then a recorded refusal.** The commonest failure is one
+invented number in one bullet, and a model told which bullet and which number returns the fact
+unchanged. A second refusal is recorded as a `resume.tailor_refused` event and **the job
+succeeds**: nothing went wrong with the work, and a dead job is where somebody looks for a fault.
+
+**`resume_versions` is immutable, by a trigger rather than by convention.** An `applications` row
+points at the exact document that was sent, so the question somebody asks a month later — what did
+they actually read? — has no answer if the row can be edited afterwards. A change makes a new row.
+The escape hatch is `app.allow_resume_version_delete`, exactly as `app.events` has one, so an
+accidental `DELETE FROM` fails loudly while a lawful erasure stays possible and obvious in the
+code that performs it.
+
+**The PDF is a separate table, and the immutability is why.** A rendering happens after the
+version exists, so there is nowhere on an unupdatable row to put it — and `bytea` on the version
+would travel with every row of the versions list, the same reasoning as ADR-016 keeping an
+attachment off `campaigns`. A re-render replaces; a failed render leaves the previous bytes in
+place, because a document somebody is about to attach is worse missing than stale.
+
+**The PDF writer is ours, and there is no new dependency.** `reportlab` and `weasyprint` are large
+trees whose purpose is laying out images, tables and flowing HTML, none of which a plain-text
+resume has. What this needs is a page of short lines in Helvetica, which is one of the fourteen
+fonts a PDF reader is required to provide — so nothing is embedded and nothing is licensed. The
+caps (`MAX_CHARS`, `MAX_LINES`) are the memory limit the implementation plan asked for on a 2 GB
+host, checked before anything is allocated, and the renderer gets a concurrency of one.
+
+**`(`, `)` and `\` are escaped**, which is a defect rather than a nicety: they are structural in a
+PDF string literal, and a resume says "(remote)" often enough that an unescaped writer produces a
+file that opens as garbage — looking like our bug and being a quoting one.
+
+**Only a person marks an application applied.** The routes are on the dashboard door, and ADR-039
+refuses an `ext:suggest` token everywhere but `/ext/v1`; nothing on `/ext/v1` names these tables,
+asserted structurally over both the gateway and the browser package. The reason is not tidiness:
+an extension that could mark an application sent would have the tracker assert the person did
+something they did not do, and they would stop trusting it — which destroys the only thing a
+tracker is for.
+
+**`applied_at` and the status cannot disagree**, by a check constraint rather than by the route
+remembering both — the same device as `ck_lead_outcomes_censoring`. And an applied row **cannot go
+back to `planned`**: the one thing a tracker must not do is forget that somebody sent a document
+to a company.
+
+### Consequences
+
+- A rewording must begin with a word the fact already uses. Refused reworkings cost one edit, or
+  the person includes the fact verbatim; the refusal names the offending word.
+- "2M" against a fact saying "2 million" is refused. The conservative direction, stated rather
+  than smoothed over: a refused correct rewording is recoverable and an invented number is not.
+- A resume with no facts in it is refused rather than stored, since an empty version in the list
+  is one that cannot be sent anywhere.
+- Deleting an org would now fail on the immutability trigger, exactly as it already would on
+  `app.events`. Nothing in the tree deletes one.
+- `created_by` distinguishes a version the person assembled from one a proposal produced, so the
+  dataset (ADR-026) never counts a machine selection as the person's own choice.
+- There is no master-resume upload and no resume parsing. ADR-037 settled that: the candidate
+  writes their own facts, which is the only version in which the no-invention rule means
+  anything, and a parser would reintroduce unconfirmed claims at the one point they are hardest
+  to notice.
+
+### Rejected
+
+- **Letting a model write the document and validating the prose afterwards.** The validator would
+  have to decide whether a sentence is supported, which is the judgement the model just made. The
+  operations exist so that "which fact is this line?" is answerable by construction.
+- **A free-text heading or summary field.** One line of unanchored prose is all an invention
+  needs, and a summary is exactly where somebody would put "8 years of experience".
+- **Exempting the first word of a bullet from the named-things check.** It is the position a new
+  skill would occupy.
+- **Mutable versions with an edit history.** The history *is* the versions. A row somebody can
+  edit is a row an application can silently stop describing.
+- **`reportlab` for the PDF.** A dependency tree to audit for the life of the project, to lay out
+  something that is a list of lines.
+- **Rendering the PDF in the request.** It is the one piece of this feature with a memory profile
+  worth bounding, on a host with about 1 GB free beside Postgres and the worker.

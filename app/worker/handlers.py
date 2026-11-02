@@ -30,10 +30,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import drafts as draft_store
-from app.db.models import Campaign, Classification, Job, Lead, Message
+from app.db.models import Campaign, Classification, Job, JobPost, Lead, Message
 from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
-from app.db.state import transition
+from app.db.state import record_event, transition
 from app.domain.campaign import CampaignSettings
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
@@ -49,6 +49,9 @@ from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
 from app.services.research.fetcher import Fetcher
 from app.services.research.service import research_lead
+from app.services.resume import store as resume_store
+from app.services.resume import tailor
+from app.services.resume.pdf import PdfTooLarge, render_pdf
 from app.worker.context import WorkerContext
 
 logger = logging.getLogger(__name__)
@@ -527,10 +530,123 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
     )
 
 
+async def handle_tailor_resume(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
+    """Propose a tailored resume for one posting, and store it only if it validates (F20).
+
+    A refusal is **recorded and the job succeeds**, because nothing went wrong with the work: the
+    model proposed something the facts do not support and the validator did its job. Retrying
+    would spend quota to be refused again, and a dead job is where somebody looks for a fault.
+    The reasons go in a `resume.tailor_refused` event so the person sees what to fix -- which is
+    usually "confirm this fact" or "the model invented a number".
+    """
+    version_id_present = (job.payload or {}).get("resume_version_id")
+    if version_id_present:
+        raise PermanentFailure("a tailoring job does not take a resume version")
+    job_post_id = _payload_uuid(job, "job_post_id")
+    ctx_org = OrgContext(org_id=job.org_id)
+
+    posting = await session.get(JobPost, job_post_id)
+    if posting is None or posting.org_id != job.org_id:
+        raise PermanentFailure(f"job posting {job_post_id} not found in this org")
+
+    facts = await resume_store.known_facts(session, ctx_org)
+    result = await tailor.propose(
+        router=ctx.router_for(session, job.org_id),
+        facts=facts,
+        posting_title=posting.title,
+        posting_text=posting.body_text or "",
+        job_post_id=posting.id,
+    )
+    if not result.accepted:
+        await record_event(
+            session,
+            org_id=job.org_id,
+            type="resume.tailor_refused",
+            data={
+                "job_post_id": str(posting.id),
+                "attempts": result.attempts,
+                "problems": result.report.messages[:10],
+            },
+        )
+        logger.info(
+            "a tailored resume was refused",
+            extra={"job_post_id": str(posting.id), "problems": len(result.report.problems)},
+        )
+        return
+
+    try:
+        created = await resume_store.create_version(
+            session,
+            ctx_org,
+            ops=result.ops,
+            label=f"{posting.title}"[:200],
+            job_post_id=posting.id,
+            # Recorded as the model's, so the dataset never counts a machine selection as the
+            # person's own choice (ADR-026) and a reviewer knows what they are reading.
+            created_by="model",
+        )
+    except resume_store.ResumeRefused as refused:
+        # The second validation -- of the rendered document -- disagreed with the first. That is
+        # a bug in this package rather than a bad proposal, so it is recorded loudly.
+        logger.warning(
+            "a validated proposal was refused at render",
+            extra={"job_post_id": str(posting.id), "problems": refused.report.messages[:5]},
+        )
+        raise PermanentFailure(str(refused)) from refused
+
+    await record_event(
+        session,
+        org_id=job.org_id,
+        type="resume.tailored",
+        data={
+            "job_post_id": str(posting.id),
+            "resume_version_id": str(created.version.id),
+            "fact_ids": list(created.version.fact_ids),
+        },
+    )
+    logger.info(
+        "tailored a resume",
+        extra={
+            "job_post_id": str(posting.id),
+            "resume_version_id": str(created.version.id),
+            "facts": len(created.version.fact_ids),
+        },
+    )
+
+
+async def handle_render_resume_pdf(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
+    """Render one immutable version to a PDF (F20).
+
+    Its own job kind for memory rather than fairness: the caps live in `resume/pdf.py` and the
+    runner gives this kind a concurrency of one, so the worst case on a 2 GB host is one capped
+    document at a time. Past the cap is a `PermanentFailure` -- a resume that is too long will
+    still be too long on the fifth attempt -- and the previous render, if there was one, stays
+    in place, because a document somebody is about to attach is worse missing than stale.
+    """
+    version_id = _payload_uuid(job, "resume_version_id")
+    ctx_org = OrgContext(org_id=job.org_id)
+    version = await resume_store.get_version(session, ctx_org, version_id=version_id)
+    if version is None:
+        raise PermanentFailure(f"resume version {version_id} not found in this org")
+
+    try:
+        content = render_pdf(version.rendered_text, title=version.label)
+    except PdfTooLarge as exc:
+        raise PermanentFailure(str(exc)) from exc
+
+    row = await resume_store.store_render(session, ctx_org, version_id=version.id, content=content)
+    logger.info(
+        "rendered a resume pdf",
+        extra={"resume_version_id": str(version.id), "size_bytes": row.size_bytes},
+    )
+
+
 HANDLERS: dict[str, Handler] = {
     JobKind.RESEARCH_LEAD: handle_research_lead,
     JobKind.DRAFT_LEAD: handle_draft_lead,
     JobKind.DRAFT_FOLLOWUP: handle_draft_followup,
     JobKind.DRAFT_REPLY: handle_draft_reply,
     JobKind.POLL_ATS_FEED: handle_poll_ats_feed,
+    JobKind.TAILOR_RESUME: handle_tailor_resume,
+    JobKind.RENDER_RESUME_PDF: handle_render_resume_pdf,
 }
