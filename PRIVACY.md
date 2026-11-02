@@ -163,6 +163,33 @@ Data or security concerns: open an issue in the repository, or write to the addr
 of any message this system sent you. An opt-out reply to that message is honoured automatically
 and does not need a human to act on it.
 
+## Contact lookups (F9, ADR-041)
+
+A workspace may connect its own Apollo, Hunter or Snov key and press a button to ask who hires at
+a company. What comes back is personal data about people who have not heard of us, arriving from a
+third party, so three things are stated plainly.
+
+**It is the workspace's own key and its own request.** There is no shared key and no deployment
+credential. Nothing in the background runs a lookup -- no job kind, no scheduler pass -- so a
+lookup exists only because somebody pressed a button, and `events` records each one.
+
+**We keep the fields we chose, not the provider's payload.** A name, a job title, an address with
+whether the provider calls it verified or a pattern it inferred, a confidence number, and a public
+profile URL. **The raw response is not stored**, although it would be the fastest way to debug a
+shape change. A `profile_url` is kept for a person to open themselves and is **never fetched** --
+hard rule 4 covers LinkedIn and nothing here fetches any of them.
+
+**A proposal is not a lead and cannot be mailed.** It sits in `contact_candidates` until somebody
+imports it, which goes through the ordinary import path -- including the suppression check, so
+somebody who opted out cannot be re-added by a provider that has no idea they did. Dismissing a
+proposal keeps the row, so the same person is not proposed again next week; that is a record kept
+in order to respect a decision, which is the same bargain as the hashed suppressions above.
+
+The provider key itself is Fernet-encrypted in `provider_credentials`, under the same key as
+mailbox credentials. No route returns it, no log line holds it, `__repr__` does not print it, and
+it travels to the provider in a header rather than in a URL -- a credential in a query string is a
+credential in an access log.
+
 ## The Chrome extension (F8, ADR-039)
 
 The extension sends two things, and only when the user presses a button:

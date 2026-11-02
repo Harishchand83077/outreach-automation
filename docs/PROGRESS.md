@@ -2091,6 +2091,101 @@ pointed at an expression three lines below the real cause: a doc comment contain
 host pattern `https://` + `*/*`, whose `*/` closed the block comment early. A comment that is about
 a glob needs to not contain one.
 
+**A workspace can look up hiring contacts on its own provider key, and nothing else can (F9,
+ADR-041, slice S13.5).** `provider_credentials`, `contact_candidates`, adapters for Apollo, Hunter
+and Snov plus a `mock`, and `/api/v1/provider-keys` and `/api/v1/contact-candidates`.
+
+**This is the first feature in this system that spends the user's money**, which changes what the
+design has to guarantee. Not only "is it correct?" but "can it bill somebody for work they did not
+ask for?" So the containment is that **nothing but a person can start a lookup**: no job kind, no
+`Scheduler` pass, no worker module that imports it, and `tests/unit/test_contacts_button_press_only.py`
+asserts all three over the source tree -- including the *positive* assertion that the only caller of
+`lookup.run` is the contacts router, so a caller added later fails rather than being quietly
+allowed. And no `GET` on that router talks to a provider: `GET /mailboxes` is non-networked because
+a refresh would mint OAuth tokens, and here a refresh would spend a credit.
+
+**There is no shared key**, which is ADR-023's argument reused: as long as one identity lives in
+the environment, every question about who may use it is a rule somebody has to maintain. A
+workspace with no key gets a sentence saying to add its own and that there is no shared one by
+design.
+
+**Hard rule 8 is in the schema rather than in a code path.** A partial unique index on
+`(org_id, provider) WHERE revoked_at IS NULL` makes holding several live keys for one provider
+inexpressible, so "rotate five keys to dodge a free tier" is not a loop somebody writes later.
+Saving a key revokes the old row instead of deleting it, so the change stays auditable.
+
+**The budget and the audit trail are the same fact, and that is the decision worth keeping.** 25
+lookups per workspace per rolling 24 hours, counted from `events` rows of type `contact.lookup`.
+`events` refuses UPDATE and DELETE by trigger, so the count cannot drift -- where a counter column
+incremented at call time can, which is why the mailbox-health rollup already chose recomputation
+over a counter. It also makes this **the one audit write in the system allowed to fail its
+request**: everywhere else the work is the point and the record of it is not, and here the record
+*is* the accounting. A rolling window rather than a calendar day, because a midnight reset is a
+free second allowance for anybody who waits for it.
+
+**A proposal is not a lead**, so the send loop cannot see one. Importing is a separate explicit
+action -- and it goes through **the ordinary importer, as a one-row CSV**. That looks like
+indirection for its own sake and it is the most defensible thing in the slice: `importer.commit` is
+where the suppression check, the MX check, the already-in-this-campaign check and the batch id that
+makes an import undoable all live. A second `Lead(...)` insert would be a second place each of
+those could be forgotten, and **the one that would get forgotten is the suppression check** -- a
+provider will cheerfully propose somebody who asked us never to write again, because it has no idea
+they did. `test_a_suppressed_address_is_refused` is the most important test in the file.
+
+**Two shared rules were extracted rather than copied**, both because a second caller appeared:
+`importer.first_job.queue_for` (which job a new lead gets, and how a large import is paced against
+the model chain's daily limit) and `importer.one_row_csv`. The import route and the contact import
+now call the same two functions. Copying either would have been the signature defect in a place
+where one copy would have been corrected and the other not.
+
+**The importer needs a company name and a provider does not give one.** The shared public-company
+cache (F19) usually has it, since this is a company somebody has already looked at; when it does
+not, the fallback is **the domain itself**, which is a true fact about the company. Deriving a
+trading name from it (`acme.test` -> "Acme") would be inventing one, and hard rule 6 applies even
+to a field this minor.
+
+**`email_status` is a column rather than a note inside a confidence score.** Several providers
+return `first.last@domain` built from a naming convention and present it beside a verified address.
+Mailing a guess is how a bounce rate rises, which now pauses a mailbox by itself (ADR-034), so the
+distinction has to reach the review screen. Apollo's `email_not_unlocked@domain.com` placeholder is
+stored as **no address at all**, because a placeholder in an email column is an address something
+eventually tries to mail; the proposal keeps its name and title, and the import route refuses it
+with a sentence rather than a validation error.
+
+**A response we cannot read raises rather than returning nobody.** `ProviderUnreadable`, naming the
+provider and the missing field. The job-post intake taught this expensively -- an unknown source
+with a plausible payload returned **zero postings**, indistinguishable from an empty board. Here
+the equivalent reads as "nobody works at this company", and somebody would believe it.
+
+**What is verified and what is assumed is a table in `docs/CONTACT_PROVIDERS.md`**, in the spirit
+of `MCP_PLAN.md`. Unlike the ATS feeds, which were live-tested and are public, **none of these
+three can be called without a paid account** and hard rule 5 forbids buying one -- so Hunter's
+endpoint is documented and confirmed, Apollo's path is **disputed** between
+`/mixed_people/search` and `/mixed_people/api_search` with its own reference not reached, and Snov
+documents both a synchronous domain search and an asynchronous start-and-poll flow with sources
+disagreeing about which is current. Each provider's response is read in exactly one function, so a
+wrong assumption is one function and one test. `mock` is a first-class provider in the check
+constraint for the same reason: the owner holds no key, and without it the feature's first run
+would be against somebody's paid account.
+
+**The key travels in a header.** Hunter's documentation shows `api_key` as a query parameter; a
+credential in a URL is a credential in an access log, a proxy log and a browser history. A test
+asserts the key does not appear in the request URL at all.
+
+**`SettingsDep` exists because of this slice, and it closes a real gap.** Sealing a provider key
+needs `CREDENTIAL_KEY`, and a router until now reached for the module-level `config` singleton --
+so an app constructed with its own `Settings`, which is every test app, was **partially ignoring
+them**. The signature shape once more: a correct producer (`create_app(settings)`) and consumers
+reading a different object. New routers take `SettingsDep`; the older ones still import `config`,
+and that is recorded here rather than quietly left.
+
+**And it surfaced a hard-rule-2 near miss of exactly the kind these notes already describe.** The
+global `config` is built at **import time** and does read `.env` -- which the session-scoped
+`hermetic_settings` fixture cannot reach, because the import has already happened. A failing
+assertion in this session printed a real provider key into the terminal: the incident that fixture
+was written for, in the one place it does not cover. The slice's own tests now build their app with
+an explicit test key and never touch the singleton, and the gap is written down.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

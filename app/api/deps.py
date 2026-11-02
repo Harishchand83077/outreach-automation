@@ -215,6 +215,23 @@ def require_role(role: str) -> Callable[..., Awaitable[CurrentUser]]:
 
 CurrentUserDep = Annotated[CurrentUser, Depends(current_user)]
 OperatorDep = Annotated[CurrentOperator, Depends(current_platform_operator)]
+
+
+def app_settings(request: Request) -> Settings:
+    """The `Settings` this application was built with.
+
+    A dependency rather than an import of the module-level `config`, so a route honours the
+    configuration its app was constructed with. It matters most in tests: the global singleton is
+    built at import time and **does** read `.env`, which is how a failing assertion in this
+    session printed a real provider key into the terminal -- the hard-rule-2 near miss
+    `tests/conftest.py` documents, in the one place `hermetic_settings` cannot reach.
+    """
+    settings: Settings = getattr(request.app.state, "settings", config)
+    return settings
+
+
+SettingsDep = Annotated[Settings, Depends(app_settings)]
+
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 

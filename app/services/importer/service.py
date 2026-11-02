@@ -243,3 +243,45 @@ async def _is_suppressed(session: AsyncSession, ctx: OrgContext, email: str) -> 
 
 
 __all__ = ["ImportPreview", "commit", "preview", "repo"]
+
+
+def one_row_csv(
+    *,
+    email: str,
+    full_name: str | None = None,
+    company_name: str | None = None,
+    company_url: str | None = None,
+    job_title: str | None = None,
+    linkedin_url: str | None = None,
+) -> bytes:
+    """One contact as a one-row CSV, so a single lead can go through `commit`.
+
+    Written for F9: a contact a provider proposed has to become a lead, and the alternative was
+    a second `Lead(...)` insert somewhere else. **That would be a second place the suppression
+    check could be forgotten**, and the suppression check is the one rule in this file that
+    protects a person rather than the data. The same argument applies to the MX check, the
+    already-in-this-campaign check and the batch id, which is what makes an import undoable.
+
+    So the indirection buys one lead-creation path. The cost is a few hundred bytes of CSV built
+    in memory, which is nothing.
+
+    Quoting is `csv.writer`'s, not ours: a company called `Smith, Jones & Co` is an ordinary
+    name, and hand-built CSV is where that becomes two columns.
+    """
+    import csv
+    import io
+
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(["email", "name", "company", "company_url", "title", "linkedin"])
+    writer.writerow(
+        [
+            email,
+            full_name or "",
+            company_name or "",
+            company_url or "",
+            job_title or "",
+            linkedin_url or "",
+        ]
+    )
+    return buffer.getvalue().encode("utf-8")

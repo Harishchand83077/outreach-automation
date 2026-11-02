@@ -1538,3 +1538,170 @@ class ApiToken(Base):
         # The verification query: one row by hash, on every call.
         Index("ix_api_tokens_hash", "token_hash"),
     )
+
+
+#: The contact providers F9 can call. **The check constraint is built from this tuple** -- the
+#: same device as `SUPPRESSION_REASONS`, and for the same reason: a literal that has to match a
+#: database constraint, copied into a caller that cannot see it change, is this project's most
+#: repeated defect.
+CONTACT_PROVIDERS: tuple[str, ...] = ("apollo", "hunter", "snov", "mock")
+
+#: How a provider's credential is held. `api_key` is a string the user pasted; `oauth` is a
+#: client id and secret they pasted, which we exchange for a short-lived token per call.
+#:
+#: Both exist from the first migration deliberately. The owner asked whether a Connect button
+#: could fetch a key instead of the user pasting one, and the answer differs per provider --
+#: key-based for Hunter, client credentials the user still copies for Snov, partner-gated for
+#: Apollo. Adding a Connect flow later is therefore a handler rather than a migration.
+PROVIDER_CREDENTIAL_KINDS: tuple[str, ...] = ("api_key", "oauth")
+
+#: What a proposed contact is. `proposed` until a person does something with it; `imported` once
+#: it has become a lead; `dismissed` when they said no.
+CONTACT_CANDIDATE_STATES: tuple[str, ...] = ("proposed", "imported", "dismissed")
+
+#: How much the provider claims to know about the address. **`guess` is a pattern, not a
+#: finding** -- several providers return `first.last@domain` constructed from a naming convention
+#: and present it beside a verified one. Mailing a guess is how a bounce rate rises, so the
+#: distinction is a column rather than a note inside a confidence score.
+CONTACT_EMAIL_STATUSES: tuple[str, ...] = ("verified", "guess", "unknown")
+
+
+class ProviderCredential(Base):
+    """One contact provider's key, for one workspace, encrypted at rest (F9, ADR-041).
+
+    **The same scheme as `mail_credentials`**: Fernet, the key in the environment, ciphertext in
+    its own table, and `__repr__` never near the plaintext. Reusing the scheme rather than
+    inventing a second one means there is one answer to "where are the secrets and how are they
+    protected?", and one key to rotate.
+
+    **One live row per provider per workspace, enforced by a partial unique index.** Hard rule 8
+    says one account per provider per org and never rotate keys to evade a free tier; a schema
+    that permits five keys for one provider is a schema in which doing that is a loop somebody
+    writes later. The index is partial on `revoked_at IS NULL`, so replacing a key the provider
+    reissued still works -- what is refused is *holding* several at once.
+
+    **There is no shared key.** No `APOLLO_API_KEY` in `Settings`, no fallback to a deployment
+    credential, and a test asserts both. ADR-023 removed the deployment's mailbox for the same
+    reason: as long as one identity lives in the environment, every question about who may use it
+    is a rule somebody has to hold in their head.
+    """
+
+    __tablename__ = "provider_credentials"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: One of `CONTACT_PROVIDERS`.
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: One of `PROVIDER_CREDENTIAL_KINDS`.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Ciphertext. For `oauth`, the client id and secret as one sealed JSON object -- two columns
+    #: would mean two things to encrypt, two to rotate and two to forget to clear.
+    secret: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: What the user called it. Never the key, and not a fragment of it either: four characters
+    #: of a key are four characters an attacker does not have to guess.
+    label: Mapped[str | None] = mapped_column(String(120))
+    added_by: Mapped[str | None] = mapped_column(String(200))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Set when the provider refuses it. Read to decide whether a lookup can run, and **never
+    #: returned by any route** -- it can quote a provider's reply, and that reaches a browser and
+    #: a screenshot. The same rule as `mail_credentials.invalid_reason`.
+    invalid_reason: Mapped[str | None] = mapped_column(Text)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    def __repr__(self) -> str:  # pragma: no cover - defensive
+        # A default repr would print the ciphertext in every traceback and debugger frame.
+        return f"ProviderCredential(provider={self.provider!r}, kind={self.kind!r})"
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN (" + ", ".join(f"'{name}'" for name in CONTACT_PROVIDERS) + ")",
+            name="ck_provider_credentials_provider",
+        ),
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{name}'" for name in PROVIDER_CREDENTIAL_KINDS) + ")",
+            name="ck_provider_credentials_kind",
+        ),
+        Index(
+            "uq_provider_credentials_live",
+            "org_id",
+            "provider",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+    )
+
+
+class ContactCandidate(Base):
+    """A hiring contact a provider proposed, waiting for a person to decide (F9, ADR-041).
+
+    **It is not a lead and cannot be mailed.** The send loop reads `leads`; nothing here is in
+    that table until somebody imports it, at which point it goes through the ordinary import
+    path with its suppression check, its research and drafting, and its human approval. A row
+    here is a suggestion, exactly as a `suggestions` row is.
+
+    **No raw provider payload is stored.** It would be the fastest way to debug a shape change,
+    and it is somebody's personal data arriving from a third party -- so the fields we chose are
+    the fields we keep, and a shape we cannot read is reported as unreadable rather than filed
+    away for later.
+    """
+
+    __tablename__ = "contact_candidates"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The posting this lookup was run for, when it was run for one. Nullable: a lookup can also
+    #: be run against a bare domain.
+    job_post_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="SET NULL")
+    )
+    #: Set once imported, so the same person is not proposed again next week.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    company_domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    full_name: Mapped[str | None] = mapped_column(String(300))
+    title: Mapped[str | None] = mapped_column(String(300))
+    email: Mapped[str | None] = mapped_column(String(320))
+    email_norm: Mapped[str | None] = mapped_column(String(320))
+    #: One of `CONTACT_EMAIL_STATUSES`.
+    email_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unknown")
+    #: 0-100 as the provider reports it. Kept as the provider's own number rather than rescaled,
+    #: because a rescaled score cannot be compared with the provider's own dashboard.
+    confidence: Mapped[int | None] = mapped_column(Integer)
+    #: A public profile URL the provider returned, for the person to open themselves. **Never
+    #: fetched** -- hard rule 4 covers LinkedIn, and nothing here fetches any of them.
+    profile_url: Mapped[str | None] = mapped_column(String(2000))
+    #: One of `CONTACT_CANDIDATE_STATES`.
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN (" + ", ".join(f"'{name}'" for name in CONTACT_PROVIDERS) + ")",
+            name="ck_contact_candidates_provider",
+        ),
+        CheckConstraint(
+            "email_status IN (" + ", ".join(f"'{name}'" for name in CONTACT_EMAIL_STATUSES) + ")",
+            name="ck_contact_candidates_email_status",
+        ),
+        CheckConstraint(
+            "state IN (" + ", ".join(f"'{name}'" for name in CONTACT_CANDIDATE_STATES) + ")",
+            name="ck_contact_candidates_state",
+        ),
+        # One proposal per address per workspace. A second lookup for the same company must
+        # update rather than pile up a duplicate the person has to dismiss twice.
+        Index(
+            "uq_contact_candidates_email",
+            "org_id",
+            "email_norm",
+            unique=True,
+            postgresql_where=text("email_norm IS NOT NULL"),
+        ),
+        Index("ix_contact_candidates_org_state", "org_id", "state"),
+    )
