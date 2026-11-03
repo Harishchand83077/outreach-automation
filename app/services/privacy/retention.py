@@ -39,6 +39,7 @@ from app.db.models import DomainResearch, Lead, Message
 from app.db.repo import OrgContext
 from app.domain.state import TERMINAL
 from app.services.privacy.erasure import erase_lead
+from app.services.research import search_cache
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +59,15 @@ class RetentionReport:
     leads_erased: int = 0
     evidence_cleared: int = 0
     orphans_deleted: int = 0
+    searches_purged: int = 0
 
     def __bool__(self) -> bool:
-        return bool(self.leads_erased or self.evidence_cleared or self.orphans_deleted)
+        return bool(
+            self.leads_erased
+            or self.evidence_cleared
+            or self.orphans_deleted
+            or self.searches_purged
+        )
 
 
 async def clear_old_evidence(
@@ -179,6 +186,13 @@ async def run_retention(
             session, older_than=orphan_retention, now=now
         )
 
+    # Expired search answers (F17). Deleted outright, unlike `domain_research`, and the asymmetry
+    # is the point: those rows hold findings a sent email cited and are part of the record of
+    # what we said, while an answer nobody may serve any more is a copy of somebody else's index
+    # with no audit value at all.
+    async with session_factory() as session, session.begin():
+        report.searches_purged = await search_cache.purge_expired(session, now=now)
+
     if report:
         logger.info(
             "retention sweep",
@@ -186,6 +200,7 @@ async def run_retention(
                 "leads_erased": report.leads_erased,
                 "evidence_cleared": report.evidence_cleared,
                 "orphans_deleted": report.orphans_deleted,
+                "searches_purged": report.searches_purged,
             },
         )
     return report

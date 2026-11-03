@@ -743,6 +743,61 @@ class SearchUsage(Base):
     __table_args__ = (Index("ix_search_usage_org_at", "org_id", "at"),)
 
 
+#: How long one search answer may be reused. A week, and the number is doing a different job
+#: from `research.service.CACHE_DAYS`: that one governs findings verified against page text we
+#: fetched, this one governs *somebody else's* index of what a company has been up to lately,
+#: which is the most perishable thing in this system. `PERISHABLE_AFTER_DAYS` already drops the
+#: hooks that cite it after thirty days; a week keeps the cache from serving news that has moved
+#: on while still covering the case this exists for -- a second lead at the same company, or a
+#: re-research after the ninety-day findings cache expires.
+SEARCH_CACHE_DAYS = 7
+
+
+class SearchCache(Base):
+    """One search answer, reused so a repeat question costs nobody a credit (F17, ADR-046).
+
+    **This is the half of F17 that saves money.** The chain stopping at the first provider that
+    answers decides *which* key is spent; the cache decides whether any key is spent at all, and
+    a cache hit calls no provider and records no usage.
+
+    **Per workspace, like `domain_research` and unlike `company_profiles`.** ADR-038 made the
+    public-company cache the single table with no `org_id`, and drew the line precisely: a name
+    and an ATS slug are public facts, while findings a draft goes on to cite were paid for by one
+    workspace out of its own credits and are not ours to pool. A search answer is on the second
+    side of that line -- it is a provider's billable response to a question one workspace asked.
+
+    **A confirmed empty is cached too, and that is deliberate.** A provider that answered and
+    found nothing is an answer: caching it stops the next lead at the same company paying for the
+    same silence. What is **never** cached is a chain where every member failed -- that is the
+    absence of an answer, and storing it would let one provider outage keep a workspace from
+    searching for a week. The two are told apart by `provider`, which names who answered.
+    """
+
+    __tablename__ = "search_cache"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The normalised query. Not a domain: two companies can share a domain in nobody's index,
+    #: and the question we asked is what the answer is an answer to.
+    query_norm: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: Which member of the chain answered. One of `SEARCH_PROVIDERS`, widened to 40 characters
+    #: like `search_usage.provider` so a provider added later needs no migration.
+    provider: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The hits as stored: title, url and snippet, nothing else. No lead id and no person -- a
+    #: search is asked about a company, and a row keyed per workspace per query has no business
+    #: recording which lead happened to prompt it.
+    hits: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    fetched_at: Mapped[datetime] = _now_col(nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "query_norm", name="uq_search_cache_org_query"),
+        Index("ix_search_cache_expires", "expires_at"),
+    )
+
+
 class ImapCursor(Base):
     r"""Where the poller got to in one folder.
 
@@ -1554,6 +1609,22 @@ class ApiToken(Base):
 #: repeated defect.
 CONTACT_PROVIDERS: tuple[str, ...] = ("apollo", "hunter", "snov", "mock")
 
+#: The search providers F17's chain may call, **in the order it tries them by default**. The
+#: order is the feature: the chain stops at the first provider that answers, so the order
+#: decides what a workspace spends. A workspace with one key has a chain of one and behaves
+#: exactly as this system did before F17.
+#:
+#: These are *search* providers and `CONTACT_PROVIDERS` are *contact* providers. They share one
+#: table and one encryption scheme -- so there is one answer to "where are the secrets and how
+#: are they protected?" and one key to rotate -- and the two sets of names are deliberately
+#: disjoint, so a key saved for one family can never be handed to an adapter from the other.
+SEARCH_PROVIDERS: tuple[str, ...] = ("tavily", "brave", "serper")
+
+#: Every provider name `provider_credentials` accepts. **The check constraint is built from
+#: this**, so adding a provider is one tuple and one migration rather than a literal copied into
+#: a constraint, a route and an adapter registry that can each drift from the others.
+ALL_PROVIDERS: tuple[str, ...] = CONTACT_PROVIDERS + SEARCH_PROVIDERS
+
 #: How a provider's credential is held. `api_key` is a string the user pasted; `oauth` is a
 #: client id and secret they pasted, which we exchange for a short-lived token per call.
 #:
@@ -1625,7 +1696,7 @@ class ProviderCredential(Base):
 
     __table_args__ = (
         CheckConstraint(
-            "provider IN (" + ", ".join(f"'{name}'" for name in CONTACT_PROVIDERS) + ")",
+            "provider IN (" + ", ".join(f"'{name}'" for name in ALL_PROVIDERS) + ")",
             name="ck_provider_credentials_provider",
         ),
         CheckConstraint(

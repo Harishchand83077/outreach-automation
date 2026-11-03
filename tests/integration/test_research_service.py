@@ -675,3 +675,240 @@ class TestSearchFallback:
             search_policy="never",
         )
         assert outcome.searched is False
+
+
+class TestTheSearchChainInsideResearch:
+    """F17 through the pipeline it hides behind (ADR-046).
+
+    The chain satisfies `SearchProvider`, which is why F17 needed no change to the research
+    pipeline -- so the tests that matter here are the two about what is *not* called.
+    """
+
+    class Recorder:
+        def __init__(self, name: str, *hits: SearchHit) -> None:
+            self.name = name
+            self._hits = list(hits)
+            self.calls: list[str] = []
+
+        async def search(self, query: str, *, max_results: int = 3) -> list[SearchHit]:
+            self.calls.append(query)
+            return list(self._hits)
+
+    def _thin(self) -> ResearchResult:
+        return ResearchResult(hooks=[], confidence=0.1)
+
+    async def test_a_cache_hit_calls_no_provider(self, db, org, lead, fetcher, site):
+        """**The slice's second acceptance criterion.** A second lead at a company somebody
+        already searched for costs nothing -- not a credit, not a request.
+        """
+        from app.services.research import search_cache
+        from app.services.research.chain import CACHE_MEMBER
+
+        await search_cache.store(
+            db,
+            org_id=org.id,
+            query="Acme Analytics company news",
+            provider="tavily",
+            hits=[SearchHit("News", "https://news.example/acme", "Acme grew")],
+        )
+        await db.commit()
+
+        provider = self.Recorder("tavily", SearchHit("Other", "https://other.example", "x"))
+        budget = SearchBudget(db, org.id, monthly=10)
+
+        outcome = await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=provider,
+            budget=budget,
+        )
+        await db.commit()
+
+        assert provider.calls == [], "a cached answer must not reach a provider"
+        assert outcome.search_from_cache is True
+        assert outcome.search_provider == CACHE_MEMBER
+        assert await budget.used_this_month() == 0
+        assert any("cached on" in gap for gap in outcome.verified.gaps)
+
+    async def test_a_cached_answer_is_served_even_with_the_budget_spent(
+        self, db, org, lead, fetcher, site
+    ):
+        """The cache is read **before** any ceiling is checked, and that order is deliberate: a
+        cached answer costs nobody a credit, so checking the budget first would refuse to read a
+        row this workspace has already paid for."""
+        from app.services.research import search_cache
+
+        await search_cache.store(
+            db,
+            org_id=org.id,
+            query="Acme Analytics company news",
+            provider="tavily",
+            hits=[SearchHit("News", "https://news.example/acme", "Acme grew")],
+        )
+        budget = SearchBudget(db, org.id, monthly=1)
+        await budget.record(provider="tavily", credits=1)
+        await db.commit()
+
+        outcome = await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=self.Recorder("tavily"),
+            budget=budget,
+        )
+
+        assert outcome.search_from_cache is True
+        assert not any("budget exhausted" in gap for gap in outcome.verified.gaps)
+
+    async def test_a_re_research_does_not_pay_for_the_same_question_twice(
+        self, db, org, lead, fetcher, site
+    ):
+        """**Where this cache actually earns its keep**, which is narrower than it first looks
+        and is worth stating rather than overclaiming.
+
+        Two leads at one website never reach a search twice anyway: `domain_research` is keyed on
+        the registrable domain and the second lead is served from it before a search is even
+        considered. So the search cache is not what saves that credit, and a test asserting that
+        it was would pass for the wrong reason.
+
+        What it does save is a company researched **again**: a run whose synthesis failed after
+        the search was paid for and stored nothing, or a cache row past
+        `PERISHABLE_AFTER_DAYS` whose hooks were all perishable and is therefore treated as a
+        miss. Both re-run the whole pipeline, and without this the credit is spent a second time
+        for an answer a week old that has not changed.
+        """
+        from sqlalchemy import delete as _delete
+
+        provider = self.Recorder("tavily", SearchHit("News", "https://news.example/a", "grew"))
+        budget = SearchBudget(db, org.id, monthly=10)
+
+        await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=provider,
+            budget=budget,
+        )
+        await db.commit()
+
+        assert len(provider.calls) == 1
+        assert await budget.used_this_month() == 1
+
+        # What a failed run leaves behind: no findings for this domain, so the next attempt
+        # researches the company from scratch.
+        await db.execute(_delete(Research))
+        await db.execute(_delete(DomainResearch))
+        await db.commit()
+
+        outcome = await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=provider,
+            budget=budget,
+        )
+        await db.commit()
+
+        assert outcome.from_cache is False, "the findings really were researched again"
+        assert len(provider.calls) == 1, "the same question was already answered"
+        assert await budget.used_this_month() == 1
+        assert outcome.search_from_cache is True
+
+    async def test_a_provider_outage_is_not_cached_as_nothing_found(
+        self, db, org, lead, fetcher, site
+    ):
+        """The distinction the single-provider version could not express. Storing an outage as
+        an empty answer would stop this workspace searching for a week over one bad afternoon."""
+        from sqlalchemy import select as _select
+
+        from app.db.models import SearchCache
+        from app.services.research.chain import ChainMember, SearchChain
+        from app.services.research.search import SearchUnavailable
+
+        class Broken:
+            name = "tavily"
+
+            async def search(self, query: str, *, max_results: int = 3):
+                raise SearchUnavailable("tavily answered HTTP 503")
+
+        budget = SearchBudget(db, org.id, monthly=10)
+        outcome = await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=SearchChain(
+                [ChainMember(provider=Broken())], session=db, org_id=org.id, budget=budget
+            ),
+            budget=budget,
+        )
+        await db.commit()
+
+        assert outcome.searched is False
+        assert await budget.used_this_month() == 0, "an outage is not a credit"
+        assert await db.scalar(_select(SearchCache).where(SearchCache.org_id == org.id)) is None
+        assert any("no search provider could be reached" in gap for gap in outcome.verified.gaps)
+
+    async def test_a_confirmed_empty_answer_is_cached(self, db, org, lead, fetcher, site):
+        """A provider that answered and found nothing told us something true. The next lead at
+        this company should not pay to be told the same silence."""
+        from sqlalchemy import select as _select
+
+        from app.db.models import SearchCache
+
+        provider = self.Recorder("tavily")
+        budget = SearchBudget(db, org.id, monthly=10)
+
+        await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=provider,
+            budget=budget,
+        )
+        await db.commit()
+
+        row = await db.scalar(_select(SearchCache).where(SearchCache.org_id == org.id))
+        assert row is not None
+        assert row.hits == []
+        assert row.provider == "tavily"
+
+    async def test_a_workspace_with_no_key_is_told_what_to_do_about_it(
+        self, db, org, lead, fetcher, site
+    ):
+        """A chain of none is a supported configuration, not an error -- and the gap says so in
+        a sentence somebody can act on rather than leaving a reviewer to wonder."""
+        from app.services.research.chain import SearchChain
+
+        budget = SearchBudget(db, org.id, monthly=10)
+        outcome = await research_lead(
+            db,
+            org_id=org.id,
+            lead=lead,
+            offer=OFFER,
+            router=FakeRouter(self._thin()),
+            fetcher=fetcher,
+            search=SearchChain([], session=db, org_id=org.id, budget=budget),
+            budget=budget,
+        )
+
+        assert outcome.searched is False
+        assert any("add your own key" in gap for gap in outcome.verified.gaps)

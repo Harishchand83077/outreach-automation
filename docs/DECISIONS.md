@@ -3203,3 +3203,167 @@ live secret per workspace is unexpressible by a partial unique index, so revokin
   make.
 - **Creating a lead for an unmatched booking.** It puts somebody into a sending pipeline for
   having asked to talk.
+
+## ADR-046 — Search is an ordered chain of the workspace's own keys, and a cached answer costs nothing
+
+**Date:** 2026-11-04
+**Status:** Accepted
+**Relates to:** F17, slice S14.3; extends ADR-041 (the user's own provider keys) and ADR-038
+(what may be pooled across workspaces)
+
+### Context
+
+Research reads a company's own pages first, because that is better evidence and costs nothing,
+and searches only when those pages said too little. The search half was built in Phase 3 behind
+a `SearchProvider` interface with one implementation, Tavily, on a key in the environment.
+
+**It had never run.** `research_lead` has accepted a `search` and a `budget` since Phase 3,
+`_try_search` was correct and tested, `build_provider` and `SearchBudget` existed and were
+tested — and `handle_research_lead`, the only caller in the system, passed neither. So `search`
+was None on every real research job, and the entire fallback was exercised only by tests that
+passed a provider in by hand.
+
+That is this project's signature defect in its purest form, and the eleventh instance of it: a
+correct producer, a correct consumer, and nothing joining them. The same shape as research never
+queuing a draft, as nothing ever writing a `Draft(kind="followup")`, as the two `draft_reply`
+payload shapes that matched nothing, and as every outbound message going out with no
+`In-Reply-To`. Every one was invisible to a suite that exercised both halves separately, and
+every one was found by looking at the join rather than at either side.
+
+So F17 is two changes: wire the thing up, and make what gets wired up worth having.
+
+### Decision
+
+**A chain of providers, tried in order, stopping at the first that answers.** The shape is
+deliberately `LLMRouter`'s, because the problem is the same one — several providers, each with a
+free tier, any of which may be down or out of credit, tried in an order the operator chose.
+Reusing that shape rather than inventing a second one means there is one answer in this system to
+"what happens when a provider fails?"
+
+**The order is the feature, and it has two edges.** A hit short-circuits, so the second member is
+not called and therefore not billed; and a **cache hit calls nobody at all**. Those are the
+slice's two acceptance criteria and they are the only two properties here that cost money when
+they are wrong.
+
+**Every key is the workspace's own**, read from `provider_credentials` exactly as F9's contact
+lookups are. ADR-041's reasoning carries over unchanged: there is no shared key, so every
+question about who may use one has the same answer, and a workspace with none degrades to the
+company's own pages rather than failing.
+
+**The deployment's `TAVILY_API_KEY` survives as the last member, and is named as shared.** This
+is the one deliberate compromise. ADR-023 removed the deployment's mailbox precisely because an
+identity living in the environment makes "who may use it?" a rule somebody has to maintain — and
+every argument there applies here. It stays because removing it would stop the live deployment
+searching at all, and it is contained three ways: it is always last, so a workspace's own key
+shadows it; it is recorded in `search_usage` as `tavily:deployment` rather than `tavily`, so the
+ledger can say which account a credit came out of; and the screen says in words that its free
+tier is shared by every workspace using it. A workspace reading "search works" without being told
+whose credits it spends has been told something misleading.
+
+**A failure is not an empty answer**, and this is the change F17 forced in the provider interface.
+With one provider the two were the same thing: `search()` returned `[]` on an outage, which was a
+correct way of saying "degrade, do not fail the lead". With a chain they are opposite answers:
+
+- **"Nobody writes about this company"** stops nothing — the next member is tried, because a
+  provider that does not index a small Indian company is the ordinary case this exists for — and
+  once every member has answered, the empty result **is cached**, so the next lead at that company
+  does not pay to be told the same silence.
+- **"This provider is down"** moves to the next member and is **never cached**. Storing it would
+  let one bad afternoon stop a workspace searching for a week.
+
+A provider that reports an outage as zero results makes those indistinguishable. That is the
+job-post intake's expensive lesson in a more costly place: an unknown source with a plausible
+payload returned zero postings and read as an empty board. So `search()` raises, and `SearchChain`
+catches both kinds and degrades exactly as the single provider did.
+
+**A refused key is told apart from an outage**, by two exception classes rather than one. A 401
+means stop using this key until somebody fixes it, and the credential records that so the next
+research job leaves the member out instead of paying a request to be refused again. A 429 or a
+503 means try the next member and this one again tomorrow, and the key is untouched — being out
+of credit is not being wrong. Collapsing the two is how a perfectly good key gets recorded as
+dead because a provider had a bad afternoon.
+
+**The cache is read before any ceiling is checked.** A cached answer costs nobody a credit, so a
+workspace that has spent its month still gets the answer it has already paid for. Checking the
+budget first would refuse to read a row we own.
+
+**The budget is per provider, and the number is ours rather than theirs.** Each member is a
+separate account with its own allowance, so a pooled total would refuse a workspace's second key
+for credits its first key spent. We cannot read anybody's plan, so 1,000 a month is a ceiling
+that stops a loop spending somebody's month in an afternoon — the same job `DAILY_LOOKUP_BUDGET`
+does for contact lookups, and stated as that rather than as a claim about a free tier.
+
+**The cache is per workspace.** ADR-038 made `company_profiles` the one table in this schema with
+no `org_id` and drew the line precisely: a name, a careers URL and an ATS slug are public facts
+worth pooling, while findings a draft goes on to cite were paid for by one workspace out of its
+own credits and are not ours to pool. A search answer is on the second side of that line — it is
+a provider's billable response to a question one workspace asked — so `search_cache` carries
+`org_id` like `domain_research` and unlike `company_profiles`. One exception to ADR-004 is a
+decision; two would be a pattern.
+
+**Seven days, and the number is doing a different job from the research cache's ninety.** That one
+governs findings verified against text we fetched. This one governs somebody else's index of what
+a company has been up to lately, which is the most perishable thing in this system —
+`PERISHABLE_AFTER_DAYS` already drops the hooks that cite it after thirty days, and a cache
+serving month-old news would be feeding exactly the hook that embarrasses us first.
+
+**Expired answers are deleted by the hourly sweep**, unlike `domain_research`, which is only ever
+blanked. The asymmetry is the point: those rows hold findings a sent email cited and are part of
+the record of what we said, while a search answer nobody may serve any more is a copy of somebody
+else's index with no audit value at all.
+
+**Two provider families, one table, disjoint names.** `provider_credentials` now holds contact
+keys and search keys, because there should be one answer to "where are the secrets and how are
+they protected?" and one key to rotate. The check constraint is built from
+`ALL_PROVIDERS = CONTACT_PROVIDERS + SEARCH_PROVIDERS`, so adding a provider is one tuple and one
+migration. But the constraint accepts either family's names, so it **cannot** be what stops a
+Tavily key being handed to a contact adapter — which would post a search credential to somebody
+else's endpoint. Each door therefore narrows to its own family explicitly, and the two name sets
+are asserted disjoint.
+
+**The verify button costs a credit and says so.** None of these providers offers an "is this key
+valid?" endpoint, so verification is a real search. ADR-021's lesson is why it exists at all: a
+key pasted with a trailing space, a green tick, and a fallback that quietly never runs is the
+failure that took a whole slice to notice the first time. It runs one member rather than the
+chain, because the question is whether *this* key works and a chain would answer it by falling
+through to a different provider and reporting success.
+
+### Consequences
+
+- The search fallback runs for the first time. A deployment with `TAVILY_API_KEY` set will start
+  spending credits on leads whose own pages said too little, which is what that key was for and
+  has not happened before.
+- A workspace with no search key gets a sentence saying so, with something to do about it, instead
+  of silence.
+- `SearchProvider.search` raising is a behaviour change for any future caller that treated `[]` as
+  "could not search". There is one caller, and it is the chain.
+- Reverting the migration **deletes** search keys. Revoking them would not do: the narrowed
+  constraint looks at `provider` and not at `revoked_at`, so a revoked `tavily` row violates it
+  exactly as a live one does. The downgrade says that in those words rather than hiding behind a
+  tidier verb.
+- A per-workspace chain *order* is not built. With at most three members the order that matters is
+  "mine before the shared one", and that is the one implemented; a column and a screen for the
+  rest is a later decision.
+- Brave and Serper have **never been called**. Each response is read in exactly one function and
+  `docs/SEARCH_PROVIDERS.md` marks which shapes were exercised and which were read off a page, in
+  the spirit of `CONTACT_PROVIDERS.md`.
+
+### Rejected
+
+- **Pooling search answers across workspaces.** It is ADR-038's line, on the wrong side of it: a
+  billable answer to one workspace's question, paid for out of its credits.
+- **One pooled monthly budget across providers.** It refuses a workspace's second key for credits
+  its first key spent.
+- **Keeping `[]` as the failure signal.** It makes an outage indistinguishable from a company
+  nobody writes about, which is the one distinction the cache depends on.
+- **Caching an answer when every member failed.** One bad afternoon would stop a workspace
+  searching for a week.
+- **Marking a key invalid on a 429.** Being out of credit is not being wrong, and next month it
+  works again.
+- **A `mock` search provider.** `CONTACT_PROVIDERS` has one because the owner holds no paid
+  contact key and the feature's first run would otherwise be against a real account. Search needs
+  none: "no key" is already a supported, honest configuration here, and research degrades to the
+  company's own pages — so a fourth name in the constraint would buy a demo and a thing to
+  explain.
+- **Letting the deployment key be first, or the only one.** It is one free tier shared by every
+  workspace, with no row a route could fix when it breaks.

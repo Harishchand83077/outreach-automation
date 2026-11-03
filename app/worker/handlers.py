@@ -47,7 +47,9 @@ from app.services.jobposts.feeds import FeedError
 from app.services.jobposts.intake import store
 from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
+from app.services.research import chain
 from app.services.research.fetcher import Fetcher
+from app.services.research.search import SearchBudget
 from app.services.research.service import research_lead
 from app.services.resume import store as resume_store
 from app.services.resume import tailor
@@ -117,6 +119,20 @@ async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: J
         )
 
     async with httpx.AsyncClient(follow_redirects=True) as client:
+        # **The search chain is built and passed here, and until F17 nothing was.**
+        # `research_lead` has taken a `search` and a `budget` since Phase 3, `_try_search` was
+        # correct, and `build_provider` and `SearchBudget` existed and were tested -- while
+        # this, the only caller in the system, passed neither. So `search` was None on every
+        # real research job and the search fallback had never once run outside a test. The
+        # project's signature defect in its purest form: a correct producer, a correct consumer
+        # and nothing joining them. The same shape as research never queuing a draft, and as
+        # nothing ever writing a `Draft(kind="followup")`.
+        budget = SearchBudget(
+            session, job.org_id, monthly=ctx.settings.TAVILY_MONTHLY_CREDIT_BUDGET
+        )
+        members = await chain.build_chain(
+            session, OrgContext(org_id=job.org_id), client=client, settings=ctx.settings
+        )
         outcome = await research_lead(
             session,
             org_id=job.org_id,
@@ -124,6 +140,11 @@ async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: J
             offer=persona.offer,
             router=router,
             fetcher=Fetcher(client=client),
+            # A chain with no members is still passed, because the cache does not need one: a
+            # second lead at a company somebody already searched for is answered without any
+            # key being spent, or indeed held.
+            search=chain.SearchChain(members, session=session, org_id=job.org_id, budget=budget),
+            budget=budget,
         )
 
     if outcome.skipped_reason:

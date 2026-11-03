@@ -18,7 +18,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
-from app.db.models import Campaign, ContactCandidate
+from app.db.models import CONTACT_PROVIDERS, Campaign, ContactCandidate
 from app.db.queue import QueueFull
 from app.services.contacts import keys, lookup
 from app.services.importer import first_job
@@ -58,7 +58,7 @@ async def list_provider_keys(user: CurrentUserDep, session: SessionDep) -> dict[
     own sentence can reach a browser and a screenshot, so a row carries a boolean `usable`
     instead, exactly as `GET /mailboxes` does.
     """
-    statuses = await keys.statuses(session, user.ctx)
+    statuses = await keys.statuses(session, user.ctx, family="contact")
     return {
         "providers": [
             {
@@ -106,6 +106,11 @@ async def save_a_provider_key(
             label=label,
             client_id=client_id,
             settings=settings,
+            # A *contact* provider only. Both families live in one table and the check
+            # constraint accepts either name, so this is the only place that can refuse a
+            # search key being handed to a contact adapter -- which would post it to somebody
+            # else's endpoint.
+            allowed=CONTACT_PROVIDERS,
         )
     except keys.ProviderKeyError as exc:
         await session.rollback()
@@ -125,7 +130,7 @@ async def revoke_a_provider_key(
 ) -> dict[str, Any]:
     """Stop using a key. The row is kept, revoked, so the change itself stays auditable."""
     try:
-        removed = await keys.revoke(session, user.ctx, provider=provider)
+        removed = await keys.revoke(session, user.ctx, provider=provider, allowed=CONTACT_PROVIDERS)
     except keys.ProviderKeyError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

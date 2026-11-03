@@ -11,7 +11,9 @@
    no lead PII and so may use a provider that trains on prompts.
 5. **Verify every hook against the fetched text**, by code. This is the step that makes it
    research rather than invention.
-6. **Search only if that was thin**, at most once per lead, against a monthly credit budget.
+6. **Search only if that was thin**, at most once per lead, against a monthly credit budget --
+   and through F17's ordered chain, which reads a cached answer first, then tries each of the
+   workspace's own provider keys in turn and stops at the first that answers.
 
 What this replaces: a prompt that said "Base analysis on the company name" and produced
 confident paragraphs about funding stage and traction for a company nobody had looked at
@@ -32,6 +34,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import DomainResearch, Lead, Research
 from app.services.llm.errors import CapacityExhausted, LLMError
 from app.services.llm.router import LLMRouter
+from app.services.research import search_cache
+from app.services.research.chain import (
+    CACHE_MEMBER,
+    CEILING_SPENT,
+    ChainAnswer,
+    ChainMember,
+    SearchChain,
+)
 from app.services.research.extract import (
     ExtractedPage,
     build_evidence,
@@ -50,7 +60,7 @@ from app.services.research.findings import (
     verify,
 )
 from app.services.research.net import UnsafeTarget, registrable_domain, validate_url
-from app.services.research.search import SearchBudget, SearchProvider
+from app.services.research.search import SearchBudget, SearchHit, SearchProvider
 
 #: How long a company's research may be reused. A quarter, not the original month, and the
 #: reasoning is worth keeping because the obvious variable to economise on is the wrong one.
@@ -95,6 +105,13 @@ class ResearchOutcome:
     pages_fetched: int = 0
     fetch_errors: list[str] = field(default_factory=list)
     searched: bool = False
+    #: Which member of the search chain answered, or `cache` when nobody had to be asked. None
+    #: when no search was run, or when none of the providers could answer.
+    search_provider: str | None = None
+    #: Whether the answer came out of `search_cache` and therefore cost nothing. Reported rather
+    #: than inferred from `searched`, because "we searched" and "we spent a credit" are two
+    #: questions that now have different answers.
+    search_from_cache: bool = False
     skipped_reason: str | None = None
 
     @property
@@ -110,12 +127,18 @@ async def research_lead(
     offer: str,
     router: LLMRouter,
     fetcher: Fetcher,
-    search: SearchProvider | None = None,
+    search: SearchProvider | SearchChain | None = None,
     budget: SearchBudget | None = None,
     search_policy: str = "when_thin",
     now: datetime | None = None,
 ) -> ResearchOutcome:
-    """Research one lead and persist the result."""
+    """Research one lead and persist the result.
+
+    `search` may be a chain or a single provider. A single provider is wrapped in a chain of
+    one rather than kept as a second code path: one provider is the ordinary configuration, and
+    it must go through the same cache, the same ceiling and the same failure handling as three,
+    or the commonest case is the least exercised one.
+    """
     now = now or datetime.now(tz=UTC)
 
     if not lead.company_url:
@@ -164,8 +187,10 @@ async def research_lead(
     verified = verify(result, corpus=evidence, fetched_urls=fetched_urls)
 
     searched = False
+    search_provider: str | None = None
+    search_from_cache = False
     if verified.thin and search is not None and budget is not None and search_policy != "never":
-        searched = await _try_search(
+        answer = await _try_search(
             session,
             org_id=org_id,
             lead=lead,
@@ -174,6 +199,10 @@ async def research_lead(
             verified=verified,
             now=now,
         )
+        if answer is not None:
+            searched = answer.answered
+            search_provider = answer.provider
+            search_from_cache = answer.from_cache
 
     domain_row = await _store_domain_research(
         session,
@@ -192,6 +221,8 @@ async def research_lead(
         pages_fetched=len(pages),
         fetch_errors=errors,
         searched=searched,
+        search_provider=search_provider,
+        search_from_cache=search_from_cache,
     )
 
 
@@ -435,40 +466,93 @@ async def _try_search(
     *,
     org_id: uuid.UUID,
     lead: Lead,
-    search: SearchProvider,
+    search: SearchProvider | SearchChain,
     budget: SearchBudget,
     verified: VerifiedResearch,
     now: datetime,
-) -> bool:
-    """One search, only when the site yielded nothing and only within budget.
+) -> ChainAnswer | None:
+    """One search, only when the site yielded nothing, through the chain and its cache.
 
     Hits are added as sources and gaps, not as hooks: a search snippet has not been through the
     same verification as page text, so it informs a human rather than grounding a claim.
-    """
-    if not await budget.can_spend(1, now=now):
-        verified.gaps.append("search budget exhausted for this month")
-        return False
 
+    **The cache is read before any ceiling is checked**, and that order is deliberate. A cached
+    answer costs nobody a credit, so a workspace that has spent its month still gets the answer
+    it has already paid for; checking the budget first would refuse to read a row we own.
+    """
     # The company's own domain, never `lead.domain`: for a founder on Gmail that column says
     # `gmail.com`, and "gmail.com company news" is a wasted credit from a budget of 1,000 a
     # month. With neither a name nor a site there is nothing to search for, so we do not.
-    company = lead.company_name or cache_key(lead.company_url)
+    domain = cache_key(lead.company_url)
+    company = lead.company_name or domain
     if not company:
         verified.gaps.append("no company name or website to search for")
-        return False
+        return None
 
     query = f"{company} company news"
-    hits = await search.search(query, max_results=3)
-    await budget.record(
-        provider=search.name, credits=1, domain=cache_key(lead.company_url), lead_id=lead.id
+
+    cached = await search_cache.lookup(session, org_id=org_id, query=query, now=now)
+    if cached is not None:
+        _record_hits(verified, cached.hits, now=now, cached_on=cached.fetched_at)
+        return ChainAnswer(hits=cached.hits, provider=CACHE_MEMBER, from_cache=True)
+
+    chain = (
+        search
+        if isinstance(search, SearchChain)
+        else SearchChain(
+            [ChainMember(provider=search)], session=session, org_id=org_id, budget=budget
+        )
     )
+    answer = await chain.run(query, max_results=3, domain=domain, lead_id=lead.id, now=now)
 
+    if not answer.answered:
+        # Nobody answered, and which of the three reasons it was decides both what the reviewer
+        # is told and whether anything is stored. A spent ceiling is our limit and lifts next
+        # month; a provider outage is theirs and must never be cached as "nothing found"; no
+        # key at all is a sentence with something to do about it.
+        if not answer.attempts:
+            verified.gaps.append(
+                "no search provider is configured for this workspace; add your own key under "
+                "Settings to search when a company's own site says too little"
+            )
+        elif all(attempt.error == CEILING_SPENT for attempt in answer.attempts):
+            verified.gaps.append("search budget exhausted for this month")
+        else:
+            verified.gaps.append(
+                "no search provider could be reached, so nothing was searched for this company"
+            )
+        return answer
+
+    # A provider answered, so the answer is worth keeping -- including an empty one, which tells
+    # the next lead at this company not to pay to be told the same silence. What is never stored
+    # is the branch above, where nobody answered at all.
+    await search_cache.store(
+        session,
+        org_id=org_id,
+        query=query,
+        provider=answer.provider or "",
+        hits=answer.hits,
+        now=now,
+    )
+    _record_hits(verified, answer.hits, now=now, cached_on=None)
+    return answer
+
+
+def _record_hits(
+    verified: VerifiedResearch,
+    hits: list[SearchHit],
+    *,
+    now: datetime,
+    cached_on: datetime | None,
+) -> None:
+    """Add search hits to the result as sources, with the warning that belongs beside them."""
     if not hits:
-        return True
-
+        return
     verified.sources.extend(Source(url=hit.url, fetched_at=now.isoformat()) for hit in hits)
-    verified.gaps.append(
+    note = (
         "search returned results that were not verified against fetched text; "
         "a reviewer should read them before relying on them"
     )
-    return True
+    if cached_on is not None:
+        note += f" (from a search answer cached on {cached_on.date().isoformat()})"
+    verified.gaps.append(note)
