@@ -2990,6 +2990,66 @@ route was the one place still echoing it. It carries no `reason` field at all no
 
 10 integration tests. Two of them fail against the unfixed code, which is how they were checked.
 
+**A claim with no source cannot be stored (F12, ADR-051, slice S15.2).** `entities`, `edges`,
+a producer inside the signal intake, `GET /graph`, and a "What we know" panel on the Signals
+screen.
+
+**`ck_edges_provenance` is the slice.** An edge must carry a `source_url` or a `message_id`, so
+"we know Acme is hiring" cannot be written down without the thing that says so.
+
+**A check constraint rather than a rule in a service**, and the distinction is the whole point. A
+service is bypassed by the next writer, and the next writer is always somebody in a hurry with a
+reasonable-sounding exception -- "just this one, the source comes later". A constraint has no
+sympathy. The test for it writes **raw SQL**, because testing it through the service would only
+prove the service is careful today.
+
+**The service refuses first anyway**, so a caller that forgets is told which claim it was rather
+than handed an `IntegrityError` three frames from a worker pass that was storing postings at the
+time. The constraint is the last line of defence, not the first.
+
+**A model may phrase an edge and may never add one.** Nothing writes here from a model's output:
+the producers are a job posting, whose apply URL is the source, and an inbound message, whose id
+is. S15.3's brief will read these rows and may reword them; it cannot introduce a claim, because
+there would be nothing to put in the provenance columns. That is stronger than asking a model not
+to -- it makes the sentence unsayable. And the source travels with **every line** rather than
+beside the set, which is what makes the rule checkable from outside: a sentence that arrives
+without one did not come from this table.
+
+**`uq_edges_claim` is `NULLS NOT DISTINCT`, and that detail is load-bearing.** Three of its seven
+columns are null in any given row -- an edge names an object *or* a text, and carries a URL *or* a
+message id -- and under Postgres's default rule two NULLs never collide, so the index would have
+deduplicated **nothing at all**. The daily poll sees yesterday's postings again every morning, so
+an index silently not working is a duplicate claim a day until a brief cites one sentence six
+times. Postgres 15+; this project runs 17 in development and in production, checked rather than
+assumed.
+
+**`entities.lead_id` is `SET NULL` and `edges.message_id` is `CASCADE`**, which looks
+inconsistent and is deliberate. Erasing a lead must not delete what we learned about their
+*employer*; but an edge whose only provenance is a message must go with that message, because a
+claim that outlived its source is exactly what this table refuses to hold.
+
+**A fourth copy of "what company is this?" was caught by a test before it was committed.** Four
+things key on it -- the research cache (ADR-011), the watchlist, the graph and the signal
+producer -- and the graph handed a whole URL to `registrable_domain`, which wants a host and
+quietly returned something that was not a domain. `https://www.acme.example/x` and `acme.example`
+became two nodes for one company. The rule now lives once, in `net.company_domain`, beside
+`registrable_domain` where it should have been from the start; the watchlist's own copy is gone
+with it.
+
+**And the live check that prompted the last fix found another one.** The Signals screen shipped in
+the previous slice renders on the deployed dashboard and reports **Not Found** -- because
+Cloudflare rebuilds the dashboard on every merge and **the API is deployed by hand**. The live
+backend is an older image, so F17's search chain, ADR-047's board-host fix, F11's signals and
+ADR-050's expired-grant fix are all merged and none of them is running. `/mailboxes` answers 401
+and `/watchlist` answers 404, which is the whole diagnosis. This repository already recorded it
+happening once, for PR #57; it has now happened across four slices, because a merged PR looks
+shipped. The error boundary did its job -- the screen degraded to a message instead of blanking
+-- but a 404 cannot say "this API is older than this screen", and that is the fix worth building
+next: the API reporting its build and the dashboard comparing.
+
+19 integration tests, ruff and mypy strict clean, migration applied and reversed against the
+development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

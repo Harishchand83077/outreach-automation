@@ -20,6 +20,7 @@ from sqlalchemy import select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import SIGNAL_KINDS, SIGNAL_STATES, Lead, SignalEvent, WatchlistEntry
+from app.services.graph import store as graph
 from app.services.signals import intake, watchlist
 
 router = APIRouter(tags=["signals"])
@@ -219,3 +220,39 @@ async def move_a_signal(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such signal.")
     await session.commit()
     return {"signal": _signal(row)}
+
+
+@router.get("/graph")
+async def what_we_know(
+    user: CurrentUserDep,
+    session: SessionDep,
+    domain: str,
+) -> dict[str, Any]:
+    """Everything this workspace knows about one company, each line with its source.
+
+    **The source travels with every line, not beside the set.** That is what makes "a model may
+    phrase an edge and may never add one" checkable rather than promised: a sentence that
+    arrives here without a source did not come from this table, because the database would have
+    refused to store it.
+
+    Not networked, and no model is involved: these are rows written by the signal producer from
+    pages it already had.
+    """
+    statements = await graph.about(session, user.ctx, domain=domain)
+    return {
+        "domain": watchlist.normalise_domain(domain),
+        "statements": [
+            {
+                "sentence": one.sentence,
+                "predicate": one.predicate,
+                "source_url": one.source_url,
+                "from_a_message": one.message_id is not None,
+                "observed_at": one.observed_at.isoformat() if one.observed_at else None,
+            }
+            for one in statements
+        ],
+        "note": (
+            "Every line here came from a page or a message we can point at. Nothing is inferred "
+            "and nothing is written by a model."
+        ),
+    }

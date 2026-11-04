@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import WatchedBoard, WatchlistEntry
 from app.db.repo import OrgContext
 from app.services.jobposts.feeds import SOURCES
-from app.services.research.net import registrable_domain
+from app.services.research.net import company_domain
 
 #: The boards the daily poll can read. `pasted` is in `SOURCES` and is not a board.
 POLLABLE = tuple(name for name in SOURCES if name != "pasted")
@@ -30,15 +30,12 @@ class WatchRefused(Exception):
 def normalise_domain(raw: str | None) -> str:
     """The registrable domain of whatever the person typed.
 
-    They will paste a URL as often as a domain, and `https://acme.example/careers` and
-    `acme.example` are one company. The same normalisation the research cache key uses, so a
-    watch and the findings about it agree on what the company is.
+    They paste a URL as often as a domain, and `https://acme.example/careers` and `acme.example`
+    are one company. Delegates to `net.company_domain` so the watchlist, the research cache and
+    the knowledge graph cannot disagree about what a company is -- this used to be its own copy,
+    and a second copy in the graph promptly behaved differently.
     """
-    value = (raw or "").strip().lower()
-    for prefix in ("https://", "http://"):
-        value = value.removeprefix(prefix)
-    value = value.split("/")[0].split("?")[0].removeprefix("www.")
-    return registrable_domain(value) if value else ""
+    return company_domain(raw)
 
 
 async def add(

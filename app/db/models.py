@@ -1333,6 +1333,154 @@ class SignalEvent(Base):
     )
 
 
+#: What a node in the graph is. Deliberately few: every kind here is something a sentence in a
+#: meeting brief can be *about*, and a kind nobody could cite is a kind that makes the graph
+#: bigger without making it more useful.
+ENTITY_KINDS: tuple[str, ...] = ("company", "person", "role", "technology")
+
+#: What one entity can be said to be to another. The vocabulary is small on purpose: an edge
+#: exists to be read back as a sentence with a source beside it, and a predicate nobody can
+#: phrase is a predicate nobody will trust.
+EDGE_PREDICATES: tuple[str, ...] = (
+    "hiring_for",
+    "works_at",
+    "uses",
+    "mentioned",
+)
+
+
+class Entity(Base):
+    """A thing this workspace knows about (F12, ADR-051).
+
+    Per workspace, like `domain_research` and unlike `company_profiles` (ADR-038). A company's
+    name and ATS slug are public facts worth pooling; *what one workspace has worked out about a
+    company, and from which of its own sources*, is not -- and an entity exists to hang those
+    edges on.
+
+    `norm_key` is what makes "Acme", "Acme Inc" and "acme.example" one node. It is computed once
+    by `graph.key_for` and stored, rather than recomputed per query, so a change to the
+    normalisation cannot silently split a node in half between old rows and new ones.
+    """
+
+    __tablename__ = "entities"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: One of `ENTITY_KINDS`.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: As it should be shown: the company's own capitalisation, the role's own title.
+    name: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: The identity. Two rows with one key are one thing.
+    norm_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: For a company, its registrable domain -- the key `domain_research` and the watchlist use,
+    #: so the three agree on what a company is (ADR-011).
+    domain: Mapped[str | None] = mapped_column(String(253))
+    #: For a person we are already talking to. `SET NULL`, because erasing a lead must not
+    #: delete what we learned about their employer.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "kind", "norm_key", name="uq_entities_org_kind_key"),
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{name}'" for name in ENTITY_KINDS) + ")",
+            name="ck_entities_kind",
+        ),
+        Index("ix_entities_org_domain", "org_id", "domain"),
+    )
+
+
+class Edge(Base):
+    """One claim about one entity, **with where it came from** (F12, ADR-051).
+
+    **An edge with no provenance is refused by the database.** `ck_edges_provenance` requires a
+    `source_url` or a `message_id`, so "we know Acme is hiring" cannot be stored without the
+    thing that says so. That is a constraint rather than a convention because the convention is
+    the part that fails: the brief these edges feed is a set of sentences somebody will repeat
+    to a stranger, and a sentence whose source nobody can produce is the thing this whole system
+    exists not to say. Hard rule 6 forbids inventing facts about the sender; this is the same
+    rule pointed at the recipient, enforced one layer lower.
+
+    **A model may phrase an edge and may never add one.** Nothing writes here from a model's
+    output: the producers are a job posting (whose URL is the source) and an inbound message
+    (whose id is). S15.3's brief reads these rows and may reword them; it cannot introduce a
+    claim, because there would be nothing to put in these columns.
+
+    `object_id` or `object_text`, never both and never neither: an edge either points at another
+    node or states a value, and a row that did both would be two claims wearing one id.
+    """
+
+    __tablename__ = "edges"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    subject_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.entities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    #: One of `EDGE_PREDICATES`.
+    predicate: Mapped[str] = mapped_column(String(30), nullable=False)
+    object_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.entities.id", ondelete="CASCADE")
+    )
+    object_text: Mapped[str | None] = mapped_column(String(500))
+    #: **Provenance.** One of these two is required by `ck_edges_provenance`.
+    source_url: Mapped[str | None] = mapped_column(String(2000))
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.messages.id", ondelete="CASCADE")
+    )
+    #: When the thing was true, as the source reported it -- not when we noticed. A brief citing
+    #: a six-month-old posting as "they are hiring" is the perishable-hook problem again
+    #: (ADR-011), and this column is what lets the brief decide.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # The slice's whole point, and the reason it is here rather than in a service: a service
+        # can be bypassed by the next writer, and this cannot.
+        CheckConstraint(
+            "source_url IS NOT NULL OR message_id IS NOT NULL", name="ck_edges_provenance"
+        ),
+        CheckConstraint(
+            "(object_id IS NOT NULL AND object_text IS NULL) "
+            "OR (object_id IS NULL AND object_text IS NOT NULL)",
+            name="ck_edges_object",
+        ),
+        CheckConstraint(
+            "predicate IN (" + ", ".join(f"'{name}'" for name in EDGE_PREDICATES) + ")",
+            name="ck_edges_predicate",
+        ),
+        # One claim from one source is one edge. A re-poll that saw the same posting again must
+        # not add a second "hiring for Backend Engineer", which is the signal table's lesson.
+        #
+        # **`NULLS NOT DISTINCT`, because the nullable columns are the point.** Three of the six
+        # are null in any given row -- an edge names an object *or* a text, and carries a URL
+        # *or* a message id -- and under the default rule two NULLs never collide, so the index
+        # would have deduplicated nothing at all. Postgres 15+; this project runs 17 in
+        # development and in production, checked rather than assumed.
+        Index(
+            "uq_edges_claim",
+            "org_id",
+            "subject_id",
+            "predicate",
+            "object_id",
+            "object_text",
+            "source_url",
+            "message_id",
+            unique=True,
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_edges_org_subject", "org_id", "subject_id"),
+    )
+
+
 class MailboxHealth(Base):
     """One row per mailbox per day: how much it sent and how much came back (ADR-034).
 

@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { deleteJson, getJson, postJson } from './api'
-import { Empty, Icons, SkeletonList } from './ui'
+import { Drawer, Empty, Icons, SkeletonList } from './ui'
 
 function Field({ label, hint, children }) {
   return (
@@ -51,6 +51,10 @@ function Loading({ failed, data, what }) {
 export default function Signals({ onError, onToast, mayAdminister }) {
   const watchlist = useLoad('/watchlist', onError)
   const signals = useLoad('/signals?state=new', onError)
+  // What we know about one company, fetched on a click rather than per row: the panel is for
+  // reading one company carefully, and loading it for every watch would be a query each to
+  // answer a question nobody asked yet.
+  const [known, setKnown] = useState(null)
   const [domain, setDomain] = useState('')
   const [label, setLabel] = useState('')
   const [source, setSource] = useState('')
@@ -156,6 +160,48 @@ export default function Signals({ onError, onToast, mayAdminister }) {
         ) : null}
       </section>
 
+      {known ? (
+        <Drawer
+          title={`What we know about ${known.domain}`}
+          badges={[`${known.statements.length} lines`]}
+          onClose={() => setKnown(null)}
+        >
+          <p className="hint">{known.note}</p>
+          {known.statements.length === 0 ? (
+            <p className="muted">
+              Nothing recorded yet. A line appears here when a page we can point at says
+              something about them.
+            </p>
+          ) : (
+            <ul className="list">
+              {known.statements.map((one, index) => (
+                <li key={index} className="list-row">
+                  <div>
+                    <strong>{one.sentence}</strong>
+                    <p className="hint">
+                      {one.observed_at
+                        ? `Seen ${new Date(one.observed_at).toLocaleDateString()} — `
+                        : ''}
+                      {/* The source is shown with the line, never beside the set: a line whose
+                          source you cannot open is a line you cannot repeat to a stranger. */}
+                      {one.source_url ? (
+                        <a href={one.source_url} target="_blank" rel="noreferrer">
+                          source
+                        </a>
+                      ) : one.from_a_message ? (
+                        'from a message they sent you'
+                      ) : (
+                        'no source'
+                      )}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Drawer>
+      ) : null}
+
       <section className="card">
         <h2>Watched companies</h2>
         <p className="hint">{watchlist.data?.note || ''}</p>
@@ -189,8 +235,19 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                           : 'no board given, so nothing will arrive'}
                     </div>
                   </div>
-                  {mayAdminister ? (
-                    <div className="btn-row">
+                  <div className="btn-row">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() =>
+                        getJson(`/graph?domain=${encodeURIComponent(row.domain)}`)
+                          .then(setKnown)
+                          .catch(onError)
+                      }
+                    >
+                      What we know
+                    </button>
+                    {mayAdminister ? (
                       <button
                         type="button"
                         className="btn"
@@ -205,6 +262,8 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                       >
                         {row.paused ? 'Resume' : 'Pause'}
                       </button>
+                    ) : null}
+                    {mayAdminister ? (
                       <button
                         type="button"
                         className="btn"
@@ -219,8 +278,8 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                       >
                         Forget
                       </button>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </li>
               ))}
             </ul>
