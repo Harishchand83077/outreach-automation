@@ -2835,6 +2835,50 @@ they are a substitute rather than a proof.
 that do have a screen (`/admin/jobs` lists what `/admin/dead-jobs` lists; `POST /mailbox` is the
 singular form of `/mailboxes`).
 
+**The Hiring contacts tab blanked the whole dashboard, and the blank page was the worse half
+(ADR-048 addendum).** `/contact-candidates` returns `contact_candidates`; the screen I had just
+written read `data.candidates`. `undefined.length` threw during render, React unmounted the
+entire tree, and the operator got a white page -- no message, no sidebar, no way back except
+reloading onto a screen that did it again.
+
+**The signature defect once more, and one day after I wrote a guard for exactly this boundary.**
+`test_dashboard_calls_real_routes` checks the *path* a screen asks for, and it passed, because
+the path is right. Nothing compared the **field names** -- which is the half that fails silently,
+and silently here means the tool stops working rather than one request failing. A correct route
+and a correct screen with nothing checking they agreed, in a file I wrote while describing that
+pattern.
+
+**Three fixes, and the typo is the least of them.**
+
+1. **The key.** One line.
+2. **`ErrorBoundary.jsx`, because any single mistake in any panel should not be a total outage.**
+   A render error is now caught at the screen boundary: the sidebar stays, the message names the
+   screen and the error, every other screen still works, and the console has the component stack
+   -- which is the one thing an operator can paste into a report. It is keyed on the current view
+   so leaving a broken screen clears the error rather than latching it, which would have left
+   most of the original problem in place. This is the only class component in the codebase,
+   because a `try`/`catch` cannot reach inside React's render. The same reasoning as the 500 that
+   arrived outside `CORSMiddleware` and made a duplicate key look like an unreachable backend: a
+   real fault reported as something else, with the useful detail discarded.
+3. **`tests/unit/test_dashboard_reads_real_fields.py`, which prevents the class.** It parses
+   every `return {...}` of every GET handler with `ast`, reads every `const x = useLoad('/path')`
+   and every `x.data.field` in the dashboard, and fails when a screen reads a field its route
+   does not return. Run against the unfixed file it reports
+   `JobHunt.jsx: candidates.data.candidates` by name. Two vacuity tests sit beside it, because a
+   parser that stops understanding the handlers would otherwise make it pass trivially -- the
+   `tools/list` lesson.
+
+**The pair is the point**: one guard says the screen asks for a route that exists, the other says
+it reads fields that route returns. Between them a screen cannot be deployed asking for something
+imaginary, which is how `/connect/google/status` came to be called without the `mailbox_id` it
+accepts.
+
+**And the honest note from the slice before this one earned its keep immediately.** I wrote that
+those screens had not been rendered in a browser and that the guards were a substitute for
+looking, not a proof, and that the first operator to open them should expect to find something.
+The first operator opened them and found something within a day. The guards were the wrong shape;
+the warning was the right shape.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

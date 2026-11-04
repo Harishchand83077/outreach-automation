@@ -992,13 +992,13 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
         </p>
         <Loading {...candidates} what="the proposed contacts" />
         {candidates.data ? (
-          candidates.data.candidates.length === 0 ? (
+          candidates.data.contact_candidates.length === 0 ? (
             <Empty icon={Icons.inbox} title="Nothing proposed yet">
               Run a lookup above.
             </Empty>
           ) : (
             <ul className="list">
-              {candidates.data.candidates.map((row) => (
+              {candidates.data.contact_candidates.map((row) => (
                 <li key={row.id} className="list-row">
                   <div>
                     <strong>{row.full_name || 'No name given'}</strong>{' '}
