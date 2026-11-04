@@ -2745,6 +2745,96 @@ explicit settings. The key was already on the owner's list to rotate; it still i
 22 new unit tests and 10 integration, ruff and mypy strict clean, migration applied and reversed
 against the development database.
 
+**Two phases of work had no screen at all, and the dashboard reached 30 of 90 routes (ADR-048).**
+`JobHunt.jsx`, `Sending.jsx` and `Operations.jsx`, three new nav items, and a guard that every
+path the dashboard asks for is a path the API serves.
+
+**Reported by the owner: "i can't see any changes in ui so far what we have built".** They were
+right, and the number is the finding: the API served **90 paths and the dashboard called about
+30**. Everything built in Phases 12 and 13 -- F5 job postings and the daily board poll, F6 the
+candidate's own confirmed facts and answer bank, F9 hiring-contact lookups, F10 referrals from a
+LinkedIn export, F20 tailored resumes and the application tracker -- was reachable **only with
+curl**. So were F4's deliverability report, F7's mailbox pool, F15's booking webhook and F17's
+search keys.
+
+**This is Phase 8's failure repeated at ten times the size.** That one was found the same way:
+the deployed dashboard signed in correctly, said "No campaigns yet", and offered no way to make
+one -- so import, research, drafting and sending were all gated behind a record that could not
+exist. *The system was deployed, correct and unusable, and only looking at it showed that.*
+Eleven slices of backend later, nobody looked again.
+
+**Three of the invisible features were not merely inconvenient, they were inert.**
+
+- **The booking webhook needs a URL and a secret pasted into a third party's settings page.** An
+  API-only feature means the webhook is never wired up, and the only symptom is a funnel that
+  reports no meetings -- which is indistinguishable from nobody booking one. `last_delivery_at`
+  was built precisely to tell those apart and had nowhere to be shown.
+- **A tailored resume has to be read before it is attached.** ADR-043 rests on that: the
+  validator refuses an invented number or skill, and what it cannot catch is a lower-case
+  exaggeration, so a person reads the document. There was no way to read one.
+- **A dead job needs a requeue button.** These notes already record three dead reply-drafting
+  jobs recovered **by hand with SQL against production**, because the only way to see them was a
+  query and the only way to retry one was an `UPDATE`.
+
+**The screens keep the product rules rather than restating them.** Nothing on the job-hunt screen
+contacts anybody: the referral note is text to copy, a contact lookup writes a proposal, and
+marking an application applied records what the person did themselves. A fact mined from a resume
+is shown as a proposal until they confirm it. A lookup spends their own credit, so it never
+happens on load, on a refresh or on a tab change -- the same rule that keeps `GET /mailboxes`
+non-networked. And the applied-to-planned move is simply not offered, because the API refuses it
+and a button that always fails is worse than no button.
+
+**The deployment's shared search key is named as shared on the screen**, with its month's usage
+beside it, because a workspace told "search works" without being told whose credits it spends has
+been told something misleading.
+
+**The guard is the part that outlasts this slice.** `tests/unit/test_dashboard_calls_real_routes.py`
+reads every call site in `frontend/src/*.jsx`, normalises the template holes, and compares them
+against the live OpenAPI paths. A screen asking for a route that does not exist now fails in CI
+rather than the first time somebody opens it -- which is how `/connect/google/status` came to be
+called without the `mailbox_id` it accepts, and how a review queue was deployed calling a cursor
+parameter the running API did not have.
+
+**And writing that guard produced three of my own mistakes, each the shape it exists to catch.**
+
+1. **It was blind to the code it was written for.** The first version matched only `api.js`'s
+   helpers -- and both new screens load through a local `useLoad` wrapper, so pointing a panel at
+   `/admin/deliverability`, which does not exist, did not fail it. A guard whose passing is read
+   as evidence while it sees nothing is worse than no guard. `test_the_helper_list_is_complete`
+   now reads `api.js` and fails if a path-taking helper is not in the list, so the next one cannot
+   silently narrow the check.
+2. **It reported working code as broken, twice.** A regex for `${...}` stopped at the first `}`
+   and at the first inner quote, so `/leads/${lead.id}/${paused ? 'resume' : 'pause'}` and
+   `${provider || providers[0]?.provider || ''}` were both reported missing. A guard that fails on
+   correct code is one somebody deletes to get CI green.
+3. **Set membership was the wrong comparison.** That same leads path has a *literal chosen at run
+   time* as its last segment, which has to match `/leads/*/pause` or `/leads/*/resume`. It matches
+   segment-wise now, with `*` on either side.
+
+**`test_dashboard_state_is_declared` had the same scope problem**, and it is the one written after
+a button shipped throwing `ReferenceError`. It read **`App.jsx` only**, so neither new file was
+checked -- a guard scoped to one file stops applying the moment somebody splits a component out,
+which is exactly when a new identifier gets typed. It globs `frontend/src/*.jsx` now and also
+recognises an arrow component's destructured props.
+
+**And I invented a second design vocabulary before noticing the first.** `panel`, `rows`, `row`,
+`row-actions`, `stack`, `field-label`, `field-hint` and `small` do not exist in `app.css` -- so
+every one of those elements would have rendered unstyled while the build stayed green. They are
+`card`, `list`, `list-row`, `btn-row`, `form-label` and `hint` now, with `.tabs`, `.tab`, `.list`
+and `.list-row` added to the stylesheet from the existing tokens, since tabs genuinely did not
+exist. The rule that a component never reaches past the token layer is kept.
+
+**What is honestly unverified.** The build is green, the frontend suite passes, both structural
+guards pass and all 82 reachable paths are served -- but **these screens have not been rendered
+in a browser against a live API**, because that needs Supabase auth and a running backend. Vite
+does not resolve identifiers and the frontend suite renders nothing, which is exactly how a
+`ReferenceError` button shipped here before; the two structural guards are the substitute, and
+they are a substitute rather than a proof.
+
+**Coverage went from 30 of 90 routes to 82 of 84.** The two remaining are duplicates of routes
+that do have a screen (`/admin/jobs` lists what `/admin/dead-jobs` lists; `POST /mailbox` is the
+singular form of `/mailboxes`).
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

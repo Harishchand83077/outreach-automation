@@ -23,6 +23,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { SignIn, useSession } from './Auth'
+import JobHunt from './JobHunt'
+import Operations from './Operations'
+import Sending from './Sending'
 import {
   API,
   ApiUnreachable,
@@ -214,9 +217,15 @@ function Dashboard({ session }) {
     { id: 'leads', label: 'Leads', icon: Icons.leads },
     { id: 'import', label: 'Import', icon: Icons.import },
     { id: 'campaign', label: 'Campaign', icon: Icons.campaign },
+    { id: 'sending', label: 'Sending', icon: Icons.inbox },
+    // The candidate half of the product (F5, F6, F9, F10, F20). Shown to everybody rather than
+    // gated on the campaign's kind: the facts, the connections and the answer bank are the
+    // workspace's own and are worth filling in before a job-hunt campaign exists.
+    { id: 'jobhunt', label: 'Job hunt', icon: Icons.leads },
     ...(mayAdminister
       ? [
           { id: 'admin', label: 'Admin', icon: Icons.inbox },
+          { id: 'operations', label: 'Operations', icon: Icons.campaign },
           { id: 'settings', label: 'Settings', icon: Icons.settings },
         ]
       : []),
@@ -441,8 +450,24 @@ function Dashboard({ session }) {
                 refreshCampaigns()
               }}
             />
+          ) : view === 'sending' ? (
+            <Sending
+              campaign={campaign}
+              mayAdminister={mayAdminister}
+              onError={handle}
+              onToast={toast}
+            />
+          ) : view === 'jobhunt' ? (
+            <JobHunt
+              campaign={campaign}
+              mayAdminister={mayAdminister}
+              onError={handle}
+              onToast={toast}
+            />
           ) : view === 'platform' ? (
             <Platform onError={handle} />
+          ) : view === 'operations' ? (
+            <Operations onError={handle} onToast={toast} />
           ) : view === 'admin' ? (
             <Admin onError={handle} onToast={toast} />
           ) : view === 'settings' ? (

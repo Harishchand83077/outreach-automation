@@ -1372,3 +1372,88 @@ tbody tr:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* ================================================================ tabs
+   A screen with several panels that are each a whole subject -- postings, facts, applications --
+   needs a way to pick one. Buttons rather than links, because the choice is local state and a
+   URL for it would be a router this app does not have. */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-4) 0 var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.tab {
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  font-size: var(--text-sm);
+  color: var(--text-faint);
+  cursor: pointer;
+  transition:
+    color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease);
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.tab[data-active='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* ================================================================ list
+   A list of records with a description on the left and controls on the right. The controls stay
+   on the row rather than behind a menu: with two or three per row a menu is one more click for
+   nothing, and the destructive one is kept apart by `.btn[data-variant='danger']`. */
+.list {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.list-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  font-size: var(--text-sm);
+}
+
+.list-row + .list-row {
+  margin-top: var(--space-2);
+}
+
+/* A row whose body is a block -- a suggested note with its own textarea -- rather than a line
+   with controls beside it. */
+.list-row.is-stacked {
+  display: block;
+}
+
+.list-row .btn-row {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .list-row {
+    flex-direction: column;
+  }
+}

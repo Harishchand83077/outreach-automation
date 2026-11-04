@@ -111,6 +111,47 @@ export function patchJson(path, { json } = {}) {
 
 export const deleteJson = (path) => request(path, { method: 'DELETE' })
 
+// A binary body cannot go through `request`, which insists on a JSON content type -- and an
+// `<a href>` cannot fetch it either, because these routes are authenticated and a plain link
+// arrives with no Authorization header and is answered 401. So the token is attached here and
+// the bytes are handed back as a Blob for the caller to save.
+export async function fetchBlob(path) {
+  const token = await accessToken()
+  const headers = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+
+  let response
+  try {
+    response = await fetch(`${API}${path}`, { headers })
+  } catch {
+    throw new ApiUnreachable(path)
+  }
+  if (response.status === 401) throw new NotAuthenticated()
+  if (!response.ok) {
+    // The error body is JSON even when the success body is not, so it is read the usual way.
+    const body = await response.json().catch(() => null)
+    const error = new Error((body && body.detail) || response.statusText)
+    error.status = response.status
+    throw error
+  }
+  return response.blob()
+}
+
+// Hand the browser a file to save. Separated from `fetchBlob` so a caller that wants the bytes
+// for something else does not have to care about the DOM.
+export async function saveAs(path, filename) {
+  const blob = await fetchBlob(path)
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  // Revoked, or every download leaks its blob for the life of the tab.
+  URL.revokeObjectURL(url)
+}
+
 // Upload goes through the same path so it gets the same token and the same error handling.
 export function uploadFile(path, file, { method = 'POST' } = {}) {
   const form = new FormData()
