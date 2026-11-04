@@ -23,6 +23,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { SignIn, useSession } from './Auth'
+import ErrorBoundary from './ErrorBoundary'
 import JobHunt from './JobHunt'
 import Operations from './Operations'
 import Sending from './Sending'
@@ -391,93 +392,97 @@ function Dashboard({ session }) {
             </div>
           ) : null}
 
-          {view === 'new' ? (
-            <NewCampaign
-              onError={handle}
-              onToast={toast}
-              onCreated={() => {
-                setView('campaign')
-                refreshCampaigns()
-              }}
-              onCancel={() => setView('review')}
-            />
-          ) : !campaign && !campaignsLoaded ? (
-            <>
-              <div className="skeleton" style={{ height: 30, width: 240, marginBottom: 18 }} />
-              <SkeletonList count={2} rows={3} />
-            </>
-          ) : !campaign ? (
-            <>
-              <h1 className="page-title">No campaign yet</h1>
-              <p className="page-note">
-                A campaign carries the sender persona and the goal, and every other screen is
-                scoped to one. Nothing can be imported, researched or sent until one exists.
-              </p>
-              <button
-                type="button"
-                className="btn"
-                data-variant="primary"
-                onClick={() => setView('new')}
-              >
-                Create a campaign
-              </button>
-            </>
-          ) : view === 'review' ? (
-            <ReviewQueue
-              campaignId={campaign.id}
-              onError={handle}
-              onToast={toast}
-              onChanged={() => {
-                refreshAttention()
-                refreshQueueCount()
-              }}
-            />
-          ) : view === 'leads' ? (
-            <Leads campaignId={campaign.id} onError={handle} onToast={toast} />
-          ) : view === 'import' ? (
-            <Import campaignId={campaign.id} onError={handle} onToast={toast} />
-          ) : view === 'campaign' ? (
-            <CampaignScreen
-              campaign={campaign}
-              mayAdminister={mayAdminister}
-              onError={handle}
-              onToast={toast}
-              onChanged={(removed) => {
-                if (removed) {
-                  setCampaignId(null)
-                  setView('review')
-                }
-                refreshCampaigns()
-              }}
-            />
-          ) : view === 'sending' ? (
-            <Sending
-              campaign={campaign}
-              mayAdminister={mayAdminister}
-              onError={handle}
-              onToast={toast}
-            />
-          ) : view === 'jobhunt' ? (
-            <JobHunt
-              campaign={campaign}
-              mayAdminister={mayAdminister}
-              onError={handle}
-              onToast={toast}
-            />
-          ) : view === 'platform' ? (
-            <Platform onError={handle} />
-          ) : view === 'operations' ? (
-            <Operations onError={handle} onToast={toast} />
-          ) : view === 'admin' ? (
-            <Admin onError={handle} onToast={toast} />
-          ) : view === 'settings' ? (
-            <Settings
-              campaign={campaign}
-              onError={handle}
-              onToast={toast}
-              onChanged={refreshCampaigns}
-            />
-          ) : null}
+          {/* A render error is caught per screen. One bad field name used to blank the
+              whole dashboard: no message, no nav, and nothing an operator could report. */}
+          <ErrorBoundary resetKey={view} label={view}>
+            {view === 'new' ? (
+              <NewCampaign
+                onError={handle}
+                onToast={toast}
+                onCreated={() => {
+                  setView('campaign')
+                  refreshCampaigns()
+                }}
+                onCancel={() => setView('review')}
+              />
+            ) : !campaign && !campaignsLoaded ? (
+              <>
+                <div className="skeleton" style={{ height: 30, width: 240, marginBottom: 18 }} />
+                <SkeletonList count={2} rows={3} />
+              </>
+            ) : !campaign ? (
+              <>
+                <h1 className="page-title">No campaign yet</h1>
+                <p className="page-note">
+                  A campaign carries the sender persona and the goal, and every other screen is
+                  scoped to one. Nothing can be imported, researched or sent until one exists.
+                </p>
+                <button
+                  type="button"
+                  className="btn"
+                  data-variant="primary"
+                  onClick={() => setView('new')}
+                >
+                  Create a campaign
+                </button>
+              </>
+            ) : view === 'review' ? (
+              <ReviewQueue
+                campaignId={campaign.id}
+                onError={handle}
+                onToast={toast}
+                onChanged={() => {
+                  refreshAttention()
+                  refreshQueueCount()
+                }}
+              />
+            ) : view === 'leads' ? (
+              <Leads campaignId={campaign.id} onError={handle} onToast={toast} />
+            ) : view === 'import' ? (
+              <Import campaignId={campaign.id} onError={handle} onToast={toast} />
+            ) : view === 'campaign' ? (
+              <CampaignScreen
+                campaign={campaign}
+                mayAdminister={mayAdminister}
+                onError={handle}
+                onToast={toast}
+                onChanged={(removed) => {
+                  if (removed) {
+                    setCampaignId(null)
+                    setView('review')
+                  }
+                  refreshCampaigns()
+                }}
+              />
+            ) : view === 'sending' ? (
+              <Sending
+                campaign={campaign}
+                mayAdminister={mayAdminister}
+                onError={handle}
+                onToast={toast}
+              />
+            ) : view === 'jobhunt' ? (
+              <JobHunt
+                campaign={campaign}
+                mayAdminister={mayAdminister}
+                onError={handle}
+                onToast={toast}
+              />
+            ) : view === 'platform' ? (
+              <Platform onError={handle} />
+            ) : view === 'operations' ? (
+              <Operations onError={handle} onToast={toast} />
+            ) : view === 'admin' ? (
+              <Admin onError={handle} onToast={toast} />
+            ) : view === 'settings' ? (
+              <Settings
+                campaign={campaign}
+                onError={handle}
+                onToast={toast}
+                onChanged={refreshCampaigns}
+              />
+            ) : null}
+          </ErrorBoundary>
         </div>
       </div>
 
