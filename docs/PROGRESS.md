@@ -2659,6 +2659,92 @@ that worked for two sources and read as a bad board slug for the third.
 51 new tests (24 chain and adapter unit tests, 3 structural, 24 integration), ruff and mypy strict
 clean, migration applied and reversed against the development database.
 
+**Every job posting from a feed recorded the applicant tracking system as the company, and three
+callers acted on it (ADR-047, slice S15.0).** `job_posts.board_slug`, one function that decides
+what a company domain is, one that answers which company a posting is for, and a migration that
+rewrites the rows already holding a vendor host.
+
+**Found while designing F11's watchlist**, which has to join a signal to a company and would have
+joined on that column. `job_posts.company_domain` was `urlsplit(apply_url).hostname`, and for
+every posting that arrived through a feed that host is the board's:
+`job-boards.greenhouse.io`, `jobs.lever.co`, `jobs.ashbyhq.com`.
+
+**The evidence had been in the repository since F5 landed.** `tests/fixtures/feeds/` holds three
+real trimmed responses and every apply URL in them is the board's. The parser was tested against
+those fixtures and the storage was tested; **nothing tested what the stored value meant.** The
+same gap as the platform router comparing `direction == "outbound"` against a column holding
+`'out'` -- a value that is wrong rather than missing, in a column whose name says it is right.
+
+**Three callers, and each of them spent something real.**
+
+1. **A contact lookup searched the ATS vendor.** `lookup.run` took the posting's domain, so
+   asking who is hiring at a company spent one of the user's **own provider credits** looking for
+   people who work at Greenhouse. F9's entire design is about not billing somebody for work they
+   did not ask for, and this billed them for work nobody could want.
+2. **An imported contact became a lead whose `company_url` was the vendor**, which the research
+   pipeline fetched, synthesised and cited in a draft -- and `cache_key()` reduces that host to
+   `greenhouse.io`, so **every feed-sourced lead in a workspace shared one `domain_research` row**
+   and the second was served the first's findings. That is ADR-011 exactly: the defect it was
+   written to fix, arriving through a door that did not exist when it was written.
+3. **The referral matcher looked for connections at "boards"**, taking the host's first label, so
+   it matched anybody whose company name contains that word and offered to ask them for an
+   introduction.
+
+**The fix is NULL, not a cleverer guess.** A column that holds the ATS vendor for every feed
+posting is worse than an empty one: empty makes a caller ask, and `job-boards.greenhouse.io` makes
+three callers confident. One empty column is a feature request; one wrong column was three bugs
+that each cost something.
+
+**What a feed does tell us is the slug** -- `vercel`, `leverdemo`, `ramp`, the first path segment
+of the apply URL, which is the company's own identifier on that board and is already the key
+`watched_boards` uses. Read off the three real fixtures rather than from documentation.
+
+**`company.resolve` answers in three steps and refuses rather than guessing.** The posting's own
+domain; then `company_profiles` by `(ats_type, ats_slug)`, which is F19's record of exactly that
+mapping and is a fact some workspace established from a careers page; then nothing, with the slug
+as a readable label. `vercel` is not reliably `vercel.com` and `ramp` is not `ramp.com` for every
+Ramp -- hard rule 6 forbids inventing facts about the sender, and this is the same rule pointed at
+the recipient. `CompanyRef` keeps `domain` and `label` as separate fields so a caller cannot use
+the readable one as a domain by accident.
+
+**`BOARD_HOSTS` is deliberately longer than the three feeds we poll**, because the question it
+answers is not "can we poll this?" but "would storing this host as a company's domain be a lie?"
+For a pasted Naukri, LinkedIn or Workday posting it would be. Nothing fetches those; the list
+exists so the column stays honest whatever somebody pastes. The match is on a suffix anchored at a
+dot, so `greenhouse.io.example.test` stays somebody's real domain.
+
+**The migration rewrites rows, which no migration here has done before.** These values are not
+stale, they are wrong, and leaving them would mean the fix applied to postings fetched after the
+deploy and not to those already stored -- one screen behaving two ways depending on when a row
+arrived. The backfill's host list is narrower than the application's, covering only hosts the old
+code could have written, because matching the full list in SQL would risk blanking a domain that
+is genuinely a company's. **The downgrade deliberately does not restore them**: putting them back
+re-arms a lookup that bills for contacts at Greenhouse and a research run that drafts an email
+about a job board.
+
+**The backfill imports `NOT_A_SLUG` from the parser rather than restating it in SQL.** Two copies
+of one rule with its halves in two languages is the signature defect in its most durable form. The
+SQL expression was also run against the real URL shapes on the development database and produces
+the same answers as the Python -- including `embed` for Greenhouse's embedded form, which the
+second statement then nulls, exactly as `slug_from_url` excludes it.
+
+**And the test harness had a hole of the same shape.** `company_profiles` (ADR-038) and
+`platform_operators` (ADR-024) are the two deliberate exceptions to ADR-004, so neither has a
+foreign key for `TRUNCATE app.orgs CASCADE` to follow -- and neither was in the truncate list. Both
+survived every test and leaked into the next. Found by a test writing one shared company row twice
+and hitting its unique index, which is luck; a test asserting an absence would have passed while a
+previous test's row sat there.
+
+**A hard-rule-2 near miss, and the same one this file already records.** A failing assertion
+printed a real `GROQ_API_KEY` into the terminal, because my test called `lookup.run` without
+`settings=` and it fell back to the module-level `config` singleton -- built at **import** time,
+which is before the session-scoped `hermetic_settings` fixture can detach `Settings` from `.env`.
+That is the exact gap written up in F9's notes, hit again in the same way. The tests now pass
+explicit settings. The key was already on the owner's list to rotate; it still is.
+
+22 new unit tests and 10 integration, ruff and mypy strict clean, migration applied and reversed
+against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

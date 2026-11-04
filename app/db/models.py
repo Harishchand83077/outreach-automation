@@ -1146,7 +1146,20 @@ class JobPost(Base):
     source: Mapped[str] = mapped_column(String(20), nullable=False)
     #: The board's own id, or a hash of the URL for a pasted one.
     external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    #: **The company's own domain, or NULL.** It is NULL for every posting that arrived through
+    #: a feed, because a feed's `apply_url` names the applicant tracking system and not the
+    #: employer -- `job-boards.greenhouse.io`, `jobs.lever.co`, `jobs.ashbyhq.com`. It held
+    #: those hosts until ADR-047, and three callers acted on them: a contact lookup searched the
+    #: ATS vendor on the user's own credit, an imported lead was given the vendor as its
+    #: `company_url` and researched, and the referral matcher looked for connections at
+    #: "boards". NULL makes a caller ask; a vendor host makes it confident and wrong.
     company_domain: Mapped[str | None] = mapped_column(String(253))
+    #: The company's identifier on the board (`vercel`, `leverdemo`, `ramp`), read from the
+    #: first path segment of the apply URL. This is what a feed genuinely tells us about the
+    #: employer, and it is the key `watched_boards` already uses, so it is also how a domain is
+    #: resolved: `company_profiles` records `ats_type` and `ats_slug` per domain, which is this
+    #: lookup in reverse.
+    board_slug: Mapped[str | None] = mapped_column(String(200))
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     location: Mapped[str | None] = mapped_column(String(500))
     apply_url: Mapped[str] = mapped_column(String(2000), nullable=False)

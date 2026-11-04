@@ -140,6 +140,7 @@ through OAuth, check `Show original` for DKIM pass, replace the booking URL with
 
 ### P15 — signals and graph (F11, F12, F13, F22)
 
+S15.0 **A job board's host is not a company's domain** (ADR-047), found while designing S15.1's join key. `job_posts.company_domain` held the ATS vendor for every feed posting; a contact lookup searched it on the user's own credit, an imported lead was researched against it, and the referral matcher looked for connections at "boards". `board_slug` is stored instead and the domain resolves through `company_profiles` or refuses.
 S15.1 `watchlist` + `signal_events` (a signal **proposes** a lead, never creates one).
 S15.2 `entities` + `edges` with **mandatory provenance** — an edge with no `source_url` or
 `message_id` is refused by a constraint, not by convention.

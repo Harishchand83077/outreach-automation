@@ -35,6 +35,7 @@ from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.services import credentials
 from app.services.contacts import keys, providers
+from app.services.jobposts import boards, company
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +123,24 @@ async def run(
             # of confirming it exists (ADR-004).
             raise LookupRefused("that job posting does not exist in this workspace.")
 
-    target = _norm_domain(domain or (post.company_domain if post else None))
+    target = _norm_domain(domain)
+    if not target and post is not None:
+        # **Resolved, never taken from the posting's host.** A feed's apply URL names the
+        # applicant tracking system, so this used to search for people who work at Greenhouse,
+        # on the user's own credit (ADR-047).
+        target = _norm_domain((await company.resolve(session, post)).domain)
     if not target or "." not in target:
         raise LookupRefused(
-            "a lookup needs a company domain. This posting has none recorded, so type one."
+            "a lookup needs a company domain, and this posting does not record one: its apply "
+            "link points at the job board rather than the company. Type the company's domain."
+        )
+    if boards.is_board_url(f"https://{target}"):
+        # Reachable when somebody types it, or pastes it from the posting's own link. Refused
+        # rather than run, because the lookup would succeed and bill them for contacts at an
+        # applicant tracking system.
+        raise LookupRefused(
+            f"{target} is a job board rather than a company, so a lookup there would spend a "
+            "credit on the wrong people. Type the company's own domain."
         )
 
     credential = await keys.live(session, ctx, provider=provider, allowed=CONTACT_PROVIDERS)

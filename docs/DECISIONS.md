@@ -3367,3 +3367,133 @@ through to a different provider and reporting success.
   explain.
 - **Letting the deployment key be first, or the only one.** It is one free tier shared by every
   workspace, with no row a route could fix when it breaks.
+
+## ADR-047 — A job board's host is not a company's domain
+
+**Date:** 2026-11-04
+**Status:** Accepted
+**Relates to:** F5 defect, slice S15.0; restates ADR-011 and gates F11's join key
+
+### Context
+
+`job_posts.company_domain` was filled with `urlsplit(apply_url).hostname`. For a posting the user
+pasted from a company's own careers page that is right. For **every posting that arrived through
+a feed it is the applicant tracking system's host** — `job-boards.greenhouse.io`,
+`jobs.lever.co`, `jobs.ashbyhq.com`.
+
+This was found while designing F11's watchlist, which needs to join a signal to a company and
+would have joined on that column.
+
+The evidence had been in the repository since F5 landed. `tests/fixtures/feeds/` holds three real
+trimmed responses, and every `absolute_url`, `hostedUrl` and `jobUrl` in them is the board's. The
+parser was tested against those fixtures and the storage was tested; nothing tested what the
+stored value *meant*. That is the same gap as the platform router comparing
+`direction == "outbound"` against a column holding `'out'` — a value that is wrong rather than
+missing, in a column whose name says it is right.
+
+**Three callers read it and all three acted on it.**
+
+1. **A contact lookup searched the ATS vendor.** `lookup.run` took `post.company_domain`, so
+   asking who is hiring at a company spent one of the user's **own provider credits** looking for
+   people who work at Greenhouse. F9's whole design is about not billing somebody for work they
+   did not ask for, and this billed them for work nobody could want.
+2. **An imported contact became a lead whose `company_url` was the vendor**, which the research
+   pipeline then fetched, synthesised and cited in a draft. And `cache_key()` reduces that host to
+   `greenhouse.io`, so **every feed-sourced lead in a workspace shared one `domain_research`
+   row** and the second was served the first's findings. That is ADR-011 exactly — the defect it
+   was written to fix, arriving through a door that did not exist when it was written.
+3. **The referral matcher looked for connections at "boards"**, taking the host's first label, so
+   it matched anybody whose company name contains that word and proposed asking them for an
+   introduction.
+
+### Decision
+
+**The vendor host is never stored as a company's domain. The column is NULL instead.** NULL makes
+a caller ask; `job-boards.greenhouse.io` makes three callers confident and wrong. One empty column
+is a feature request, and one wrong column is three bugs that each spend something.
+
+**The slug is stored, because that is what a feed actually tells us about the employer.**
+`vercel`, `leverdemo`, `ramp` — the first path segment of the apply URL, which is the company's
+own identifier on that board and is already the key `watched_boards` uses. Read from the three
+real fixtures rather than from documentation.
+
+**One function decides what a company domain is**, `boards.company_domain_of`, and
+`intake.domain_of` now delegates to it. Three callers spending three different things on this
+answer is exactly the shape that produces three copies of a rule and then three different bugs.
+
+**One function answers which company a posting is for**, `company.resolve`, in three steps and
+none of them networked: the posting's own domain; then `company_profiles` by `(ats_type,
+ats_slug)`, which is F19's record of exactly that mapping and is a fact some workspace
+established from a careers page; then nothing, with the slug as a readable label.
+
+**It resolves or it refuses. There is no guess from the slug.** `vercel` is not `vercel.com`
+reliably, `ramp` is not `ramp.com` for every Ramp, and a guess here is a credit spent on the wrong
+company and an email written about them. Hard rule 6 forbids inventing facts about the sender;
+this is the same rule pointed at the recipient, and the contact import already refuses to derive a
+trading name from a domain for the same reason.
+
+**`CompanyRef` keeps `domain` and `label` as separate fields**, so a caller cannot use the
+readable one as the domain by accident. `label` is always something a screen can print; `domain`
+is None whenever we do not know it.
+
+**Each of the three callers now refuses with a sentence rather than proceeding.** The lookup names
+the board and says to type the company's domain; the import refuses a candidate recorded against a
+board and says that importing it would research the board; the referral matcher falls back to the
+slug, which is a fact the feed gave us, instead of to the host's first label, which we
+manufactured.
+
+**The lookup also refuses a board domain typed by hand.** That path is reachable by pasting the
+posting's own link into the box, and it is the one that would otherwise succeed and bill for it.
+
+**`BOARD_HOSTS` is deliberately longer than the three feeds we poll.** The question it answers is
+not "can we poll this?" but "would storing this host as a company's domain be a lie?" — and for a
+pasted Naukri, LinkedIn or Workday posting it would be. Nothing fetches those; the list exists so
+the column stays honest whatever a user pastes.
+
+**The migration rewrites rows**, which no migration in this project has done before. These values
+are not stale, they are wrong, and every use of one spends money or says something untrue. Leaving
+them would mean the fix applied to postings fetched after the deploy and not to those already
+stored, so one screen would behave two ways depending on when a row arrived.
+
+**The backfill's host list is narrower than the application's**, covering only hosts the old code
+could have written. Matching the full list in SQL would risk blanking a domain that is genuinely a
+company's, for a vendor nothing ever stored.
+
+**The backfill imports `NOT_A_SLUG` from `boards`** rather than restating it. The backfill is SQL
+and the parser is Python applied to the same strings; two copies would be this project's signature
+defect with its halves in two languages. The SQL expression was run against the real URL shapes on
+the development database and produces the same answers as the parser.
+
+**`contact_candidates.company_domain` is not rewritten.** Those rows are proposals a person may
+have read already, and some came from a domain somebody typed rather than from a posting, so
+nothing in SQL can tell a wrong one from a right one. The import route refuses a board host
+instead, which fails loudly at the one moment it matters.
+
+### Consequences
+
+- A feed posting now has no company domain until something resolves one. The contact lookup and
+  the contact import say so rather than guessing, which is a visible refusal where there used to
+  be a silent wrong answer.
+- `company_profiles` becomes load-bearing for the job-hunt side: it is the only thing that turns a
+  board slug into a domain. A workspace that has never researched a company will be asked for the
+  domain once.
+- The downgrade does **not** restore the vendor hosts. That is a deliberate one-way door: putting
+  them back re-arms a lookup that bills for contacts at Greenhouse and a research run that drafts
+  an email about a job board.
+- The test harness gained `company_profiles` and `platform_operators` in its truncate list. Both
+  are deliberate exceptions to ADR-004 and therefore have no foreign key for
+  `TRUNCATE app.orgs CASCADE` to follow, so both survived every test and leaked into the next.
+  Found by a test writing one shared company row twice.
+
+### Rejected
+
+- **Deriving a domain from the slug.** `<slug>.com` is wrong often enough to spend a credit on
+  the wrong company and draft an email about them.
+- **Keeping the host and filtering at each caller.** Three callers, three copies of the rule, and
+  the fourth caller added later would not have it.
+- **Fetching the board page to find the company's site.** A network call on a read path, against
+  a board whose terms we have not checked, to recover a fact `company_profiles` already records
+  for any company somebody has researched.
+- **Leaving the stored rows alone.** The same screen would behave two ways depending on when a
+  posting arrived.
+- **Restoring the hosts on downgrade.** It re-arms two paths that spend money and invent facts.

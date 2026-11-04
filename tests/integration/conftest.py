@@ -59,6 +59,10 @@ _TABLES = (
     "orgs",
 )
 
+#: Tables that carry no `org_id`, so `TRUNCATE app.orgs CASCADE` cannot reach them. Cleared with
+#: DELETE rather than TRUNCATE -- see the teardown in the `db` fixture for why that matters.
+_SHARED_TABLES = ("company_profiles", "platform_operators")
+
 
 def _maintenance_url(url: str) -> tuple[str, str]:
     """Split a URL into (url pointing at `postgres`, target database name)."""
@@ -127,12 +131,37 @@ async def db(_migrated_database: None) -> AsyncIterator[AsyncSession]:
             yield session
     finally:
         async with engine.begin() as conn:
+            # **A block fails loudly rather than hanging.** DEV-1 is this suite's most expensive
+            # recurring problem: an interrupted run leaves a backend idle in transaction holding
+            # a lock, and every later cleanup queues behind it for ever -- which has previously
+            # looked like deadlocks, foreign-key violations and 500-second timeouts in turn. A
+            # `lock_timeout` turns all of that into one named error, which is the cheapest of the
+            # three fixes that issue records.
+            await conn.execute(text("SET LOCAL lock_timeout = '30s'"))
             # The append-only trigger blocks DELETE, so events are cleared with the explicit
             # escape hatch the migration provides.
             await conn.execute(text("SET LOCAL app.allow_event_delete = 'on'"))
             await conn.execute(
                 text("TRUNCATE TABLE " + ", ".join(f"app.{t}" for t in _TABLES) + " CASCADE")
             )
+            # **The two tables with no `org_id`, cleared with DELETE rather than TRUNCATE.**
+            # Everything above is reached by `TRUNCATE app.orgs CASCADE`, which follows the
+            # foreign keys; `company_profiles` (ADR-038) and `platform_operators` (ADR-024) are
+            # the deliberate exceptions to ADR-004, so neither has a key to follow and both
+            # survived every test and leaked into the next.
+            #
+            # DELETE rather than TRUNCATE, which is a precaution and not a fix for anything
+            # observed: TRUNCATE takes an ACCESS EXCLUSIVE lock, and `company_profiles` is read
+            # by the session-scoped sessions other fixtures hold, so a cleanup behind a reader
+            # that has not finished would queue rather than fail. The TRUNCATE version did pass
+            # CI; this removes the hazard rather than a symptom, and both tables hold a handful
+            # of rows so a DELETE costs nothing.
+            #
+            # (Said plainly because the commit that made this change claimed the TRUNCATE had
+            # hung the suite. It had not -- `gh pr checks` reported a finished job as running
+            # for twenty-five minutes and I believed it.)
+            for table in _SHARED_TABLES:
+                await conn.execute(text(f"DELETE FROM app.{table}"))
         await engine.dispose()
 
 
