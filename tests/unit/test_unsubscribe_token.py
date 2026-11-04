@@ -42,12 +42,24 @@ def test_two_leads_get_different_tokens():
     assert first != second
 
 
+def _change_first_character(token: str) -> str:
+    """Replace the first character with a *different* one.
+
+    `t.replace(t[0], "z", 1)` was a one-in-sixty-four flake: the ids are random, so a token
+    beginning with `z` had its first character replaced by `z` and arrived at `verify`
+    unmangled -- which `verify` then correctly accepted, failing an assertion about a token
+    nobody had actually edited. The test was wrong and the code was right, which in this
+    repository is the usual way round.
+    """
+    return ("y" if token[0] == "z" else "z") + token[1:]
+
+
 @pytest.mark.parametrize(
     "mangle",
     [
         lambda t: t[:-1],
         lambda t: t + "x",
-        lambda t: t.replace(t[0], "z", 1),
+        _change_first_character,
         lambda t: t.split(".")[0],
         lambda t: "." + t,
         lambda t: "",
@@ -63,7 +75,9 @@ def test_a_mangled_token_is_refused(mangle):
     """
     token = unsubscribe.sign(org_id=uuid.uuid4(), lead_id=uuid.uuid4(), secret="s")
 
-    assert unsubscribe.verify(mangle(token), secret="s") is None
+    mangled = mangle(token)
+    assert mangled != token, "a mangle that leaves the token alone proves nothing"
+    assert unsubscribe.verify(mangled, secret="s") is None
 
 
 def test_a_token_signed_with_another_secret_is_refused():
