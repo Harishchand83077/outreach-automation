@@ -3717,3 +3717,78 @@ slices shipped with none (ADR-048).
   every board's traffic and give two answers about what a company has posted.
 - **Letting a signal move a lead's state.** Where a lead stands is decided by what was sent and
   what came back, and `domain/state.transition` is the one writer of it.
+
+## ADR-050 — An expired grant is a reason to be unavailable, and one row may not contradict itself
+
+**Date:** 2026-11-05
+**Status:** Accepted
+**Relates to:** ADR-018 (the unpublished client), ADR-021 (grant status); corrects both
+
+### Context
+
+Reported by the owner: the alerts said the Gmail connection had expired, and the campaign screen
+and the sending-account panel both still said **connected**.
+
+Both were right about what they were computing, which is why this survived. `invalid_reason` is
+set only once a provider has *refused* a credential. A grant that lapsed on Friday and has not
+been used since carries no reason at all — so `unavailable_reason` returned None, and every
+reader of it takes None to mean "this mailbox works". Meanwhile `grant_status` separately knew it
+had nothing left, and the hourly sweep was raising `mailbox_grant_expiring` about the same row.
+
+Two correct functions answering adjacent questions, with the screens asking the wrong one. The
+same shape as the pool blocker that reported nothing for a *paused* mailbox —
+`unavailable_reason` answers whether a credential can log in — and as the platform router
+counting `direction == "outbound"` against a column holding `'out'`.
+
+**`GET /mailboxes` made it worse by disagreeing with itself in one row**: `connected: true`,
+`usable: true`, `days_left: 0`, `expiry_notice: "This Gmail connection has expired."` Four
+fields, two questions, and whoever reads a row like that believes the reassuring one.
+
+### Decision
+
+**`unavailable_reason` consults `grant_status`.** It is the one function the campaign blockers,
+the mailbox list and the send loop's pause reason all ask, precisely so they cannot disagree —
+and the fix therefore lands in all three at once, which is the whole argument for having it.
+
+**Reported from the arithmetic, not from Google.** `login_for` still asks Google, because Google
+is the authority on whether a token works. But "should this person be told to reconnect?" is
+answerable without a network call, and the honest answer the moment a seven-day grant is seven
+days old is yes. A read path that minted a token to find out is the side effect ADR-021 refused.
+
+**It reuses `GrantStatus.notice`** — the sentence the dashboard and the alert already use —
+because a person who sees three wordings for one state assumes three problems. That is
+`_not_connected`'s stated reason, applied to the state next to it.
+
+**`connected` and `needs_reconnect` are two views of one answer**, derived from a single call
+rather than computed separately. A row cannot contradict itself when there is only one thing
+being asked, and the test asserts the property across four grant ages rather than the single
+instance that was reported.
+
+**And `connection_status` no longer returns `invalid_reason`.** It carried the column verbatim,
+which can quote a provider's own reply into a browser, a screenshot and anything that logs a
+page. That rule is kept everywhere else in this system — `GET /mailboxes` carries a boolean and
+has a test asserting the stored text is absent — and this route was the one place still echoing
+it. Found while reading the function, not reported.
+
+### Consequences
+
+- A workspace whose grant has lapsed now sees Reconnect everywhere instead of "connected"
+  everywhere, and its campaigns report a blocker rather than silently sending nothing.
+- The reported state is now **more conservative than reality** for a few hours either side of
+  expiry: `days_left` rounds up, so a connection with eleven hours left is not expired, but a
+  clock skew or a wrong `granted_at` could ask somebody to reconnect a connection that still
+  works. Reconnecting costs one click and the opposite error costs a silent outage, so that is
+  the right direction to be wrong in.
+- `GOOGLE_GRANT_DAYS = 0` still turns all of it off, which is what publishing the OAuth client
+  means. A test asserts that, so a published client cannot inherit a refusal we invented.
+- An app password is unaffected: only an unpublished client's refresh token lapses.
+
+### Rejected
+
+- **Refusing inside `login_for` on the same arithmetic.** Google is the authority on whether a
+  token works, and refusing locally would turn our own clock into a reason a working mailbox
+  stopped.
+- **A separate `expired` flag on the row for the screens to combine.** That is the defect: three
+  fields the reader has to reconcile, and a reader who gets it wrong believes the reassuring one.
+- **Leaving `connected` alone and fixing only `usable`.** The campaign panel reads `connected`,
+  which is where it was reported from.
