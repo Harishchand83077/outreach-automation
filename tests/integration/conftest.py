@@ -46,6 +46,14 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or _derive_test_url()
 
 #: Every table the migrations create, child-first, for truncation.
 _TABLES = (
+    # **The tables with no `org_id` have to be named here.** Everything else is reached by
+    # `TRUNCATE app.orgs CASCADE`, which follows the foreign keys; a table that is not a
+    # workspace's has none to follow, so it survives every test and leaks into the next.
+    # `company_profiles` (ADR-038) and `platform_operators` (ADR-024) are both deliberate
+    # exceptions to ADR-004, and both were invisible to this list until a test wrote a shared
+    # company row twice and hit its unique index.
+    "company_profiles",
+    "platform_operators",
     "worker_heartbeats",
     "alerts",
     "suppressions",

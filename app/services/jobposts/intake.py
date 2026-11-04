@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobPost
 from app.db.repo import OrgContext
+from app.services.jobposts import boards
 from app.services.jobposts.feeds import MAX_BODY_CHARS, Posting
 
 
@@ -28,8 +29,13 @@ class IntakeResult:
 
 
 def domain_of(url: str) -> str | None:
-    host = (urlsplit(url).hostname or "").lower()
-    return host.removeprefix("www.") or None
+    """The company's own domain, or None when the URL belongs to a job board (ADR-047).
+
+    This used to return the URL's host unconditionally, which for every feed posting is the ATS
+    vendor. `boards.company_domain_of` is now the one place that decision is made, so the
+    intake, the resolver and any future caller cannot disagree about what a company domain is.
+    """
+    return boards.company_domain_of(url)
 
 
 def pasted_id(url: str) -> str:
@@ -77,6 +83,7 @@ async def store(
                 source=posting.source,
                 external_id=posting.external_id,
                 company_domain=domain_of(posting.apply_url),
+                board_slug=boards.slug_from_url(posting.apply_url),
                 title=posting.title,
                 location=posting.location,
                 apply_url=posting.apply_url,
@@ -134,6 +141,7 @@ async def store_pasted(
         source="pasted",
         external_id=external_id,
         company_domain=domain_of(cleaned),
+        board_slug=boards.slug_from_url(cleaned),
         title=(title or "").strip()[:500] or "(untitled, pasted)",
         apply_url=cleaned,
         body_text=body,

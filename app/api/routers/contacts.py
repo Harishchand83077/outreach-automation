@@ -24,6 +24,7 @@ from app.services.contacts import keys, lookup
 from app.services.importer import first_job
 from app.services.importer import service as importer
 from app.services.importer.sheet import SheetError
+from app.services.jobposts import boards
 from app.services.research import company_cache
 
 router = APIRouter(tags=["contacts"])
@@ -297,6 +298,23 @@ async def import_a_candidate(
     )
     if campaign is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such campaign.")
+
+    # **A job board's host is not a company, and this is where that mattered most.** The
+    # candidate's domain came from the posting it was found through, which for a feed posting is
+    # `job-boards.greenhouse.io` -- so the lead was created with that as its `company_url`, the
+    # research pipeline fetched and synthesised it, and the drafter cited it. Worse,
+    # `cache_key()` reduces it to `greenhouse.io`, so every feed-sourced lead in a workspace
+    # shared one `domain_research` row and the second was served the first's findings: ADR-011's
+    # defect through a different door (ADR-047).
+    if boards.is_board_url(f"https://{row.company_domain}"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"This contact is recorded against {row.company_domain}, which is a job board "
+                "rather than a company. Importing it would research the board and draft an "
+                "email about it. Look the contact up again with the company's own domain."
+            ),
+        )
 
     # **The importer requires a company name and a provider does not give us one.** The shared
     # public-company cache (F19) usually has it, because this is a company somebody has already

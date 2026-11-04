@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Connection, JobPost, ProfileFact
 from app.db.repo import OrgContext
+from app.services.jobposts import company as jobcompany
 from app.services.referrals.parsing import normalise_company
 
 #: More than this and it is not a referral shortlist, it is a directory. The user picks a person
@@ -132,10 +133,14 @@ async def find(
 
     target = (company or "").strip()
     if not target and post is not None:
-        # A posting records a domain rather than a trading name, so the domain's own label is the
-        # best name available. It is the same fallback the contact import uses, for the reason
-        # given there: a name derived from a domain would be one we made up.
-        target = (post.company_domain or "").split(".")[0]
+        # **The posting's host is the job board's, so its first label was "boards"** -- which
+        # matched every connection whose company contains that word, confidently and wrongly
+        # (ADR-047). `jobcompany.resolve` answers with the company's own domain when anything
+        # knows it, and otherwise with the board slug, which *is* the company's name on that
+        # board: `vercel`, `ramp`. A label from the slug is a fact the feed gave us; a label
+        # from the vendor's host was one we manufactured.
+        ref = await jobcompany.resolve(session, post)
+        target = (ref.domain or "").split(".")[0] or ref.label
     target_norm = normalise_company(target)
     if not target_norm:
         return [], target
