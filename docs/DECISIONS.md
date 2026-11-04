@@ -3497,3 +3497,106 @@ instead, which fails loudly at the one moment it matters.
 - **Leaving the stored rows alone.** The same screen would behave two ways depending on when a
   posting arrived.
 - **Restoring the hosts on downgrade.** It re-arms two paths that spend money and invent facts.
+
+## ADR-048 — A feature with no screen is not shipped, and a guard says so
+
+**Date:** 2026-11-04
+**Status:** Accepted
+**Relates to:** F4, F5, F6, F7, F9, F10, F15, F17, F20; restates Phase 8's lesson
+
+### Context
+
+The owner said they could not see any of what had been built. The count is the finding: the API
+served **90 paths and the dashboard called about 30**.
+
+Everything in Phases 12 and 13 had no screen — job postings and the daily board poll (F5), the
+candidate's confirmed facts and answer bank (F6), hiring-contact lookups on the user's own key
+(F9), referrals from their LinkedIn export (F10), tailored resumes and the application tracker
+(F20) — and so did F4's deliverability report, F7's mailbox pool, F15's booking webhook and F17's
+search keys. Every one of them was reachable only with curl.
+
+**This is exactly Phase 8's failure at ten times the size**, and these notes already record it:
+the deployed dashboard signed in, said "No campaigns yet", and offered no way to make one, so
+import, research, drafting and sending were all gated behind a record that could not exist. The
+sentence written then was *the system was deployed and unusable, and only looking at it would
+have shown that.* Eleven slices later nobody looked.
+
+Three of the invisible features were not inconvenient but **inert**:
+
+- A booking webhook whose URL and secret cannot be read cannot be pasted into a booking tool, so
+  it receives nothing, and the symptom is a funnel reporting no meetings — indistinguishable from
+  nobody booking one.
+- A tailored resume that cannot be read cannot be reviewed, and ADR-043 rests on a person reading
+  it: the validator catches an invented number or skill and cannot catch a lower-case
+  exaggeration.
+- A dead job with no requeue button is one somebody fixes with SQL against production, which has
+  already happened here three times in one deploy.
+
+### Decision
+
+**Three screens, built around the product rules rather than around the endpoints.** `JobHunt.jsx`
+(postings, facts, resume and applications, referrals, contacts), `Sending.jsx` (pool,
+deliverability, booking webhook, search keys) and `Operations.jsx` (worker, alerts, dead jobs,
+model usage).
+
+**What a screen may not offer is the design.** Nothing on the job-hunt screen contacts anybody: a
+referral note is text to copy, a contact lookup writes a proposal, and marking an application
+applied records what the person did. A fact stays a proposal until they confirm it. A lookup
+spends their own credit, so it is a button press and never a load, a refresh or a tab change —
+the rule that keeps `GET /mailboxes` non-networked, which matters more here because a refresh
+would spend money. The applied-to-planned move is not offered at all, because the API refuses it
+and a button that always fails is worse than no button.
+
+**The deployment's shared search key is labelled as shared, with its usage beside it.** A
+workspace told "search works" without being told whose credits it spends has been told something
+misleading.
+
+**A guard, because a count that nobody measures goes back to 30.**
+`tests/unit/test_dashboard_calls_real_routes.py` reads every call site in `frontend/src/*.jsx`,
+normalises the template holes, and compares them against the live OpenAPI paths. It cannot insist
+a feature has a screen — that is a judgement — but it can insist the screens we have ask for
+something real, which is the half that fails silently. The alternative, a browser test, is a
+dependency tree to audit for the life of the project to assert a URL string, and that bargain was
+already made for `test_connect_sends_mailbox_id.py`.
+
+**`test_dashboard_state_is_declared` is widened to every component file.** It read `App.jsx` only,
+so neither new screen was checked — and it is the guard written *after* a button shipped throwing
+`ReferenceError`. A guard scoped to one file stops applying the moment somebody splits a component
+out, which is precisely when a new identifier gets typed.
+
+**Four classes added to `app.css` from the existing tokens**, not a second vocabulary. I had
+written `panel`, `rows`, `row`, `row-actions`, `stack`, `field-label`, `field-hint` and `small`,
+none of which exist — so those elements would have rendered unstyled with a green build. Tabs
+genuinely did not exist, so `.tabs`, `.tab`, `.list` and `.list-row` are new; everything else uses
+`card`, `btn-row`, `form-label` and `hint`.
+
+**`fetchBlob` and `saveAs` are new in `api.js`**, because the resume PDF cannot go through
+`request`, which insists on a JSON content type — and an `<a href>` cannot fetch it either: the
+route is authenticated and a plain link arrives with no `Authorization` header and is answered
+401. That is the shape of bug this file exists to prevent, so it is fixed in this file.
+
+### Consequences
+
+- Route coverage goes from 30 of 90 to 82 of 84. The two remaining duplicate routes that do have
+  a screen.
+- A new route with no caller is now a visible gap rather than an invisible one, since the guard
+  prints the paths a screen asks for and the OpenAPI set is one call away.
+- **These screens have not been rendered in a browser against a live API**, which needs Supabase
+  auth and a running backend. Vite does not resolve identifiers and the frontend suite renders
+  nothing — the two structural guards are a substitute for looking, and a substitute is what they
+  are. The first operator to open them should expect to find something.
+- `App.jsx` stays large but stops growing: three screens went into their own files, and the state
+  guard now covers all of them.
+
+### Rejected
+
+- **A browser test.** It proves the most and costs a browser download in CI plus a dependency
+  tree, to assert that a fetch went to the right URL. Same bargain as F8's scanner, taken the
+  same way.
+- **Waiting for a UI slice in the plan.** There is no such slice, which is how this happened.
+  Eleven slices of backend each ended with a green CI run and nothing a person could open.
+- **One screen per endpoint.** The endpoints are not the product; `JobHunt` is one subject with
+  five tabs because that is how somebody uses it.
+- **Putting the operational panels on the existing Admin screen.** Admin answers "who may do
+  what in this workspace"; a dead job and a worker heartbeat are a different question, and
+  merging them would make the one screen somebody opens in an incident the longest one.
