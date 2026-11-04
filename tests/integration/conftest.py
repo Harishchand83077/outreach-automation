@@ -150,10 +150,16 @@ async def db(_migrated_database: None) -> AsyncIterator[AsyncSession]:
             # the deliberate exceptions to ADR-004, so neither has a key to follow and both
             # survived every test and leaked into the next.
             #
-            # DELETE, because TRUNCATE takes an ACCESS EXCLUSIVE lock and `company_profiles` is
-            # read by the session-scoped sessions other fixtures hold -- so adding it to the
-            # TRUNCATE above made the whole suite queue behind a reader instead of failing. Both
-            # tables hold a handful of rows, so the cost of a DELETE is nothing.
+            # DELETE rather than TRUNCATE, which is a precaution and not a fix for anything
+            # observed: TRUNCATE takes an ACCESS EXCLUSIVE lock, and `company_profiles` is read
+            # by the session-scoped sessions other fixtures hold, so a cleanup behind a reader
+            # that has not finished would queue rather than fail. The TRUNCATE version did pass
+            # CI; this removes the hazard rather than a symptom, and both tables hold a handful
+            # of rows so a DELETE costs nothing.
+            #
+            # (Said plainly because the commit that made this change claimed the TRUNCATE had
+            # hung the suite. It had not -- `gh pr checks` reported a finished job as running
+            # for twenty-five minutes and I believed it.)
             for table in _SHARED_TABLES:
                 await conn.execute(text(f"DELETE FROM app.{table}"))
         await engine.dispose()
