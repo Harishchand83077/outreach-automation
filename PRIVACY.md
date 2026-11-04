@@ -288,6 +288,38 @@ nightly dump; it is not uploaded to any object store or third party.
 browser extension's `ext:suggest` token cannot reach them (ADR-039). A tracker whose dates were
 written by something other than the person is a record of claims they did not make.
 
+## Search answers (F17, ADR-046)
+
+Research searches the web only when a company's own pages said too little, and only through a
+chain of providers whose keys the workspace pasted itself. There is no shared search key by
+design, with one named exception: where the deployment has a `TAVILY_API_KEY`, that account is
+the last member of every chain and the screen says its free tier is shared.
+
+**What leaves this system.** One query, built from the company's name or website -- for example
+`Acme Analytics company news`. **No lead's name, address, job title or reply is ever part of a
+search query**, and nothing about a person is sent to a search provider. The query is about a
+company, which is the same rule the LLM routing already follows for providers marked
+`allow_pii=false`.
+
+**What is kept.** `search_cache` holds the query and the hits a provider returned -- a title, a
+URL and a snippet each -- for seven days, so a company researched twice does not cost two
+credits. It records **no lead id and no person**: a search is asked about a company, and a row
+keyed per workspace per query has no business recording which lead happened to prompt it.
+
+**Expired answers are deleted** by the hourly retention sweep, not blanked. `domain_research` is
+only ever blanked because its findings are part of the record of what a sent email cited; a
+search answer nobody may serve any more is a copy of somebody else's index with no audit value,
+so it goes.
+
+**Per workspace, never pooled.** A search answer was paid for out of one workspace's credits and
+is not shared with another, which is the same line ADR-038 drew when it made the public-company
+cache the single unpooled table: public facts about a company are shared, a provider's billable
+answer is not.
+
+**Search hits are never cited as fact.** They are attached to the research result as sources with
+a note saying they were not verified against fetched text, so a reviewer reads them before
+relying on them. Only text fetched from the company's own pages can ground a claim in an email.
+
 ## The booking webhook (F15, ADR-045)
 
 A workspace may connect its own booking tool so that a meeting somebody books is recorded without

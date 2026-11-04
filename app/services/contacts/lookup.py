@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings
-from app.db.models import ContactCandidate, Event, JobPost
+from app.db.models import CONTACT_PROVIDERS, ContactCandidate, Event, JobPost
 from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.services import credentials
@@ -128,7 +128,7 @@ async def run(
             "a lookup needs a company domain. This posting has none recorded, so type one."
         )
 
-    credential = await keys.live(session, ctx, provider=provider)
+    credential = await keys.live(session, ctx, provider=provider, allowed=CONTACT_PROVIDERS)
     if credential is None:
         raise LookupRefused(
             f"this workspace has no {provider} key. Add your own under Settings; there is no "

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import Settings
-from app.db.models import CONTACT_PROVIDERS, ProviderCredential
+from app.db.models import ALL_PROVIDERS, CONTACT_PROVIDERS, SEARCH_PROVIDERS, ProviderCredential
 from app.db.repo import OrgContext
 from app.services import credentials
 
@@ -38,22 +38,44 @@ class KeyStatus:
     usable: bool
     last_used_at: datetime | None
     added_by: str | None
+    #: `contact` or `search`. The screen groups on it, and a caller that only handles one family
+    #: filters on it -- which is why it travels with the row rather than being worked out again
+    #: from a tuple the caller would have to import and keep in step.
+    family: str = "contact"
 
 
-def _check_provider(provider: str) -> str:
+#: Which family each provider belongs to. **One mapping, derived from the two tuples**, so a
+#: provider added to either is classified without anybody remembering this dictionary exists.
+FAMILIES: dict[str, str] = {
+    **{name: "contact" for name in CONTACT_PROVIDERS},
+    **{name: "search" for name in SEARCH_PROVIDERS},
+}
+
+
+def check_provider(provider: str, *, allowed: tuple[str, ...] = ALL_PROVIDERS) -> str:
+    """Normalise a provider name, refusing anything the caller does not serve.
+
+    `allowed` defaults to every provider the table accepts and is narrowed by each caller to its
+    own family. The narrowing is the point rather than politeness: a Tavily key stored through a
+    contact route would be handed to a contact adapter, which would post a search credential to
+    somebody else's endpoint. The database constraint cannot catch that -- both names are valid
+    in the column -- so the guard belongs where the family is known.
+    """
     name = provider.strip().lower()
-    if name not in CONTACT_PROVIDERS:
-        raise ProviderKeyError(
-            "provider must be one of " + ", ".join(CONTACT_PROVIDERS) + f", not {name!r}"
-        )
+    if name not in allowed:
+        raise ProviderKeyError("provider must be one of " + ", ".join(allowed) + f", not {name!r}")
     return name
 
 
 async def live(
-    session: AsyncSession, ctx: OrgContext, *, provider: str
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    provider: str,
+    allowed: tuple[str, ...] = ALL_PROVIDERS,
 ) -> ProviderCredential | None:
     """This workspace's live credential for one provider, or None."""
-    name = _check_provider(provider)
+    name = check_provider(provider, allowed=allowed)
     return await session.scalar(
         select(ProviderCredential).where(
             ProviderCredential.org_id == ctx.org_id,
@@ -63,12 +85,17 @@ async def live(
     )
 
 
-async def statuses(session: AsyncSession, ctx: OrgContext) -> list[KeyStatus]:
+async def statuses(
+    session: AsyncSession, ctx: OrgContext, *, family: str | None = None
+) -> list[KeyStatus]:
     """Every provider, with whether this workspace has a usable key for it.
 
     Every provider rather than every stored row, because the question the screen asks is "what
     can I look up?" and a provider with no key is an answer to it. `mock` is included: it is how
     a deployment with no paid account sees the feature work at all.
+
+    `family` narrows it to `contact` or `search`; None reports both, which is what one Settings
+    screen listing a workspace's keys wants.
     """
     rows = {
         row.provider: row
@@ -82,7 +109,9 @@ async def statuses(session: AsyncSession, ctx: OrgContext) -> list[KeyStatus]:
         ).all()
     }
     out: list[KeyStatus] = []
-    for provider in CONTACT_PROVIDERS:
+    for provider in ALL_PROVIDERS:
+        if family is not None and FAMILIES[provider] != family:
+            continue
         row = rows.get(provider)
         out.append(
             KeyStatus(
@@ -93,6 +122,7 @@ async def statuses(session: AsyncSession, ctx: OrgContext) -> list[KeyStatus]:
                 usable=row is not None and row.invalid_reason is None,
                 last_used_at=row.last_used_at if row else None,
                 added_by=row.added_by if row else None,
+                family=FAMILIES[provider],
             )
         )
     return out
@@ -107,6 +137,7 @@ async def store(
     label: str | None = None,
     client_id: str | None = None,
     settings: Settings | None = None,
+    allowed: tuple[str, ...] = ALL_PROVIDERS,
 ) -> ProviderCredential:
     """Save a key, replacing this workspace's previous one for that provider.
 
@@ -117,7 +148,7 @@ async def store(
     For `snov` the credential is a client id *and* secret, sealed as one JSON object -- two
     columns would be two things to encrypt, two to rotate, and two to forget to clear.
     """
-    name = _check_provider(provider)
+    name = check_provider(provider, allowed=allowed)
     cleaned = secret.strip()
     if not cleaned:
         raise ProviderKeyError("the key is empty")
@@ -130,7 +161,7 @@ async def store(
         kind = "oauth"
         payload = json.dumps({"client_id": (client_id or "").strip(), "client_secret": cleaned})
 
-    previous = await live(session, ctx, provider=name)
+    previous = await live(session, ctx, provider=name, allowed=allowed)
     if previous is not None:
         previous.revoked_at = datetime.now(tz=UTC)
         # Flushed before the insert, or the partial unique index refuses the new row: it is
@@ -151,9 +182,15 @@ async def store(
     return row
 
 
-async def revoke(session: AsyncSession, ctx: OrgContext, *, provider: str) -> bool:
+async def revoke(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    provider: str,
+    allowed: tuple[str, ...] = ALL_PROVIDERS,
+) -> bool:
     """Stop using a key. Returns whether there was one."""
-    row = await live(session, ctx, provider=provider)
+    row = await live(session, ctx, provider=provider, allowed=allowed)
     if row is None:
         return False
     row.revoked_at = datetime.now(tz=UTC)

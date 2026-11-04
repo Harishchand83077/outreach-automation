@@ -2525,6 +2525,140 @@ every delivery is refused -- answering 204, with nothing anywhere saying why.
 67 new tests (39 signature and payload unit tests, 28 integration), ruff and mypy strict clean,
 migration applied and reversed against the development database.
 
+**Search had never once run, and F17's first job was to notice (F17, ADR-046, slice S14.3).
+Phase 14 is complete.** `search_cache`, three provider adapters behind an ordered chain,
+`/api/v1/search-keys`, and the one line in the research handler that was missing.
+
+**The headline is that the feature this slice was meant to extend had never executed.**
+`research_lead` has accepted a `search` and a `budget` since Phase 3. `_try_search` was correct
+and tested. `build_provider` and `SearchBudget` existed, were tested, and were imported by
+nothing. And `handle_research_lead` -- the only caller in the system -- **passed neither**, so
+`search` was None on every real research job and the whole fallback was exercised only by tests
+that handed a provider in themselves.
+
+**That is the eleventh instance of this project's signature defect**: a correct producer, a
+correct consumer, and nothing joining them. The same shape as research never queuing a draft, as
+nothing ever writing a `Draft(kind="followup")`, as the two `draft_reply` payload shapes that
+matched nothing, and as every outbound message going out with no `In-Reply-To`. Every one of
+those was invisible to a suite that tested both halves separately, and every one was found by
+looking at the join rather than at either side.
+
+`tests/unit/test_research_passes_a_search_chain.py` closes the class rather than the instance: an
+`ast` walk over `app/` asserting every caller of `research_lead` passes both keywords, with
+string constants blanked first, because the comment in the handler explaining this fix names
+both of them and prose must not satisfy an assertion about code. It was run against the unfixed
+handler to watch it fail, and it fails naming the real keyword set --
+`assert 'search' in {'fetcher', 'lead', 'offer', 'org_id', 'router'}`, which is exactly what
+`main` was passing.
+
+**The chain is `LLMRouter`'s shape, because it is `LLMRouter`'s problem.** Several providers, each
+with a free tier, any of which may be down or out of credit, tried in an order the operator chose.
+Reusing that shape rather than inventing a second one means there is one answer in this system to
+"what happens when a provider fails?"
+
+**The order is the feature, and it has two edges.** A hit short-circuits, so the second member is
+never called and therefore never billed; and a **cache hit calls nobody at all**. Those are the
+slice's two acceptance criteria and they are the only two properties here that cost money when
+they are wrong. Both were run against a chain with the short circuit removed, which fails two
+tests with the right words -- the second provider called, and the answer coming back from the
+wrong member.
+
+**A failure is not an empty answer, and that is the change the chain forced.** With one provider
+the two were the same thing: `search()` returned `[]` on an outage, which was a correct way of
+saying "degrade, do not fail the lead". With a chain they are opposite answers. "Nobody writes
+about this company" stops nothing -- the next member is tried, because a provider that does not
+index a small Indian company is the ordinary case this exists for -- and once every member has
+answered, that empty result **is cached**, so the next lead at that company does not pay to be
+told the same silence. "This provider is down" moves on and is **never** cached, because storing
+it would let one bad afternoon stop a workspace searching for a week.
+
+A provider reporting an outage as zero results makes those indistinguishable, which is the
+job-post intake's expensive lesson in a costlier place: an unknown source with a plausible
+payload returned zero postings and read as an empty board. So `search()` raises now, and the
+chain catches both kinds and degrades exactly as the single provider did.
+
+**A refused key is told apart from an outage, by two classes rather than one.** A 401 records
+`invalid_reason` on the credential, so the next research job leaves that member out instead of
+paying a request to be refused again. A 429 or a 503 leaves the key alone -- being out of credit
+is not being wrong, and next month it works. Collapsing them is how a perfectly good key gets
+recorded as dead because a provider had a bad afternoon.
+
+**Every key is the workspace's own**, read from `provider_credentials` exactly as F9's contact
+lookups are, with ADR-041's reasoning unchanged: there is no shared key, so every question about
+who may use one has the same answer, and a workspace with none degrades to the company's own
+pages rather than failing.
+
+**The deployment's `TAVILY_API_KEY` survives as the last member, named as shared, and that is the
+slice's one deliberate compromise.** ADR-023 removed the deployment's mailbox precisely because an
+identity in the environment makes "who may use it?" a rule somebody has to maintain, and every
+word of that applies here. It stays because removing it would stop the live deployment searching
+at all, and it is contained three ways: always last, so a workspace's own key shadows it; recorded
+in `search_usage` as `tavily:deployment` rather than `tavily`, so the ledger can say which account
+a credit came from; and described on the screen as a free tier shared by everybody using it. A
+workspace told "search works" without being told whose credits it spends has been told something
+misleading.
+
+**Where the cache actually earns its keep is narrower than it first looks, and one of my own tests
+was wrong about it.** I wrote "two leads at one company, the second costs nothing" -- and it is
+nothing to do with this cache: `domain_research` is keyed on the registrable domain and the second
+lead is served from it before a search is even considered. The test failed, and it was right to:
+it would otherwise have passed for the wrong reason the first time somebody changed the research
+cache. What the search cache does save is a company researched **again** -- a run whose synthesis
+failed after the search was paid for and stored nothing, or a row past `PERISHABLE_AFTER_DAYS`
+whose hooks were all perishable and is therefore treated as a miss. The test now sets up exactly
+that, asserts `from_cache is False` so the findings really were re-researched, and shows the
+credit is not spent twice.
+
+**Seven days, and the number does a different job from the research cache's ninety.** That one
+governs findings verified against text we fetched. This governs somebody else's index of what a
+company has been up to lately, which is the most perishable thing here --
+`PERISHABLE_AFTER_DAYS` already drops the hooks that cite it after thirty days, and a cache
+serving month-old news would be feeding precisely the hook that embarrasses us first. Expired
+rows are **deleted** by the hourly sweep, unlike `domain_research`, which is only ever blanked:
+those rows are part of the record of what a sent email cited, and a search answer nobody may
+serve is a copy of somebody else's index with no audit value at all.
+
+**The cache is per workspace, which is ADR-038's line held rather than widened.** That ADR made
+`company_profiles` the one table in this schema with no `org_id`, and drew the boundary precisely:
+a name, a careers URL and an ATS slug are public facts worth pooling; findings a draft goes on to
+cite were paid for by one workspace out of its own credits and are not ours to pool. A search
+answer is a provider's billable response to a question one workspace asked, so it sits with
+`domain_research`. One exception to ADR-004 is a decision; two would be a pattern.
+
+**The budget is per provider, and the number is ours rather than theirs.** Each member is a
+separate account with its own allowance, so a pooled total would refuse a workspace's second key
+for credits its first key spent. We cannot read anybody's plan, so 1,000 a month is a ceiling that
+stops a loop spending somebody's month in an afternoon -- the same job `DAILY_LOOKUP_BUDGET` does
+for contact lookups, and stated as that rather than as a claim about a free tier. The cache is
+read **before** the ceiling is checked, deliberately: a cached answer costs nobody a credit, so a
+workspace that has spent its month still gets the answer it has already paid for.
+
+**Two provider families, one table, and the database cannot be what keeps them apart.**
+`provider_credentials` now holds contact keys and search keys, because there should be one answer
+to "where are the secrets and how are they protected?" and one key to rotate. The check
+constraint is built from `ALL_PROVIDERS`, so adding a provider is one tuple and one migration --
+but it accepts either family's names, so it cannot refuse a Tavily key stored through the contact
+route, which would hand a search credential to a contact adapter and post it to somebody else's
+endpoint. Each door narrows to its own family explicitly, the two name sets are asserted disjoint,
+and there is a test for each direction.
+
+**The verify button costs a credit and says so.** No provider here offers an "is this key valid?"
+endpoint, so verification is a real search. ADR-021 is why it exists: a key pasted with a trailing
+space, a green tick, and a fallback that quietly never runs is the failure that took a whole slice
+to find the first time. It runs one member rather than the chain, because the question is whether
+*this* key works and a chain would answer it by falling through to another provider and reporting
+success.
+
+**Brave and Serper have never been called**, and `docs/SEARCH_PROVIDERS.md` is the verified-versus-
+assumed table, in `CONTACT_PROVIDERS.md`'s spirit. Each response is read in exactly one function,
+so a wrong assumption is one function and one test. The differences are exactly the kind that fail
+for one source only -- Brave nests under `web.results` and calls the snippet `description`, Serper
+calls the URL `link` -- which is the ATS feeds' lesson, where Lever's bare array made a parser
+that worked for two sources and read as a bad board slug for the third.
+
+51 new tests (24 chain and adapter unit tests, 3 structural, 24 integration), ruff and mypy strict
+clean, migration applied and reversed against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
