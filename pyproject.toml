@@ -9,9 +9,9 @@ requires-python = "==3.12.*"
 dependencies = [
     "fastapi==0.162.0",
     "uvicorn[standard]==0.54.0",
-    "python-multipart==0.0.32",
-    "pydantic==2.14.1",
-    "pydantic-settings==2.16.1",
+    "python-multipart==0.0.33",
+    "pydantic==2.14.2",
+    "pydantic-settings==2.16.2",
     "python-dotenv==1.2.4",
     "openpyxl==3.1.5",
     "aiosmtplib==5.1.3",
@@ -26,11 +26,11 @@ dependencies = [
     "alembic==1.20.1",
     # Windows ships no tz database, and scheduling is defined in Asia/Kolkata, so ZoneInfo
     # needs this. Also required by Alembic's UTC filename timestamps.
-    "tzdata==2026.5",
+    "tzdata==2026.6",
     # RFC-compliant address syntax. Deliverability (MX) is checked separately through an
     # injectable resolver, so no test ever needs the network.
     "email-validator==2.3.0",
-    "dnspython==2.9.0",
+    "dnspython==2.9.1",
     # Used directly rather than a vendor SDK: every provider in the chain speaks the same
     # OpenAI-compatible endpoint, and we need control over error classification (issue E5).
     "httpx==0.28.1",
