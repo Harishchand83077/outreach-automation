@@ -46,14 +46,6 @@ TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or _derive_test_url()
 
 #: Every table the migrations create, child-first, for truncation.
 _TABLES = (
-    # **The tables with no `org_id` have to be named here.** Everything else is reached by
-    # `TRUNCATE app.orgs CASCADE`, which follows the foreign keys; a table that is not a
-    # workspace's has none to follow, so it survives every test and leaks into the next.
-    # `company_profiles` (ADR-038) and `platform_operators` (ADR-024) are both deliberate
-    # exceptions to ADR-004, and both were invisible to this list until a test wrote a shared
-    # company row twice and hit its unique index.
-    "company_profiles",
-    "platform_operators",
     "worker_heartbeats",
     "alerts",
     "suppressions",
@@ -66,6 +58,10 @@ _TABLES = (
     "mailboxes",
     "orgs",
 )
+
+#: Tables that carry no `org_id`, so `TRUNCATE app.orgs CASCADE` cannot reach them. Cleared with
+#: DELETE rather than TRUNCATE -- see the teardown in the `db` fixture for why that matters.
+_SHARED_TABLES = ("company_profiles", "platform_operators")
 
 
 def _maintenance_url(url: str) -> tuple[str, str]:
@@ -135,12 +131,31 @@ async def db(_migrated_database: None) -> AsyncIterator[AsyncSession]:
             yield session
     finally:
         async with engine.begin() as conn:
+            # **A block fails loudly rather than hanging.** DEV-1 is this suite's most expensive
+            # recurring problem: an interrupted run leaves a backend idle in transaction holding
+            # a lock, and every later cleanup queues behind it for ever -- which has previously
+            # looked like deadlocks, foreign-key violations and 500-second timeouts in turn. A
+            # `lock_timeout` turns all of that into one named error, which is the cheapest of the
+            # three fixes that issue records.
+            await conn.execute(text("SET LOCAL lock_timeout = '30s'"))
             # The append-only trigger blocks DELETE, so events are cleared with the explicit
             # escape hatch the migration provides.
             await conn.execute(text("SET LOCAL app.allow_event_delete = 'on'"))
             await conn.execute(
                 text("TRUNCATE TABLE " + ", ".join(f"app.{t}" for t in _TABLES) + " CASCADE")
             )
+            # **The two tables with no `org_id`, cleared with DELETE rather than TRUNCATE.**
+            # Everything above is reached by `TRUNCATE app.orgs CASCADE`, which follows the
+            # foreign keys; `company_profiles` (ADR-038) and `platform_operators` (ADR-024) are
+            # the deliberate exceptions to ADR-004, so neither has a key to follow and both
+            # survived every test and leaked into the next.
+            #
+            # DELETE, because TRUNCATE takes an ACCESS EXCLUSIVE lock and `company_profiles` is
+            # read by the session-scoped sessions other fixtures hold -- so adding it to the
+            # TRUNCATE above made the whole suite queue behind a reader instead of failing. Both
+            # tables hold a handful of rows, so the cost of a DELETE is nothing.
+            for table in _SHARED_TABLES:
+                await conn.execute(text(f"DELETE FROM app.{table}"))
         await engine.dispose()
 
 
