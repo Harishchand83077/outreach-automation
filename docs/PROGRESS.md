@@ -2948,6 +2948,48 @@ reversed against the development database. mypy caught `Lead.email`, which is `e
 the same naming trap as `Event.at` and `SearchUsage.at`, for the fourth time, and found by the
 type checker each time rather than by a screen reporting nothing for ever.
 
+**A Gmail connection that had expired still read as connected, everywhere (ADR-050).** Reported
+by the owner: the alerts said it had expired; the campaign screen and the sending-account panel
+both said connected.
+
+**Both were right about what they were computing, which is why it survived.** `invalid_reason` is
+set only once a provider has **refused** a credential -- so a grant that lapsed on Friday and had
+not been used since carried no reason at all, `unavailable_reason` returned None, and every
+reader of it takes None to mean the mailbox works. `grant_status` separately knew it had nothing
+left, and the hourly sweep was raising `mailbox_grant_expiring` about the same row every hour.
+
+Two correct functions answering adjacent questions, with the screens asking the wrong one. The
+same shape as the pool blocker that reported nothing for a **paused** mailbox, and as
+`direction == "outbound"` against a column holding `'out'`.
+
+**`GET /mailboxes` disagreed with itself inside one row**: `connected: true`, `usable: true`,
+`days_left: 0`, `expiry_notice: "This Gmail connection has expired."` Four fields, two questions
+-- and whoever reads a row like that believes the reassuring one.
+
+**The fix lands in one function, which is the whole argument for that function existing.**
+`unavailable_reason` is what the campaign blockers, the mailbox list and the send loop's pause
+reason all ask, so consulting `grant_status` there fixes all three at once. It reuses
+`GrantStatus.notice`, the sentence the dashboard and the alert already use, because somebody who
+sees three wordings for one state assumes three problems.
+
+**Reported from the arithmetic, not from Google**, deliberately. `login_for` still asks Google,
+which is the authority on whether a token works -- but "should this person be told to reconnect?"
+needs no network call, and a read path that minted a token to find out is the side effect ADR-021
+refused. It errs conservative near the boundary: `days_left` rounds up so eleven hours left is
+not expired, and reconnecting costs one click where the opposite error costs a silent outage.
+
+**`connected` and `needs_reconnect` are two views of one answer now**, derived from a single call.
+A row cannot contradict itself when only one thing is being asked, and the test asserts that
+across four grant ages rather than the single instance that was reported.
+
+**And a second defect found while reading the same function: `connection_status` returned
+`invalid_reason` verbatim.** That column can quote a provider's own reply, and the response
+reaches a browser, a screenshot and anything that logs a page. The rule is kept everywhere else --
+`GET /mailboxes` carries a boolean and has a test asserting the stored text is absent -- and this
+route was the one place still echoing it. It carries no `reason` field at all now, with a test.
+
+10 integration tests. Two of them fail against the unfixed code, which is how they were checked.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

@@ -890,6 +890,12 @@ async def list_mailboxes(session: SessionDep, user: CurrentUserDep) -> dict[str,
     for mailbox in mailboxes:
         credential = credentials.get(mailbox.id)
         grant = grant_status(credential)
+        # **One answer, three views of it.** These were computed separately and disagreed: a
+        # lapsed grant carries no `invalid_reason`, so `connected` was true and `usable` was
+        # true beside a `days_left` of 0 and an `expiry_notice` saying it had expired. One row
+        # contradicting itself in three fields is worse than any of them being wrong alone,
+        # because whoever reads it believes the reassuring one.
+        reason = await unavailable_reason(session, mailbox=mailbox)
         rows.append(
             {
                 "id": str(mailbox.id),
@@ -898,14 +904,14 @@ async def list_mailboxes(session: SessionDep, user: CurrentUserDep) -> dict[str,
                 "daily_cap": mailbox.daily_cap,
                 "paused": mailbox.paused,
                 "pause_reason": mailbox.pause_reason,
-                "connected": credential is not None and credential.invalid_reason is None,
-                "needs_reconnect": credential is not None and credential.invalid_reason is not None,
+                "connected": credential is not None and reason is None,
+                "needs_reconnect": credential is not None and reason is not None,
                 "account_email": credential.account_email if credential else None,
                 "days_left": grant.days_left,
                 "expiry_notice": grant.notice,
                 # Never `invalid_reason` verbatim: it can quote a provider's reply, and this
                 # travels to a browser and into screenshots.
-                "usable": await unavailable_reason(session, mailbox=mailbox) is None,
+                "usable": reason is None,
                 "campaigns": int(in_use.get(mailbox.id, 0)),
             }
         )

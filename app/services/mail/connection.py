@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.settings import Settings, config
 from app.db.models import Mailbox, MailCredential
 from app.services.credentials import CredentialError, seal, unseal
+from app.services.mail.expiry import grant_status
 from app.services.mail.google_oauth import (
     REFRESH_MARGIN,
     OAuthError,
@@ -119,17 +120,40 @@ async def unavailable_reason(
     write an `invalid_reason` — a read path with a side effect, fired by anybody refreshing a
     page.
 
-    So the two knowable cases are answered here and `login_for` asks the same helper for the
-    first of them, rather than a second copy of the rule that would drift from it. The third
-    case — a refresh Google will not honour — is unknowable without asking, and surfaces through
-    `invalid_reason` the moment the send loop finds out.
+    So the knowable cases are answered here and `login_for` asks the same helper, rather than a
+    second copy of the rule that would drift from it. The unknowable case — a refresh Google
+    will not honour for some other reason — surfaces through `invalid_reason` the moment the
+    send loop finds out.
+
+    **An expired grant is one of the knowable cases, and it was missing.** `invalid_reason` is
+    set only once a provider has *refused* a credential, so a connection that lapsed on Friday
+    and has not been used since carries no reason at all — and this function returned None,
+    which every reader takes to mean "this mailbox works". The campaign screen, the sending
+    account panel and `GET /mailboxes` all said **connected** about a mailbox that could
+    neither send nor read, while the alert sweep was raising `mailbox_grant_expiring` about the
+    same row every hour. Two correct functions answering adjacent questions, with the screens
+    asking the wrong one: this project's signature defect, and the same shape as the pool
+    blocker that reported nothing for a *paused* mailbox because `unavailable_reason` answers
+    whether a credential can log in.
+
+    Reported from the arithmetic rather than from Google, deliberately. `login_for` still asks
+    Google, because Google is the authority on whether a token works — but "should this person
+    be told to reconnect?" is a question we can answer without a network call, and the honest
+    answer the moment a seven-day grant is seven days old is yes.
     """
     credential = await session.scalar(
         select(MailCredential).where(MailCredential.mailbox_id == mailbox.id)
     )
-    if credential is not None:
+    if credential is None:
+        return _not_connected(mailbox)
+    if credential.invalid_reason:
         return credential.invalid_reason
-    return _not_connected(mailbox)
+    grant = grant_status(credential, settings=settings)
+    if grant.expired:
+        # `notice` is the same sentence the dashboard and the alert already use, so a person
+        # does not see three wordings for one state and assume three problems.
+        return grant.notice
+    return None
 
 
 def _not_connected(mailbox: Mailbox) -> str:
@@ -243,19 +267,35 @@ async def mark_unavailable(
     logger.warning("mailbox paused", extra={"mailbox_id": str(mailbox.id), "reason": reason})
 
 
-async def connection_status(session: AsyncSession, *, mailbox_id: uuid.UUID) -> dict[str, object]:
-    """What the dashboard may say about a mailbox's connection. Never a secret."""
+async def connection_status(
+    session: AsyncSession, *, mailbox_id: uuid.UUID, settings: Settings | None = None
+) -> dict[str, object]:
+    """What the dashboard may say about a mailbox's connection. Never a secret.
+
+    **`connected` and `needs_reconnect` are two views of one answer**, and they are computed
+    from one so they cannot contradict each other. They used to be computed from
+    `invalid_reason` alone, which meant a lapsed grant reported `connected: true` beside a
+    `days_left: 0` and an `expiry_notice` saying it had expired -- one row disagreeing with
+    itself in three fields.
+
+    **`invalid_reason` is no longer returned.** It can quote a provider's own reply, and this
+    response reaches a browser, a screenshot and anything that logs a page. That rule is kept
+    everywhere else in this system -- `GET /mailboxes` carries a boolean instead and has a test
+    asserting the stored text is absent -- and this route was the one place still echoing it.
+    """
     credential = await session.scalar(
         select(MailCredential).where(MailCredential.mailbox_id == mailbox_id)
     )
     if credential is None:
         return {"connected": False, "kind": None, "account_email": None, "needs_reconnect": False}
+
+    grant = grant_status(credential, settings=settings)
+    works = credential.invalid_reason is None and not grant.expired
     return {
-        "connected": credential.invalid_reason is None,
+        "connected": works,
         "kind": credential.kind,
         "account_email": credential.account_email,
-        "needs_reconnect": credential.invalid_reason is not None,
-        "reason": credential.invalid_reason,
+        "needs_reconnect": not works,
         "last_refreshed_at": (
             credential.last_refreshed_at.isoformat() if credential.last_refreshed_at else None
         ),
