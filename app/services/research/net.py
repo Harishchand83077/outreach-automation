@@ -225,6 +225,29 @@ def validate_url(url: str, *, resolver: object = None) -> SafeTarget:
     return SafeTarget(url=url, host=host, port=port, addresses=tuple(addresses))
 
 
+def company_domain(raw: str | None) -> str:
+    """The registrable domain of whatever somebody typed or a row happens to hold.
+
+    **One function, because four things key on "what company is this?"** -- the research cache
+    (ADR-011), the watchlist, the knowledge graph and the signal producer. They were about to be
+    three: the watchlist grew its own, and the graph then handed a whole URL to
+    `registrable_domain`, which wants a host and quietly returned something that was not a
+    domain -- so `https://www.acme.example/x` and `acme.example` became two nodes for one
+    company. That is this project's signature defect, and the cheapest place to not have it is
+    here.
+
+    Accepts a URL, a host, or a host with `www.`; returns "" for anything with no host at all.
+    """
+    value = (raw or "").strip().lower()
+    for prefix in ("https://", "http://"):
+        value = value.removeprefix(prefix)
+    value = value.split("/")[0].split("?")[0].split("#")[0].removeprefix("www.")
+    # A port has no business in an identity, and `acme.example:8080` would otherwise be a
+    # second company.
+    value = value.split(":")[0]
+    return registrable_domain(value) if value else ""
+
+
 def registrable_domain(host: str) -> str:
     """The site a host belongs to, using the public suffix list.
 

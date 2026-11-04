@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import JobPost, Lead, SignalEvent, WatchlistEntry
 from app.db.repo import OrgContext
 from app.domain.state import TERMINAL
+from app.services.graph import store as graph
 from app.services.research.service import cache_key
 from app.services.signals import watchlist
 
@@ -133,6 +134,17 @@ async def record(
 
     if result.created:
         await watchlist.touch(session, entry, now=moment)
+        # **The graph is written from the same facts, in the same transaction.** A signal and
+        # an edge are two readings of one event: the signal is "there is a reason to write to
+        # them today" and the edge is "they are hiring for this role, and here is the page that
+        # says so". Writing them apart would let one exist without the other and leave a brief
+        # citing something no signal ever reported, or a signal nothing could be said about.
+        #
+        # Only a signal that carries a URL produces an edge, because `ck_edges_provenance`
+        # refuses one without a source -- and refusing here names the signal rather than
+        # arriving as a constraint violation inside a worker pass storing postings.
+        for signal in result.created:
+            await graph.from_signal(session, ctx, signal=signal, company_name=entry.label)
     await session.flush()
     return result
 

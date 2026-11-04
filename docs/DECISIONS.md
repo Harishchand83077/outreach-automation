@@ -3792,3 +3792,94 @@ it. Found while reading the function, not reported.
   fields the reader has to reconcile, and a reader who gets it wrong believes the reassuring one.
 - **Leaving `connected` alone and fixing only `usable`.** The campaign panel reads `connected`,
   which is where it was reported from.
+
+## ADR-051 — An edge with no source is refused by the database
+
+**Date:** 2026-11-05
+**Status:** Accepted
+**Relates to:** F12, slice S15.2; feeds S15.3's brief
+
+### Context
+
+A meeting brief is a set of sentences somebody repeats to a stranger. The prototype's failure
+mode was confident paragraphs about funding stage and traction for a company nobody had looked
+at (issues A1, A2), and hard rule 6 exists because of it. The graph those sentences will be
+built from is the place to make that impossible rather than discouraged.
+
+### Decision
+
+**`ck_edges_provenance` requires a `source_url` or a `message_id`.** "We know Acme is hiring"
+cannot be stored without the thing that says so.
+
+**A check constraint rather than a rule in a service**, and that is the whole slice. A service
+can be bypassed by the next writer, and the next writer is always somebody in a hurry with a
+reasonable-sounding exception — "just this one, we'll add the source later". A constraint has no
+sympathy. The test for it writes raw SQL, because testing it through the service would only
+prove the service is careful today.
+
+**The service refuses first anyway.** `Claim.__post_init__` raises if provenance is missing, so
+a caller that forgets is told which claim it was rather than handed an `IntegrityError` three
+frames away from a worker pass that was storing postings at the time. The constraint is the last
+line of defence, not the first.
+
+**`object_id` or `object_text`, never both and never neither.** A row that did both would be two
+claims wearing one id, and a brief citing it could not say which it meant.
+
+**A model may phrase an edge and may never add one.** Nothing writes here from a model's output:
+the producers are a job posting, whose apply URL is the source, and an inbound message, whose id
+is. S15.3's brief reads these rows and may reword them; it cannot introduce a claim, because
+there would be nothing to put in the provenance columns. That is a stronger guarantee than
+asking a model not to — it is the schema making the sentence unsayable.
+
+**The source travels with every line, not beside the set.** `about()` returns each statement
+with its own source, which is what makes the rule checkable from outside: a sentence that
+arrives without one did not come from this table.
+
+**`uq_edges_claim` is `NULLS NOT DISTINCT`, and that detail is load-bearing.** Three of its seven
+columns are null in any given row — an edge names an object *or* a text, and carries a URL *or* a
+message id — and under Postgres's default rule two NULLs never collide, so the index would have
+deduplicated **nothing at all**. The daily poll sees yesterday's postings again every morning,
+so an index silently not working means a duplicate claim a day until a brief cites the same
+sentence six times. Postgres 15+; this project runs 17 in development and in production, checked
+rather than assumed.
+
+**Entities are per workspace**, like `domain_research` and unlike `company_profiles` (ADR-038).
+A company's name and ATS slug are public facts worth pooling; what one workspace has worked out
+about a company, from its own sources, is not.
+
+**`entities.lead_id` is `SET NULL` and `edges.message_id` is `CASCADE`**, which looks
+inconsistent and is the point. Erasing a lead must not delete what we learned about their
+*employer*; but an edge whose only provenance is a message must go with that message, because a
+claim that outlived its source is exactly the claim this table refuses to store.
+
+**One normaliser for "what company is this?".** Four things key on it — the research cache, the
+watchlist, the graph and the signal producer — and they were about to be three implementations:
+the watchlist grew its own, and the graph then handed a whole URL to `registrable_domain`, which
+wants a host and quietly returned something that was not a domain, so `https://www.acme.example/x`
+and `acme.example` became two nodes for one company. Found by a test, fixed by moving the rule to
+`net.company_domain` where `registrable_domain` already lived.
+
+### Consequences
+
+- The graph can only ever contain claims with sources, so a brief built from it can cite every
+  line or has no line to cite.
+- The vocabulary is deliberately small: four entity kinds and four predicates. A kind nobody can
+  cite and a predicate nobody can phrase make the graph bigger without making it more useful,
+  and both are check constraints built from tuples in `models.py`.
+- `uses` and `works_at` have no producer yet. Stated, as `signal_events`' unused kinds are and
+  as `mailbox_health.complaint_rate` is: a vocabulary belongs in the constraint, and a producer
+  added later should not need a migration.
+- Reading a company's graph is one query and no network call, so the screen showing it costs
+  nothing to refresh.
+
+### Rejected
+
+- **Provenance as a service-level rule.** The next writer bypasses it, and the failure is a
+  sentence somebody repeats to a stranger.
+- **A nullable `source` with a "trusted" flag.** Every claim would eventually be trusted.
+- **Letting a model write edges.** The guarantee here is that it cannot, which is worth more than
+  any prompt.
+- **Pooling entities across workspaces.** ADR-038's line: public facts about a company are
+  shared, one workspace's conclusions are not.
+- **A `confidence` column.** It would be a number nobody could justify, and a sentence either has
+  a source or does not.
