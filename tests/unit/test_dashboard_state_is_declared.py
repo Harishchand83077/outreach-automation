@@ -23,7 +23,11 @@ from __future__ import annotations
 import pathlib
 import re
 
-APP = pathlib.Path("frontend/src/App.jsx")
+#: **Every component file, not just `App.jsx`.** It read one file for three phases, so the two
+#: screens added for the job-hunt product and the sending controls were never checked at all --
+#: a guard whose scope is one file is a guard that stops applying the moment somebody splits a
+#: component out, which is exactly when a new identifier gets typed.
+SOURCES = sorted(pathlib.Path("frontend/src").glob("*.jsx"))
 
 #: A React state setter by convention: `set` then an upper-case letter. Not preceded by a dot, so
 #: `localStorage.setItem` is a method call rather than a free identifier that must be declared.
@@ -38,6 +42,8 @@ _USE_STATE = re.compile(r"const\s*\[\s*\w+\s*,\s*(set[A-Z]\w*)\s*\]")
 _PLAIN = re.compile(r"(?:const|let|function)\s+(set[A-Z]\w*)\b")
 #: A setter arriving as a destructured prop: `function Foo({ value, setThing })`
 _PROP = re.compile(r"function\s+\w+\s*\(\s*\{([^}]*)\}")
+#: The same, for an arrow component: `const Foo = ({ value, setThing }) =>`
+_ARROW_PROP = re.compile(r"\(\s*\{([^}]*)\}\s*\)\s*=>")
 
 
 def _code_only(source: str) -> str:
@@ -52,20 +58,29 @@ def _code_only(source: str) -> str:
     return source
 
 
+def test_there_is_something_to_check() -> None:
+    """A glob that matches nothing passes every assertion below it."""
+    assert SOURCES, "no dashboard components found; this guard is looking at nothing"
+
+
 def test_every_setter_the_dashboard_calls_is_declared() -> None:
-    source = _code_only(APP.read_text(encoding="utf-8"))
+    for path in SOURCES:
+        source = _code_only(path.read_text(encoding="utf-8"))
 
-    declared: set[str] = set(_USE_STATE.findall(source)) | set(_PLAIN.findall(source))
-    for params in _PROP.findall(source):
-        declared.update(_SETTER.findall(params))
+        declared: set[str] = set(_USE_STATE.findall(source)) | set(_PLAIN.findall(source))
+        for params in _PROP.findall(source):
+            declared.update(_SETTER.findall(params))
+        # An arrow component takes its props the same way: `({ onError, onToast }) =>`.
+        for params in _ARROW_PROP.findall(source):
+            declared.update(_SETTER.findall(params))
 
-    used = set(_SETTER.findall(source))
-    missing = sorted(used - declared - _GLOBALS)
+        used = set(_SETTER.findall(source))
+        missing = sorted(used - declared - _GLOBALS)
 
-    assert missing == [], (
-        "App.jsx calls state setters that are never declared, so they throw "
-        f"ReferenceError the first time somebody presses the control: {missing}"
-    )
+        assert missing == [], (
+            f"{path.name} calls state setters that are never declared, so they throw "
+            f"ReferenceError the first time somebody presses the control: {missing}"
+        )
 
 
 def test_the_check_would_have_caught_the_defect_it_was_written_for() -> None:
