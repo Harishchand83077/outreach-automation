@@ -3600,3 +3600,120 @@ route is authenticated and a plain link arrives with no `Authorization` header a
 - **Putting the operational panels on the existing Admin screen.** Admin answers "who may do
   what in this workspace"; a dead job and a worker heartbeat are a different question, and
   merging them would make the one screen somebody opens in an incident the longest one.
+
+## ADR-049 — A signal proposes a reason to write, and never a person to write to
+
+**Date:** 2026-11-05
+**Status:** Accepted
+**Relates to:** F11, slice S15.1; built on ADR-047's company key and ADR-041's proposal shape
+
+### Context
+
+Cold email works when it has a reason to be sent today. A company that has just opened three
+engineering roles is a company with a budget and a problem, and writing to them that week is a
+different proposition from writing to them at random.
+
+The system already fetches exactly that: the daily ATS poll (F5) reads public boards for the
+job-hunt side and stores the postings. Nothing read them for the outreach side.
+
+### Decision
+
+**A watchlist entry is a company; `watched_boards` is a board.** One fetch serves both: a
+candidate looking for a job and an agency looking for a client want the same HTTP response for
+different reasons. Adding a watch makes sure the board is polled and does not add a second poll
+— `_ensure_board` looks before it inserts, because `uq_watched_boards_org_source_slug` would
+otherwise raise an integrity error from a path nobody expects one from.
+
+**The key is the registrable domain**, the key `domain_research` uses, for ADR-011's reason: it
+is the company's own identity, where `leads.domain` is whatever address a founder writes from
+and is routinely `gmail.com`. A URL typed into the box is reduced to it, because people paste a
+careers page as often as a domain and both name one company.
+
+**The board slug is stored on the watch rather than resolved each time.** A feed posting carries
+the board's slug and **no company domain at all** (ADR-047), so matching a posting to a watch
+through `company_profiles` would mean a watch only works once some workspace had researched that
+company. Storing it makes the match direct, and lets somebody say "watch Acme's Lever board" in
+one step. The domain stays the identity; the slug is how the signal arrives. **This slice is the
+reason ADR-047 was worth stopping for** — the join key it fixed is this join key.
+
+**A signal proposes, and never creates a lead.** This is the rule the table exists under, and it
+is `contact_candidates`' rule: the send loop reads `leads`, and nothing here is in that table. A
+company hiring is a reason to write to somebody there — it is not consent, not an address and
+not a person. A signal that created a lead would put somebody into a sending pipeline because
+their employer posted a job.
+
+**And nothing here drafts or sends.** `approval_mode = review_all` already means a person writes
+and approves every first email, and a signal does not get to be an exception. ADR-034's rule
+applies in spirit: a thing that acts on its own may only ever *restrict*, and this one only ever
+adds a row to a list somebody reads. `tests/unit/test_signals_only_propose.py` asserts that over
+the package and its router — no send import, no `save_draft`, no `Lead(...)`, no `transition` —
+with comments and string constants stripped first, because the prose explaining each rule names
+every symbol it forbids.
+
+**A lead is matched, never inferred.** A signal attaches to a lead the workspace already has at
+that domain, resolved through the same `cache_key`. No fuzzy name matching: the cost of a wrong
+match is a reason-to-write attached to the wrong person, and the person sending the email would
+have no way to see it was wrong. The SQL narrows with a `LIKE` and Python decides, so the query
+does not load every lead and the `LIKE` is not trusted to be right.
+
+**Terminal leads are excluded from matching**, which is the decision inside that function. A
+person who opted out or bounced is not somebody a new reason to write makes approachable again;
+attaching a signal to them would put a suggestion on screen beside somebody we have been told to
+leave alone. For those companies, "no lead here yet" is the honest answer.
+
+**A signal with no lead is the interesting case, not the error case.** It is a company worth
+approaching that this workspace has no contact at, which is exactly what F9's lookup button is
+for — and the list reports the count, because that number is the reason to open the screen.
+
+**The producer ships in this slice.** `from_postings` turns a watched company's postings into
+hiring signals, in the same transaction as the postings that justify them. A table with no
+writer is how search came to be wired to nothing for three phases and how a
+`Draft(kind="followup")` was never once created; `signal_events` therefore ships with the one
+producer the system can already feed it rather than waiting for S15.5's richer poll.
+
+**Updated postings count, not only new ones.** The first poll after a watch is a poll of rows
+already stored, so a producer that only looked at newly-created postings would produce nothing
+until that company posted something new — which for a quiet company is never. The signal's own
+unique key is what stops that becoming duplicates.
+
+**`(org_id, kind, source, external_id)` is unique**, the booking webhook's device for the same
+reason: the daily poll sees yesterday's postings again every time it runs, so without it every
+morning would add a fresh copy of every open role and the list would be unusable inside a week.
+
+**Forgetting a company keeps its signals.** `signal_events.watchlist_id` is `ON DELETE SET NULL`
+and each signal carries its own `domain`, so deleting the record that a company was hiring in
+March cannot quietly rewrite a funnel. The board stays in the poll too: it may be there for job
+hunting, and a watch is not its owner.
+
+**There is no way back to `new`.** "I have looked at this" is not something somebody un-does,
+and a list that can be reset is one nobody trusts to shrink.
+
+**The screen ships with the tables**, which is the standing rule from here on after eleven
+slices shipped with none (ADR-048).
+
+### Consequences
+
+- A workspace that watches a company with a board gets its new roles once a day, as a list. No
+  workspace gets anything by being migrated.
+- `signal_events` has one producer and three kinds with none. `news`, `launch` and `funding` are
+  in the check constraint because a vocabulary belongs there and a producer added later should
+  not need a migration — stated, as `mailbox_health.complaint_rate` states its own absence.
+- The poll's behaviour for the job-hunt side is unchanged, and a test asserts the postings it
+  stores are identical whether or not anybody is watching.
+- `IntakeResult` now carries the rows it touched. The alternative was querying them back by
+  their keys, which would be a second place deciding what "the postings from this poll" means.
+
+### Rejected
+
+- **Creating a lead from a signal.** It puts somebody into a sending pipeline because their
+  employer posted a job.
+- **Drafting from a signal.** `review_all` means a person writes the first email; an automatic
+  draft queued by a background poll is the one thing this system has never done.
+- **Fuzzy company-name matching.** A reason-to-write attached to the wrong person, invisibly.
+- **Resolving the slug through `company_profiles` instead of storing it.** A watch would work
+  only for companies somebody had already researched, which is the opposite of the case it is
+  for.
+- **A second poll for watched companies.** One fetch, two readers. A second poll would double
+  every board's traffic and give two answers about what a company has posted.
+- **Letting a signal move a lead's state.** Where a lead stands is decided by what was sent and
+  what came back, and `domain/state.transition` is the one writer of it.

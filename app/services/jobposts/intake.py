@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
@@ -26,6 +26,15 @@ from app.services.jobposts.feeds import MAX_BODY_CHARS, Posting
 class IntakeResult:
     created: int = 0
     updated: int = 0
+    #: Every row this call stored or refreshed. Carried so a caller that needs the postings
+    #: themselves -- F11's signal producer -- does not have to query them back by their keys,
+    #: which would be a second place that decides what "the postings from this poll" means.
+    #:
+    #: **Updated rows are included, and deliberately.** A posting seen again is not a second
+    #: signal: the signal's own unique key refuses that. But a company watched *after* its
+    #: postings were first stored would otherwise never produce a signal at all, because the
+    #: first poll after the watch is a poll of rows it has already seen.
+    rows: list[JobPost] = field(default_factory=list)
 
 
 def domain_of(url: str) -> str | None:
@@ -75,24 +84,25 @@ async def store(
             if body:
                 existing.body_text = body
             result.updated += 1
+            result.rows.append(existing)
             continue
 
-        session.add(
-            JobPost(
-                org_id=ctx.org_id,
-                source=posting.source,
-                external_id=posting.external_id,
-                company_domain=domain_of(posting.apply_url),
-                board_slug=boards.slug_from_url(posting.apply_url),
-                title=posting.title,
-                location=posting.location,
-                apply_url=posting.apply_url,
-                posted_at=posting.posted_at,
-                body_text=body,
-                fetched_at=moment,
-            )
+        row = JobPost(
+            org_id=ctx.org_id,
+            source=posting.source,
+            external_id=posting.external_id,
+            company_domain=domain_of(posting.apply_url),
+            board_slug=boards.slug_from_url(posting.apply_url),
+            title=posting.title,
+            location=posting.location,
+            apply_url=posting.apply_url,
+            posted_at=posting.posted_at,
+            body_text=body,
+            fetched_at=moment,
         )
+        session.add(row)
         result.created += 1
+        result.rows.append(row)
 
     await session.flush()
     return result

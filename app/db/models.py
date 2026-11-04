@@ -1181,6 +1181,158 @@ class JobPost(Base):
     )
 
 
+#: What kind of thing happened at a watched company. **Only `hiring` has a producer today** --
+#: the daily ATS poll, which already runs (F5) -- and the rest are named because a check
+#: constraint is where a vocabulary belongs and because a producer added later should not need a
+#: migration. That is the honesty `mailbox_health.complaint_rate` already keeps: a column with no
+#: writer is fine when it says so, and one holding a zero that means "we cannot see this" is not.
+SIGNAL_KINDS: tuple[str, ...] = ("hiring", "news", "launch", "funding")
+
+#: What has been done about a signal. `new` until somebody looks; `acted` once they have used it;
+#: `dismissed` when they decided it was not worth an email.
+#:
+#: **There is no `sent` state, deliberately.** A signal is a reason to write, not a record of
+#: writing: what was sent lives in `messages` and where a person stands lives in `leads`. A third
+#: copy of that would be a third thing to keep honest, and the funnel already has one authority.
+SIGNAL_STATES: tuple[str, ...] = ("new", "acted", "dismissed")
+
+
+class WatchlistEntry(Base):
+    """A company this workspace wants watched for a reason to write today (F11, ADR-049).
+
+    **A watchlist entry is a company; `watched_boards` is a board.** That table is the job-hunt
+    side -- an ATS feed polled for postings somebody might apply to. This is the outreach side: a
+    company whose hiring would be a reason to write to *them*. They share the poll, which is the
+    point: one fetch of a board can serve a candidate looking for a job and an agency looking for
+    a client.
+
+    The key is the **registrable domain**, the same key `domain_research` uses and for ADR-011's
+    reason: it is the company's own identity, where `leads.domain` is whatever address a founder
+    happens to write from and is routinely `gmail.com`.
+
+    **`ats_source` and `ats_slug` are on the row rather than looked up every time.** A posting
+    from a feed carries the board's slug and no company domain at all (ADR-047), so matching a
+    posting to a watch through `company_profiles` would mean a watch only works once some
+    workspace has researched that company. Storing the slug makes the match direct and lets a
+    person say "watch Acme's Greenhouse board" in one step. The domain stays the identity; the
+    slug is how the signal arrives.
+    """
+
+    __tablename__ = "watchlist"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The registrable domain. One row per company per workspace.
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    #: What to call it on screen. A domain is a true fact about a company and a poor label.
+    label: Mapped[str | None] = mapped_column(String(300))
+    #: Which board to read this company's hiring from, when it has one we can poll.
+    ats_source: Mapped[str | None] = mapped_column(String(20))
+    ats_slug: Mapped[str | None] = mapped_column(String(200))
+    #: Which campaign a signal here should be acted on through, when somebody has chosen one.
+    #: Nullable and `SET NULL`: deleting a campaign must not delete the watch, and a company
+    #: worth watching before any campaign exists is the ordinary case.
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="SET NULL")
+    )
+    #: Stop producing signals without forgetting the company or its history.
+    paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: When a signal was last recorded here, so a screen can tell "nothing has happened" from
+    #: "this was never wired up" -- the job `booking_webhooks.last_used_at` does for the webhook.
+    last_signal_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "domain", name="uq_watchlist_org_domain"),
+        CheckConstraint(
+            "ats_source IS NULL OR ats_source IN ('greenhouse','lever','ashby')",
+            name="ck_watchlist_ats_source",
+        ),
+        Index("ix_watchlist_org", "org_id"),
+        Index("ix_watchlist_board", "org_id", "ats_source", "ats_slug"),
+    )
+
+
+class SignalEvent(Base):
+    """Something that happened at a watched company (F11, ADR-049).
+
+    **A signal proposes; it never creates a lead.** That is the rule this table exists under, and
+    it is `contact_candidates`' rule: the send loop reads `leads`, and nothing here is in that
+    table. A company hiring is a reason to write to somebody there -- it is not consent, not an
+    address and not a person. Acting on one means writing to a lead the workspace already has, or
+    pressing the F9 lookup button and spending their own credit.
+
+    **Nothing here is drafted or sent automatically.** `approval_mode = review_all` already means
+    a person approves every first email, and a signal does not get to be an exception. ADR-034's
+    rule applies in spirit: a thing that acts on its own may only ever *restrict*, and this one
+    only ever adds a row to a list somebody reads.
+
+    The unique key `(org_id, kind, source, external_id)` is what makes a re-poll harmless -- the
+    same device as `booking_events`, and needed for the same reason: the daily poll sees
+    yesterday's postings again every time it runs.
+    """
+
+    __tablename__ = "signal_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The watch this came from. `SET NULL` rather than `CASCADE`: forgetting a company must not
+    #: delete the record that it was hiring in March, which is what keeps a funnel auditable.
+    watchlist_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.watchlist.id", ondelete="SET NULL")
+    )
+    #: Denormalised from the watch on purpose, because the watch may be deleted and the signal
+    #: still has to say which company it was about.
+    domain: Mapped[str] = mapped_column(String(253), nullable=False)
+    #: One of `SIGNAL_KINDS`.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Where it came from: `greenhouse`, `lever` or `ashby` for a posting today.
+    source: Mapped[str] = mapped_column(String(40), nullable=False)
+    #: The source's own id for the thing that happened -- a posting id, so the same posting seen
+    #: again tomorrow is the same signal rather than a second one.
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    url: Mapped[str | None] = mapped_column(String(2000))
+    #: The posting this came from, when it came from one. `SET NULL`, because a posting may be
+    #: archived and the signal is still a true thing that happened.
+    job_post_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="SET NULL")
+    )
+    #: The lead this workspace already has at that company, when there is one. **Matched, never
+    #: created**: a signal with no lead is the interesting case rather than the error case, and
+    #: it is what the F9 lookup button is for.
+    lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="SET NULL")
+    )
+    #: One of `SIGNAL_STATES`.
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="new")
+    #: When the thing happened, as the source reported it -- distinct from `created_at`, which is
+    #: when we noticed. A poll that has been down for a week must not make a week-old posting
+    #: look like today's news.
+    observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "kind", "source", "external_id", name="uq_signal_events_org_kind_ext"
+        ),
+        CheckConstraint(
+            "kind IN (" + ", ".join(f"'{name}'" for name in SIGNAL_KINDS) + ")",
+            name="ck_signal_events_kind",
+        ),
+        CheckConstraint(
+            "state IN (" + ", ".join(f"'{name}'" for name in SIGNAL_STATES) + ")",
+            name="ck_signal_events_state",
+        ),
+        Index("ix_signal_events_org_created", "org_id", "created_at"),
+        Index("ix_signal_events_org_state", "org_id", "state"),
+    )
+
+
 class MailboxHealth(Base):
     """One row per mailbox per day: how much it sent and how much came back (ADR-034).
 

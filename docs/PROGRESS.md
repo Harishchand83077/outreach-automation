@@ -2879,6 +2879,75 @@ looking, not a proof, and that the first operator to open them should expect to 
 The first operator opened them and found something within a day. The guards were the wrong shape;
 the warning was the right shape.
 
+**Outreach has a reason to be sent today, and the screen shipped with it (F11, ADR-049, slice
+S15.1).** `watchlist`, `signal_events`, a producer inside the poll that already runs,
+`/api/v1/watchlist` and `/api/v1/signals`, and a **Signals** screen.
+
+**One fetch, two readers.** The daily ATS poll has been reading public boards since F5 for the
+job-hunt side. Nothing read them for outreach -- yet a company that has just opened three
+engineering roles is a company with a budget and a problem, which is the difference between
+writing to them this week and writing to them at random. A watch adds no second poll: it looks
+for the board first, because `uq_watched_boards_org_source_slug` would otherwise raise an
+integrity error from a path nobody expects one from.
+
+**This is the slice ADR-047 was worth stopping for.** A feed posting carries the board's slug
+and **no company domain at all**, so matching a posting to a watched company through
+`company_profiles` would mean a watch only worked once somebody had researched that company.
+The slug is stored on the watch and the match is direct. The domain stays the company's
+identity; the slug is how the signal arrives.
+
+**A signal proposes, and never creates a lead.** The send loop reads `leads` and nothing here is
+in that table. A company hiring is a reason to write to somebody there -- it is not consent, not
+an address and not a person, and a signal that created a lead would put somebody into a sending
+pipeline because their employer posted a job. **Nothing here drafts or sends either**:
+`review_all` means a person writes and approves every first email, and ADR-034's rule applies in
+spirit -- a thing that acts on its own may only ever restrict, and this one only ever adds a row
+to a list somebody reads. Asserted over the package and its router with `ast`: no send import,
+no `save_draft`, no `Lead(...)`, no `transition`, with string constants stripped first because
+the prose explaining each rule names every symbol it forbids.
+
+**A lead is matched, never inferred**, through the same `cache_key` the research cache uses. No
+fuzzy name matching: a reason-to-write attached to the wrong person is invisible to whoever
+sends the email. **Terminal leads are excluded**, which is the judgement inside that function --
+somebody who opted out is not made approachable again by their employer posting a job, and a
+suggestion beside their name is the worst available place to be wrong.
+
+**A signal with no lead is the interesting case, not the error case**, and the list reports the
+count: a company worth approaching with nobody to approach is exactly what F9's lookup button
+is for.
+
+**The producer ships in the same slice as the table**, because a table with no writer is how
+search came to be wired to nothing for three phases and how a `Draft(kind="followup")` was never
+once created. It counts *updated* postings as well as new ones, since the first poll after a
+watch is a poll of rows already stored -- a producer that only looked at new ones would produce
+nothing until that company posted again, which for a quiet company is never. The unique key
+`(org_id, kind, source, external_id)` is what stops that becoming duplicates, the booking
+webhook's device for the same reason: the poll sees yesterday's postings again every morning.
+
+**Forgetting a company keeps its signals.** `ON DELETE SET NULL` plus the signal's own `domain`,
+because deleting the record that a company was hiring in March would quietly rewrite a funnel.
+The board stays in the poll: it may be there for job hunting, and a watch is not its owner.
+
+**And the screen shipped with the tables**, which is the standing rule now.
+
+**Two things found by opening the deployed dashboard, which is the other half of that rule.**
+
+- **The owner's Gmail connection has expired**, raising `mailbox_grant_expiring` every hour for
+  two days. That mailbox can neither send nor fetch replies until somebody presses Reconnect.
+  ADR-018's seven-day refresh token, working exactly as written down -- and now visible, which
+  it was not before Operations existed.
+- **Operations showed one problem as fifty rows.** The cool-down is per kind and the mailbox id
+  is part of the kind, so one alert an hour for two days is correct; the screen rendered every
+  one of them. A screen built to make a problem actionable had turned it into a wall to scroll.
+  Alerts are grouped by kind now, with a count and the first and latest times, and acknowledging
+  a group acknowledges every row in it -- acknowledging the newest and leaving forty-nine
+  identical ones behind is the bug rather than the fix.
+
+22 integration tests and 6 structural, ruff and mypy strict clean, migration applied and
+reversed against the development database. mypy caught `Lead.email`, which is `email_norm` --
+the same naming trap as `Event.at` and `SearchUsage.at`, for the fourth time, and found by the
+type checker each time rather than by a screen reporting nothing for ever.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
@@ -2923,6 +2992,8 @@ the warning was the right shape.
   by test to enforce nothing.
 - Open questions for go-live: **Q2** (footer address), **Q5** (Indian holidays), **Q7** (retention
   — defaulting to 12 months in slice 2 unless told otherwise).
+
+**The dashboard is at `https://outreach-automation.sanketyadavdohar123.workers.dev/`**, built by Cloudflare on every merge to `main`. Written down because it was not anywhere in this repository, and a screen nobody can open is the defect ADR-048 is about.
 
 **Live environment notes.** Python 3.12 venv at `.venv`; dependencies from `pyproject.toml` plus
 `uv.lock` (`uv sync --all-groups`). Postgres in Compose on **port 5433** (ADR-005), container

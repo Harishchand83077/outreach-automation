@@ -52,6 +52,32 @@ export default function Operations({ onError, onToast }) {
 
   const unacked = (alerts.data?.alerts || []).filter((row) => !row.acked_at)
 
+  // **Grouped by kind, because one problem was being shown as fifty.** Found by opening the
+  // deployed screen: a single expired Gmail connection had raised `mailbox_grant_expiring`
+  // every hour for two days, and the list rendered all fifty rows. The cool-down is working
+  // exactly as designed -- one per hour, per mailbox, since the mailbox id is part of the kind
+  // -- so the fault is entirely in the screen, which turned a thing to fix into a wall to
+  // scroll. A count and the first and latest times say the same thing in one row.
+  const grouped = Object.values(
+    unacked.reduce((into, row) => {
+      const group = (into[row.kind] ||= { kind: row.kind, rows: [] })
+      group.rows.push(row)
+      return into
+    }, {})
+  )
+    .map((group) => {
+      const byTime = [...group.rows].sort(
+        (a, b) => new Date(a.created_at) - new Date(b.created_at)
+      )
+      return {
+        ...group,
+        count: byTime.length,
+        first: byTime[0],
+        latest: byTime[byTime.length - 1],
+      }
+    })
+    .sort((a, b) => new Date(b.latest.created_at) - new Date(a.latest.created_at))
+
   return (
     <>
       <h1 className="page-title">Operations</h1>
@@ -95,38 +121,51 @@ export default function Operations({ onError, onToast }) {
         </p>
         <Loading {...alerts} what="the alerts" />
         {alerts.data ? (
-          alerts.data.alerts.length === 0 ? (
+          grouped.length === 0 ? (
             <Empty icon={Icons.inbox} title="Nothing has raised an alert">
               Which is the expected state. The table is the record and the webhook is only the
               nudge, so an alert is never lost because a push failed.
             </Empty>
           ) : (
             <ul className="list">
-              {alerts.data.alerts.map((row) => (
-                <li key={row.id} className="list-row">
+              {grouped.map((group) => (
+                <li key={group.kind} className="list-row">
                   <div>
-                    <strong>{row.kind}</strong> <span className="badge">{row.severity}</span>
-                    <span className="badge">{row.scope}</span>
-                    {row.acked_at ? <span className="badge">acknowledged</span> : null}
-                    <div>{row.message}</div>
-                    <p className="hint">{new Date(row.created_at).toLocaleString()}</p>
+                    <strong>{group.kind}</strong>{' '}
+                    <span className="badge">{group.latest.severity}</span>
+                    <span className="badge">{group.latest.scope}</span>
+                    {group.count > 1 ? (
+                      <span className="badge">{group.count} times</span>
+                    ) : null}
+                    <div>{group.latest.message}</div>
+                    <p className="hint">
+                      {group.count > 1
+                        ? `First ${new Date(group.first.created_at).toLocaleString()}, latest ${new Date(
+                            group.latest.created_at
+                          ).toLocaleString()}`
+                        : new Date(group.latest.created_at).toLocaleString()}
+                    </p>
                   </div>
-                  {row.acked_at ? null : (
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() =>
-                        postJson(`/admin/alerts/${row.id}/ack`, { json: {} })
-                          .then(() => {
-                            onToast('Acknowledged, and that kind can alert again.')
-                            alerts.reload()
-                          })
-                          .catch(onError)
-                      }
-                    >
-                      Acknowledge
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() =>
+                      // Every row in the group, because acknowledging the newest and leaving
+                      // forty-nine identical ones behind is the problem rather than the fix.
+                      Promise.all(
+                        group.rows.map((row) =>
+                          postJson(`/admin/alerts/${row.id}/ack`, { json: {} })
+                        )
+                      )
+                        .then(() => {
+                          onToast('Acknowledged, and that kind can alert again.')
+                          alerts.reload()
+                        })
+                        .catch(onError)
+                    }
+                  >
+                    {group.count > 1 ? `Acknowledge all ${group.count}` : 'Acknowledge'}
+                  </button>
                 </li>
               ))}
             </ul>
