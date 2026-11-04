@@ -54,6 +54,7 @@ from app.services.research.service import research_lead
 from app.services.resume import store as resume_store
 from app.services.resume import tailor
 from app.services.resume.pdf import PdfTooLarge, render_pdf
+from app.services.signals import intake as signal_intake
 from app.worker.context import WorkerContext
 
 logger = logging.getLogger(__name__)
@@ -539,7 +540,18 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
         # is fixed by trying again, and the message says what to correct.
         raise PermanentFailure(str(exc)) from exc
 
-    result = await store(session, OrgContext(org_id=job.org_id), postings)
+    org_ctx = OrgContext(org_id=job.org_id)
+    result = await store(session, org_ctx, postings)
+
+    # **The signal producer, in the same transaction as the postings that justify it.** A watched
+    # company's new roles become `signal_events` rows -- a reason to write to them today -- and
+    # nothing more: no draft, no lead, no send. If no watch reads this board, this does nothing,
+    # because a board polled for the job-hunt side and a company watched for outreach are
+    # independent uses of one fetch.
+    signals = await signal_intake.from_postings(
+        session, org_ctx, source=source, slug=slug, postings=result.rows
+    )
+
     logger.info(
         "polled an ats board",
         extra={
@@ -547,6 +559,7 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
             "slug": slug,
             "created": result.created,
             "updated": result.updated,
+            "signals": len(signals.created),
         },
     )
 

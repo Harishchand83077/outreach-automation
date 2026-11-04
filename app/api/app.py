@@ -46,6 +46,7 @@ from app.api.routers import (
     resumes,
     review,
     searchkeys,
+    signals,
     team,
     unsubscribe,
 )
@@ -211,6 +212,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(referrals.router, prefix="/api/v1")
     application.include_router(resumes.router, prefix="/api/v1")
     application.include_router(searchkeys.router, prefix="/api/v1")
+    application.include_router(signals.router, prefix="/api/v1")
     application.include_router(booking.router, prefix="/api/v1")
     application.include_router(operations.router, prefix="/api/v1")
     application.include_router(connect.router, prefix="/api/v1")

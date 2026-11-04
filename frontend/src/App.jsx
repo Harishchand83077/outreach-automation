@@ -26,6 +26,7 @@ import { SignIn, useSession } from './Auth'
 import ErrorBoundary from './ErrorBoundary'
 import JobHunt from './JobHunt'
 import Operations from './Operations'
+import Signals from './Signals'
 import Sending from './Sending'
 import {
   API,
@@ -218,6 +219,7 @@ function Dashboard({ session }) {
     { id: 'leads', label: 'Leads', icon: Icons.leads },
     { id: 'import', label: 'Import', icon: Icons.import },
     { id: 'campaign', label: 'Campaign', icon: Icons.campaign },
+    { id: 'signals', label: 'Signals', icon: Icons.campaign },
     { id: 'sending', label: 'Sending', icon: Icons.inbox },
     // The candidate half of the product (F5, F6, F9, F10, F20). Shown to everybody rather than
     // gated on the campaign's kind: the facts, the connections and the answer bank are the
@@ -453,6 +455,12 @@ function Dashboard({ session }) {
                   }
                   refreshCampaigns()
                 }}
+              />
+            ) : view === 'signals' ? (
+              <Signals
+                mayAdminister={mayAdminister}
+                onError={handle}
+                onToast={toast}
               />
             ) : view === 'sending' ? (
               <Sending
