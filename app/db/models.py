@@ -1275,6 +1275,15 @@ class WatchlistEntry(Base):
         ),
         Index("ix_watchlist_org", "org_id"),
         Index("ix_watchlist_board", "org_id", "ats_source", "ats_slug"),
+        # **Declared here as well as in the migration**, which is the whole point: without the
+        # index in the model's metadata, autogenerate reads it as drift and writes a migration
+        # that DROPS it -- and this repository has had that happen once already (ADR-032).
+        # `tests/integration/test_migrations.py` is what caught it this time, in CI.
+        Index(
+            "ix_watchlist_page_due",
+            "page_polled_at",
+            postgresql_where=text("careers_url IS NOT NULL"),
+        ),
     )
 
 
