@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from app.db.models import API_TOKEN_SCOPES
+from app.services import api_tokens
 from app.services.mcp import protocol, tools
 
 MCP_PACKAGE = Path(tools.__file__).resolve().parent
@@ -30,6 +32,13 @@ def _source_without_comments(path: Path) -> str:
         for line in path.read_text(encoding="utf-8").splitlines()
         if not line.lstrip().startswith("#")
     )
+
+
+#: Scopes that may serve a read, and scopes that may serve a write. Two sets rather than one
+#: mapping, because the assertion is about which side of that line a tool falls on -- not about
+#: which exact scope it got, which is a decision the catalogue is allowed to make.
+READ_SCOPES = (protocol.READ_SCOPE, protocol.PROFILE_SCOPE)
+WRITE_SCOPES = (protocol.PROPOSE_SCOPE, protocol.NOTES_SCOPE)
 
 
 class TestTheCatalogueCannotSend:
@@ -56,28 +65,68 @@ class TestTheCatalogueCannotSend:
             if not tool.read_only:
                 assert tool.name.startswith("propose_"), tool.name
 
-    def test_a_tool_that_writes_requires_the_propose_scope(self):
+    def test_a_tool_that_writes_requires_a_write_scope(self):
         """A read-only credential must not be able to reach a write, and the tool says so.
 
-        The gate is on the tool rather than in the router's body, so a tool added later is
-        refused by default: `required_scope` has no permissive value.
+        **Restated when F24 split the scopes (ADR-056), and the restatement is the point.** This
+        used to assert the exact derivation -- read tools get `mcp:read`, writes get
+        `mcp:propose` -- which was a proxy for the rule rather than the rule: what matters is
+        that a write is never reachable with a read-only credential, and a tool may now ask for
+        something *narrower* than the derivation would give it. The same correction as "every
+        tool is read-only", which was a proxy for "nothing can send or approve" and had to break
+        the moment anything wrote.
+
+        The derivation still has no permissive default: a tool that declares nothing gets the
+        strict answer, which is asserted below.
         """
         for tool in tools.CATALOGUE:
-            expected = protocol.READ_SCOPE if tool.read_only else protocol.PROPOSE_SCOPE
-            assert tool.required_scope == expected, tool.name
+            if tool.read_only:
+                assert tool.required_scope in READ_SCOPES, tool.name
+            else:
+                assert tool.required_scope in WRITE_SCOPES, tool.name
+
+    def test_a_tool_that_declares_no_scope_gets_the_strict_derivation(self):
+        """What stops a tool added later being reachable by accident: the default is derived
+        from whether it writes, and there is no third option."""
+        for tool in tools.CATALOGUE:
+            if tool.scope is None:
+                expected = protocol.READ_SCOPE if tool.read_only else protocol.PROPOSE_SCOPE
+                assert tool.required_scope == expected, tool.name
+
+    def test_no_scope_grants_more_than_one_kind_of_thing(self):
+        """A scope is only meaningful if the tools behind it are of one kind. A scope that
+        served both a read and a write would make the tick box beside it unanswerable."""
+        kinds: dict[str, set[bool]] = {}
+        for tool in tools.CATALOGUE:
+            kinds.setdefault(tool.required_scope, set()).add(tool.read_only)
+        for scope, shapes in kinds.items():
+            assert len(shapes) == 1, scope
 
     def test_no_tool_is_named_anything_like_sending(self):
         forbidden = ("send", "deliver", "email_now", "approve", "bulk", "mode", "allowlist")
         for tool in tools.CATALOGUE:
             assert not any(word in tool.name.lower() for word in forbidden), tool.name
 
-    def test_the_scopes_are_read_and_propose_and_nothing_else(self):
+    def test_no_scope_could_authorise_a_send_or_an_approval(self):
         """There is no scope that could authorise a send, so one cannot be asked for.
 
-        The database says the same thing with a check constraint, which is what stops a
-        hand-written INSERT inventing one.
+        **Asserted as the property rather than as the exact list** (ADR-056 added two), because
+        a test that pins the list fails whenever a scope is added for a good reason and says
+        nothing about the thing that matters. The database says the same with a check constraint
+        generated from the same tuple, which is what stops a hand-written INSERT inventing one.
         """
-        assert protocol.SCOPES == ("mcp:read", "mcp:propose")
+        for scope in API_TOKEN_SCOPES:
+            lowered = scope.lower()
+            for forbidden in ("send", "deliver", "approve", "mode", "allowlist"):
+                assert forbidden not in lowered, scope
+
+    def test_every_scope_the_database_permits_is_one_the_code_knows(self):
+        """The vocabulary is one tuple and the constraint is built from it. This literal used to
+        be written out in `models.py` *and* in two migrations, and the copy in `models.py` was
+        two migrations stale -- which is how autogenerate comes to write a migration dropping
+        something it cannot see."""
+        assert api_tokens.ALL_SCOPES == API_TOKEN_SCOPES
+        assert set(protocol.SCOPES) <= set(API_TOKEN_SCOPES)
 
     def test_no_tool_takes_an_org_id(self):
         """ADR-004: the org comes from the membership, never from the caller.

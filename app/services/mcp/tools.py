@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import drafts as drafts_repo
 from app.db import repo
 from app.db.models import (
+    AnswerBankEntry,
     Campaign,
     Classification,
     Draft,
@@ -41,7 +42,7 @@ from app.db.models import (
 )
 from app.db.repo import OrgContext
 from app.services.brief import build as brief_build
-from app.services.candidate import fit_store
+from app.services.candidate import fit_store, profile
 from app.services.graph import store as graph
 from app.services.mcp import proposals, protocol
 
@@ -86,17 +87,27 @@ class Tool:
     sends: bool = False
     approves: bool = False
     returns_untrusted_text: bool = False
+    #: Declared only when this tool needs a *narrower* scope than its read/write shape implies
+    #: (F24, ADR-056). Left unset, the scope is derived exactly as ADR-030 had it.
+    scope: str | None = None
     annotations: dict[str, Any] = field(default_factory=dict)
 
     @property
     def required_scope(self) -> str:
         """Which scope a credential needs to call this.
 
-        Derived rather than declared, because the two cannot be allowed to disagree: a tool that
-        writes requires the propose scope, and there is no third option and no permissive
-        default. A tool added later is therefore gated correctly without anybody remembering to
-        gate it.
+        **Derived unless a tool narrows it**, and the derivation is unchanged from ADR-030: a
+        tool that writes requires the propose scope, a tool that reads requires the read scope,
+        and there is no permissive default to forget. What F24 adds is that a tool may ask for
+        something *narrower* than that -- the person's own facts, or the one write that lands in
+        the graph -- so a token can be given the part of the catalogue it needs and no more.
+
+        A declared scope the deployment has never heard of is refused by
+        `test_mcp_scopes.py`, because a tool whose scope no token can hold is a tool nobody can
+        call and an absence nobody would notice.
         """
+        if self.scope:
+            return self.scope
         return protocol.READ_SCOPE if self.read_only else protocol.PROPOSE_SCOPE
 
     def describe(self) -> dict[str, Any]:
@@ -657,6 +668,143 @@ async def _list_signals(
     ), {"signals": signals, "without_a_lead": without_a_lead}
 
 
+# ------------------------------------------------------- the person's own facts (F24, ADR-056)
+#
+# Behind `mcp:profile`, which is off unless somebody ticks it. A separate scope rather than part
+# of `mcp:read` because this is a different *kind* of data: everything else in this catalogue is
+# the workspace's own work, and these are facts about a person, often not the person holding the
+# token.
+
+
+async def _get_profile_facts(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """The candidate's **confirmed** facts, as the drafter and the resume tailor see them.
+
+    Confirmed only, with no option to ask for the proposals. A proposed fact is one nobody has
+    agreed to say yet, and the person asked about a claim in an interview is the person who has
+    to have agreed to it (ADR-037) -- so handing an agent the unconfirmed ones would route around
+    the only check that rule has.
+    """
+    facts = await profile.confirmed_facts(session, ctx)
+    listed = [{"fact_id": fact.id, "statement": fact.text} for fact in facts]
+    if not listed:
+        return (
+            "No confirmed facts yet. A fact is confirmed by the person it is about, and only "
+            "confirmed facts may be cited in anything this system writes.",
+            {"facts": []},
+        )
+    rendered = "\n".join(f"- {one['fact_id']}: {one['statement']}" for one in listed)
+    return (
+        f"{len(listed)} confirmed fact(s). Anything written from these may cite them by id; "
+        f"nothing else about this person may be asserted at all.\n{rendered}",
+        {"facts": listed},
+    )
+
+
+async def _list_answer_questions(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """The screening questions this person has already answered -- and **never the answers**.
+
+    The exclusion is the tool. `answer_bank` holds expected pay, notice period and work
+    authorisation: the answers somebody gives to a form *they* are filling in, on a page they
+    opened, through the extension. A model drafting a cover letter has no use for the number and
+    every opportunity to put it somewhere it should not be, so the question is returned and the
+    answer is not. Knowing which questions are handled is the useful half; the values are not
+    ours to pass on.
+    """
+    rows = (
+        await session.scalars(
+            select(AnswerBankEntry)
+            .where(AnswerBankEntry.org_id == ctx.org_id)
+            .order_by(AnswerBankEntry.created_at)
+            .limit(PAGE)
+        )
+    ).all()
+    questions = [
+        {
+            "question": row.question_pattern,
+            # Not "approved": that whole literal is reserved by
+            # `test_mcp_safety.py::test_nothing_in_the_package_names_an_approved_status`, which
+            # exists so nothing in this package can compare a draft's status to it. The guard
+            # owns the word, and renaming the field is cheaper than weakening the guard.
+            "ready_to_use": row.approved_at is not None,
+            # Which confirmed facts the answer rests on. Ids, not statements: the fact text is
+            # available through `get_profile_facts`, under the same scope, and duplicating it
+            # here would be a second copy that could disagree.
+            "fact_ids": list(row.fact_ids or []),
+        }
+        for row in rows
+    ]
+    return (
+        f"{len(questions)} screening question(s) already answered. **The answers are not "
+        "returned by this tool**: they are given to a form the person is filling in, and a "
+        "number about their pay or their visa status is not ours to pass on.",
+        {"questions": questions},
+    )
+
+
+# ------------------------------------------------ a note about a company (F24, ADR-056)
+#
+# Behind `mcp:notes`, off unless ticked. The narrowest write in the catalogue: it lands as a graph
+# edge, and `ck_edges_provenance` refuses one with no source -- so a note an agent cannot point at
+# cannot be stored, by the database rather than by this function being careful.
+
+
+async def _propose_company_note(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """Record something read about a company, with the page that says it.
+
+    **The source is required and the database is what requires it.** A note with no URL is
+    refused by `ck_edges_provenance` whatever this function does, which is the point of ADR-051:
+    a claim nobody can trace is a sentence we cannot defend, and this is the one path where the
+    thing offering the claim is a model.
+
+    It is **not** a research finding. A hook in `domain_research` was verified against text we
+    fetched ourselves and may be cited by the drafter; this is a line in the graph, which the
+    evidence corpus does not read -- so a draft still cannot cite it, and a brief that quotes it
+    shows the agent's URL beside it.
+    """
+    domain = str(args.get("domain") or "").strip()
+    note = str(args.get("note") or "").strip()
+    source_url = str(args.get("source_url") or "").strip()
+
+    if not domain or not note:
+        return "Pass the company's domain and the note.", None
+    if not source_url.lower().startswith(("http://", "https://")):
+        return (
+            "A note needs the http or https URL of the page that says it. A claim nobody can "
+            "open is one nobody can check, and this table refuses to hold one.",
+            None,
+        )
+
+    company = await graph.entity(session, ctx, kind="company", name=domain, domain=domain)
+    try:
+        edge, created = await graph.record(
+            session,
+            ctx,
+            graph.Claim(
+                subject=company,
+                predicate="mentioned",
+                object_text=note[:500],
+                source_url=source_url[:2000],
+            ),
+        )
+    except graph.ProvenanceRequired as exc:
+        return str(exc), None
+
+    return (
+        (
+            f"Recorded about {domain}, with its source."
+            if created
+            else f"Already recorded about {domain}; nothing was added."
+        ),
+        {"edge_id": str(edge.id), "created": created, "domain": domain},
+    )
+
+
 CATALOGUE: tuple[Tool, ...] = (
     Tool(
         name="list_campaigns",
@@ -823,6 +971,62 @@ CATALOGUE: tuple[Tool, ...] = (
         },
         handler=_list_signals,
         returns_untrusted_text=True,
+    ),
+    # ------------------------------------------------- the person's own facts (F24, ADR-056)
+    Tool(
+        name="get_profile_facts",
+        title="Get the candidate's confirmed facts",
+        description=(
+            "The facts this person has confirmed about their own work, by id. Anything written "
+            "from these may cite them; nothing else about this person may be asserted at all. "
+            "Requires the profile scope, which is off unless it was ticked when the token was "
+            "minted."
+        ),
+        input_schema=_no_arguments(),
+        handler=_get_profile_facts,
+        scope=protocol.PROFILE_SCOPE,
+    ),
+    Tool(
+        name="list_answer_questions",
+        title="List answered screening questions",
+        description=(
+            "Which screening questions this person has already answered -- the questions only. "
+            "The answers are deliberately not returned: they are given to a form the person is "
+            "filling in, and a number about their pay or their work authorisation is not ours "
+            "to pass on. Requires the profile scope."
+        ),
+        input_schema=_no_arguments(),
+        handler=_list_answer_questions,
+        scope=protocol.PROFILE_SCOPE,
+    ),
+    Tool(
+        name="propose_company_note",
+        title="Record a note about a company",
+        description=(
+            "Record something you read about a company, with the URL of the page that says it. "
+            "The source is required by the database, not by convention: a note with no source "
+            "cannot be stored. A note is not a research finding -- nothing this system writes "
+            "may cite it until a person has read it. Requires the notes scope."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "The company's own domain."},
+                "note": {
+                    "type": "string",
+                    "description": "One short statement about the company.",
+                },
+                "source_url": {
+                    "type": "string",
+                    "description": "The page that says it. Required.",
+                },
+            },
+            "required": ["domain", "note", "source_url"],
+            "additionalProperties": False,
+        },
+        handler=_propose_company_note,
+        read_only=False,
+        scope=protocol.NOTES_SCOPE,
     ),
     # ----------------------------------------------------------------- proposals (ADR-030)
     #

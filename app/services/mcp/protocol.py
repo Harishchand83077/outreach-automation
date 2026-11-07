@@ -25,6 +25,8 @@ import binascii
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from app.db.models import API_TOKEN_SCOPES
+
 #: The revision we speak. One version, deliberately: supporting the legacy handshake era as
 #: well would mean carrying sessions, a GET stream and resumability for clients that Anthropic's
 #: own connector does not need.
@@ -37,8 +39,18 @@ SUPPORTED_VERSIONS: tuple[str, ...] = (PROTOCOL_VERSION,)
 #: separate so that a credential living in somebody's MCP client for ninety days can be given
 #: the narrower one, which is the default everywhere it is offered.
 READ_SCOPE = "mcp:read"
+#: The *person's* own confirmed facts, as opposed to the workspace's work (F24, ADR-056). A
+#: separate scope because it is a different kind of data: a token minted to help with outreach
+#: has no business reading somebody's career facts, and the holder is often not that person.
+PROFILE_SCOPE = "mcp:profile"
+#: May propose a note about a company. A write, and the narrowest one available: it lands as a
+#: graph edge, which `ck_edges_provenance` refuses without a source (ADR-051).
+NOTES_SCOPE = "mcp:notes"
 PROPOSE_SCOPE = "mcp:propose"
-SCOPES: tuple[str, ...] = (READ_SCOPE, PROPOSE_SCOPE)
+#: **Read from `models.API_TOKEN_SCOPES`, which the check constraint is also built from**, so
+#: the vocabulary, the constraint, the minting route and each tool's gate cannot disagree. The
+#: extension's scope is excluded here because it does not open this door at all (ADR-039).
+SCOPES: tuple[str, ...] = tuple(name for name in API_TOKEN_SCOPES if name.startswith("mcp:"))
 
 SERVER_NAME = "outreach-automation"
 

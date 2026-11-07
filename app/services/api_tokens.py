@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ApiToken, Member
+from app.db.models import API_TOKEN_SCOPES, ApiToken, Member
 from app.services.mcp import protocol
 
 #: Identifies our tokens at a glance, in a log, in a paste and in a client's settings screen.
@@ -60,9 +60,11 @@ DEFAULT_SCOPES: tuple[str, ...] = (READ_SCOPE,)
 #: everything.
 EXT_SUGGEST_SCOPE = "ext:suggest"
 
-#: Every scope this table may hold, and the set the database's check constraint is built from.
-#: One tuple so the constraint, the minting route and each door's gate cannot disagree.
-ALL_SCOPES: tuple[str, ...] = (*protocol.SCOPES, EXT_SUGGEST_SCOPE)
+#: Every scope this table may hold. **Read from `models.API_TOKEN_SCOPES`**, which is also what
+#: the check constraint is generated from -- the constraint used to be written out in two places
+#: and the copy in `models.py` was two migrations stale, which is how autogenerate comes to write
+#: a migration dropping something it cannot see.
+ALL_SCOPES: tuple[str, ...] = API_TOKEN_SCOPES
 
 
 def hash_token(token: str) -> str:
