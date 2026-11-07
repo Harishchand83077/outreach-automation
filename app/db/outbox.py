@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Campaign, Lead, Mailbox, Message, Suppression
 from app.db.state import lock_lead, record_event, transition
+from app.domain.scheduling import warmup_day_number
 from app.domain.state import LeadState
 from app.services.mail.message import build_references
 
@@ -421,6 +422,22 @@ async def claim_send(
         body_text=body_text,
         from_addr=mailbox.from_email,
         to_addr=lead.email_norm,
+        # **The two dataset columns ADR-026 declared and nothing ever wrote** (F13, ADR-053).
+        # The arm comes from the lead rather than being chosen here: it was chosen when the
+        # draft was written, which is the only moment it could have affected the email, and
+        # choosing it again here would label a message with an arm its text did not come from.
+        variant=lead.variant,
+        # The warm-up day cannot be reconstructed afterwards -- `warmup_started_on` can be
+        # reset, and the same `sent_at` then computes a different answer. `warmup_day_number`
+        # was written for this column and had no caller until now.
+        warmup_day=warmup_day_number(
+            today=now.astimezone(UTC).date(),
+            warmup_started_on=(
+                mailbox.warmup_started_on.astimezone(UTC).date()
+                if mailbox.warmup_started_on
+                else None
+            ),
+        ),
         idempotency_key=f"{lead_id}:{kind}:{sequence}",
         # Explicit rather than the server default, so every timestamp on the send path comes
         # from one clock. The daily cap is counted from these rows, and a count that mixed the

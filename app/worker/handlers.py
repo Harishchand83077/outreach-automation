@@ -42,6 +42,7 @@ from app.domain.template import CampaignTemplates
 from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
 from app.services.drafting.prompts import reply_subject
+from app.services.experiments import store as experiments
 from app.services.jobposts.client import fetch_board
 from app.services.jobposts.feeds import FeedError
 from app.services.jobposts.intake import store
@@ -238,6 +239,13 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
     persona = _persona(campaign)
     ctx_org = OrgContext(org_id=job.org_id)
 
+    # **The arm is chosen here, before anything is written, and once per lead** (F13, ADR-053).
+    # Here because this is the point where the arm can still affect the email -- deciding it at
+    # send time would mean recording a label on a draft the arm had no hand in. Once per lead
+    # because an A first email followed by a B follow-up measures neither, and a regeneration
+    # comes back through this same function and must not move the lead between arms.
+    _, arm = await experiments.assign(session, ctx_org, lead=lead, campaign_id=campaign.id)
+
     if campaign.mode == "template":
         result = _render_for(campaign, lead, persona)
     else:
@@ -268,6 +276,7 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
             job_title=lead.job_title,
             kind="initial",
             reviewer_feedback=reviewer_feedback,
+            arm_instruction=arm.instruction if arm else None,
         )
 
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)

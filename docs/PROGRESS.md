@@ -3106,6 +3106,67 @@ watch an invented `Kubernetes` sail through. mypy caught `Lead.name`, which is `
 fifth instance of that naming trap and the fifth time the type checker found it rather than a
 screen showing the wrong thing for ever.
 
+**Two columns ADR-026 declared and nothing ever wrote now have a producer (F13, ADR-053, slice
+S15.4).** `messages.variant`, `messages.warmup_day`, the `experiments` table and
+`warmup_day_number` have all existed since the outcome dataset landed, and **every one of them
+was read by the export and written by nobody** -- so the dataset has been exporting NULLs into
+its two most useful dimensions. The twelfth instance of this project's signature shape, and the
+cheapest kind to find: a grep for the producer returns the constant and its consumers.
+
+**ADR-026 specified stickiness as a deterministic hash of (lead, experiment), and building it
+showed that cannot work.** A hash is taken modulo the number of arms, so adding a third arm to a
+running experiment moves most leads already in flight from one arm to the other -- silently,
+after their first email has gone out, with every message already sent then attributed to an arm
+its draft did not come from. And the funnel would look fine. The arm is **stored on the lead**
+instead, written once, never recomputed; there is a test named after that exact scenario.
+
+**Random rather than round-robin**, which is the other half of making a result mean anything.
+Round-robin looks fairer and correlates the arm with arrival order: a sheet sorted by company
+size, or an import done in two halves on two days, puts systematically different people in each
+arm and the difference shows up as though the *email* caused it. The rule is pure and takes an
+injected `Random`, so the spread is asserted with a seed rather than hoped for -- including the
+absence of alternation, because round-robin would produce zero repeats.
+
+**A fixed exploration share is always held back, with a floor in the database.** Weights let an
+operator push most of the volume through the arm they believe in, and a weighted allocator with
+nothing held back can drive an arm to zero -- which is exactly when it stops producing the data
+that would show the belief was wrong. So a fifth of assignments ignore the weights entirely, and
+`ck_experiments_exploration_floor` refuses a row below 0.1. The screen reports each arm's
+**effective** share rather than the weight somebody typed, because the two differ once the floor
+applies and being surprised by that is how somebody concludes the allocator is broken.
+
+**An arm may vary exactly one thing: how to write this one.** Not the persona, not the cap, not
+the window -- those change who is emailed and how much, so a difference in results would not be
+a difference in the email. And the instruction cannot widen what may be said: the draft goes
+through the same `validate_draft` and the same claim check, so an arm asking for a statistic the
+research does not support fails validation instead of sending one. Hard rule 6 holding whatever
+an operator types into a form.
+
+**Pending is a column, not a rounding error.** A lead still inside its wait window has not
+produced a result, and counting it as a failure would make every arm look worse the sooner
+somebody looked -- the one way a funnel actively misleads. So the funnel reports `pending`
+separately, `censored` for the leads watched to the end of their window, and rates over settled
+leads only, with a sentence on the screen saying so. Counted from `messages` and `lead_outcomes`
+rather than from a counter, for the reason the mailbox-health rollup already chose: a counter
+incremented at send time drifts, and a crash between the send and the increment leaves it wrong
+for ever with nothing to notice.
+
+**And the outcome vocabulary is read from the enum rather than restated.** My first version of
+the funnel hard-coded `"replied"`, `"bounced"` and `"opted_out"` -- none of which are values of
+`Outcome`, whose vocabulary is `positive_interest`, `has_vendor`, `referral`, `bounce` and nine
+others. Every bucket would have reported zero of everything while looking perfectly healthy,
+which is `direction == "outbound"` against a column holding `'out'` for the fourth time. The
+bucket now reports each outcome's own value and asks `Outcome.is_encouraging`.
+
+**One real defect, caught by the test for the refusal rather than by anybody noticing.**
+`float(payload.get("exploration_share") or EXPLORATION_SHARE)` -- `0 or 0.2` is `0.2`, so asking
+for no exploration at all would have been silently granted the floor and the request would have
+looked honoured. The identical defect as `daily_cap or 100` turning an explicit 0 into 100, which
+this file already records from Phase 8.
+
+14 unit tests and 20 integration, ruff and mypy strict clean, migration applied and reversed
+against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

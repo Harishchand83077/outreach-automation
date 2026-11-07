@@ -335,6 +335,10 @@ class Lead(Base):
     #: Stored and displayed only. Never fetched — hard rule 4.
     linkedin_url: Mapped[str | None] = mapped_column(Text)
     notes: Mapped[str | None] = mapped_column(Text)
+    #: Which experiment arm this lead is in, assigned once when its first draft is written and
+    #: never recomputed (see `Experiment`). NULL means no experiment was running then, which is
+    #: every lead in the live database and stays a perfectly sendable lead.
+    variant: Mapped[str | None] = mapped_column(String(40))
     #: Every extra sheet column, kept so research and drafting can use it (issue A5).
     extra: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     #: Which upload this lead arrived in, so the wrong sheet can be undone. NULL for anything
@@ -1786,13 +1790,31 @@ class LeadOutcome(Base):
     )
 
 
+#: The smallest share of assignments that may ignore an experiment's weights. Zero would let a
+#: weighted allocator starve an arm, and a starved arm is one whose result would have surprised
+#: somebody. Enforced by `ck_experiments_exploration_floor` as well as by the validator.
+MIN_EXPLORATION_SHARE = 0.1
+
+
 class Experiment(Base):
     """An A/B arm definition, so a result can be attributed rather than merely observed.
 
-    Assignment is a deterministic hash of (lead, experiment) so a lead stays in its arm across a
-    whole sequence — an A first email followed by a B follow-up makes the result uninterpretable.
-    `exploration_share` is the slice assigned at random instead, which is what makes any of this
-    causal rather than correlational.
+    **A lead stays in its arm across a whole sequence**, because an A first email followed by a
+    B follow-up makes the result uninterpretable and the recipient is the one person who can
+    tell. The same reasoning as the sticky sending mailbox (ADR-044).
+
+    **ADR-026 specified that stickiness as a deterministic hash of (lead, experiment), and
+    building it showed why that cannot work.** A hash has to be taken modulo the number of arms,
+    so adding a third arm to a running experiment moves most leads already in flight from one
+    arm to the other -- silently, retroactively, and after their first email has gone out. Every
+    message already sent would then be attributed to an arm its draft did not come from. So the
+    arm is **stored on the lead** (`leads.variant`), written once, and nothing recomputes it.
+    One stored fact beats a derivation that can change under rows that already exist.
+
+    `exploration_share` is the fraction assigned uniformly at random, ignoring the weights. It
+    has a **floor** rather than a free range (`ck_experiments_exploration_floor`): a weighted
+    allocator with nothing held back can drive an arm to zero, and that is exactly when it stops
+    producing the data that would show the operator's preferred arm was the worse one.
     """
 
     __tablename__ = "experiments"
@@ -1805,18 +1827,38 @@ class Experiment(Base):
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="CASCADE"), nullable=False
     )
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    #: `["a", "b"]` — the arm names this experiment may assign.
-    arms: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: `[{"variant": "a", "weight": 1, "instruction": "..."}]`, validated through
+    #: `domain.experiment.ExperimentSpec` at the door -- the same bargain `campaigns.persona`
+    #: and `campaigns.settings` make, and for the same reason: a shape that will grow is worse
+    #: as a table of columns, and the validation belongs with the model that reads it.
+    arms: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     #: 0.0 to 1.0. The fraction assigned at random rather than by the deterministic hash.
     exploration_share: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    #: When allocation stopped. Needed to read a funnel: messages sent after this carry no arm,
+    #: and without the date that looks like an allocator that quietly broke.
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
+        # The floor, built from the constant so the constraint and the validator cannot
+        # disagree about it -- the cure adopted after `reason="one-click unsubscribe"` made
+        # every opt-out a 500.
         CheckConstraint(
-            "exploration_share >= 0 AND exploration_share <= 1",
-            name="ck_experiments_exploration_share",
+            f"exploration_share >= {MIN_EXPLORATION_SHARE} AND exploration_share <= 1",
+            name="ck_experiments_exploration_floor",
         ),
+        # **At most one active experiment per campaign**, in the database rather than in the
+        # route's memory. Two would both allocate, the second assignment would overwrite the
+        # first on `leads.variant`, and every message would then carry whichever label ran
+        # last -- the quietest available way to make a result meaningless.
+        Index(
+            "uq_experiments_one_active",
+            "campaign_id",
+            unique=True,
+            postgresql_where=text("active"),
+        ),
+        Index("ix_experiments_org", "org_id"),
     )
 
 

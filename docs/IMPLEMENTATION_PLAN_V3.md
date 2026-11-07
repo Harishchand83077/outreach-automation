@@ -144,8 +144,11 @@ S15.0 **A job board's host is not a company's domain** (ADR-047), found while de
 S15.1 **`watchlist` + `signal_events`** (ADR-049): a signal proposes a reason to write and never creates a lead, drafts or sends. The producer ships with the tables -- the daily ATS poll already runs, so a watched company's new roles become signals in the same transaction as the postings. The screen ships with it too (ADR-048's rule).
 S15.2 **`entities` + `edges` with mandatory provenance** (ADR-051) -- an edge with no `source_url` or `message_id` is refused by `ck_edges_provenance`, not by convention, and the test for it writes raw SQL. A model may phrase an edge and can never add one, because there would be nothing to put in the provenance columns. Producer and screen ship with it.
 S15.3 **Brief upgrade** (ADR-052): five sections, every line citing the page or message that says so, and a fifth section naming what the brief does not know. A model may phrase and cannot add, because an invented line has no id to arrive under; the rewording check is ADR-043's, extracted to `domain/wording.py` now that it has two callers.
-S15.4 **F13 variant allocation** — random assignment with a fixed exploration share, recorded on
-the message; funnel views by variant, weekday, hour and warm-up day, censored shown as pending.
+S15.4 **F13 variant allocation** (ADR-053) — random assignment with a fixed exploration share
+that has a floor in the database, stored on the lead rather than hashed (a hash re-labels leads
+in flight the moment an arm is added) and recorded on the message; funnel by variant, weekday,
+hour and warm-up day, with pending and censored as their own columns. `messages.variant` and
+`messages.warmup_day` had no producer at all until this slice.
 S15.5 **F22** daily poll with `external_id` diff and a page-hash fallback; per-source terms checked
 before a company joins the poll.
 
