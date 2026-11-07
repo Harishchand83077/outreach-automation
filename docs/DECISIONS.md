@@ -4214,3 +4214,87 @@ for each one is shown on the screen, where the person making the promise can rea
 - **Scraping a careers page for the roles themselves.** Hard rule 4's neighbour: the ATS feeds
   are offered for this and a company's own page is not. A hash asks for nothing a visitor does
   not ask for, and a parser pretending to be one would.
+
+## ADR-055 — The fit score is computed on a press and read for free, and the connector only reads
+
+**Date:** 2026-11-07
+**Status:** Accepted
+**Relates to:** F6, F14, slice S16.1; builds on ADR-037, ADR-028, ADR-030, ADR-041
+
+### Context
+
+The connector shipped with seven read tools over campaigns, leads, research and replies. Four
+phases of work have landed since — job postings, the candidate's own facts, the knowledge graph,
+signals — and none of it was reachable from an agent, which is the same gap ADR-048 found between
+the API and the dashboard, one layer out.
+
+Writing the fit-score tool found something else. **`fit.score_fit` had no caller anywhere.** F6
+built the requirements extractor, the scorer and the dataclasses, with tests for each, and nothing
+ever ran them against a posting: a grep returned the definition and one docstring that mentions
+it. The thirteenth instance of this project's signature shape.
+
+### Decision
+
+**Four new read tools**: `list_job_posts`, `get_fit_score`, `get_entity_edges`, `list_signals`.
+Nothing new about the trust model — `org_id` from the membership and never from an argument, the
+untrusted wrapper on anything somebody else wrote, the same catalogue containment.
+
+**The fit score is computed on a press and read for free, and they are different routes.**
+Extracting a posting's requirements calls a model, so `POST /job-posts/{id}/fit` is a button;
+`GET` of the same path and the MCP tool both read the stored row. A read path that called a model
+would spend somebody's token budget whenever an agent looked or a screen refreshed, which is the
+rule that keeps `GET /mailboxes` from minting an OAuth token and a contact lookup from spending a
+credit on a page load.
+
+**So the score is stored**, in `fit_scores`, one row per posting by a unique key. Two rows would
+let the screen and the tool show different answers depending on which they read first.
+
+**There is no `compute_fit_score` tool, and that absence is the design.** A tool an agent can call
+that spends the user's model quota is the thing F9's whole design refuses (ADR-041), and a
+catalogue is where the refusal is checkable rather than remembered. A test asserts the name is
+absent, along with the contact-lookup names.
+
+**A score never travels without `matched` and `missing`.** A number with nothing under it invites
+whoever reads it to repeat it as a judgement about themselves. Every match names the fact id and
+the words that made it one, and the note beside it says what the fraction is of.
+
+**Only confirmed facts are offered to the scorer**, so ADR-037's rule holds one step before the
+comparison: a model cannot match against a fact the candidate has not agreed to say. An empty
+profile is refused with a sentence rather than scored zero, because zero reads as a bad fit.
+
+**`list_job_posts` defaults to the open postings.** The question an agent is nearly always
+answering is "what could I apply to", and an archived posting is a role somebody else filled —
+which only became a distinguishable thing in S15.5.
+
+**`get_entity_edges` returns each statement with its own source**, which is what makes "a model
+may phrase, never add" checkable from the other side of the connector: a sentence arriving without
+one did not come from that table, so an agent cannot launder an invention through this tool.
+
+### A defect found by writing the first caller
+
+`fit._terms` allows `.` inside a token so that `node.js` and `3.11` survive — and that meant **a
+word ending a sentence kept its full stop**, so `postgres skills.` in a fact shared only one term
+with `strong postgres skills` in a requirement. One shared term is below `MIN_OVERLAP`, so it was
+a miss. The whole feature under-matched, and nothing noticed because there was no caller. A
+trailing dot is stripped and an internal one kept — the same rule `domain.wording.tokens` applies,
+for the same reason.
+
+### Consequences
+
+- `MIN_OVERLAP = 2` means a one-word requirement never matches. That is conservative on purpose
+  and now asserted: a confident match on one common word is the worst kind of wrong here, because
+  what it is wrong about is the person's own credibility.
+- The catalogue is eleven tools, nine read and two propose. `tools/list` is still scope-filtered
+  and `required_scope` still derived, so none of this needed a new gate.
+- `fit_scores` is the second place a model's output is stored rather than used immediately. It is
+  safe to cache because the requirements are a reading of a posting that does not change, and
+  re-scoring replaces rather than appends.
+
+### Rejected
+
+- **A `compute_fit_score` tool.** An agent that can spend somebody's quota.
+- **Computing the score inside the read path.** Every refresh would be a model call.
+- **Returning the score alone.** A bare number is a judgement nobody can check.
+- **Scoring against unconfirmed facts.** ADR-037 exists because the person asked about a claim in
+  an interview is the person who has to have agreed to it.
+- **Appending each score as a new row.** Two answers to one question.

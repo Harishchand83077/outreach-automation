@@ -3228,6 +3228,51 @@ in the slice whose own ADR is about not holding one fact twice.
 18 unit tests and 6 integration, ruff and mypy strict clean, migration applied and reversed
 against the development database.
 
+**Your own Claude can read the four phases of work it could not see, and F6's scorer gets its
+first caller (F6, F14, ADR-055, slice S16.1).** `list_job_posts`, `get_fit_score`,
+`get_entity_edges` and `list_signals`, plus the press that produces a fit score at all.
+
+**`fit.score_fit` had no caller anywhere.** F6 built the requirements extractor, the scorer and
+the dataclasses, with tests for each, and nothing ever ran them against a posting -- a grep
+returned the definition and one docstring mentioning it. So the feature existed, was tested, and
+had never once produced a number. The thirteenth instance of this project's signature shape, and
+again the cheapest kind to find.
+
+**Computing is a press and reading is free, and they are different routes.** Extracting a
+posting's requirements calls a model, so `POST /job-posts/{id}/fit` is a button and the `GET` and
+the MCP tool read the stored row. A read that called a model would spend somebody's token budget
+every time an agent looked or a screen refreshed -- the rule that keeps `GET /mailboxes` from
+minting an OAuth token and a contact lookup from spending a credit on a page load. A test asserts
+the read writes no `llm_usage` row.
+
+**There is deliberately no `compute_fit_score` tool, and that absence is the design.** A tool an
+agent can call that spends the user's model quota is exactly what F9 refuses (ADR-041), and a
+catalogue is where that refusal is checkable rather than remembered. The test asserts the name is
+absent along with the contact-lookup names.
+
+**A score never travels without the match and the miss.** A number with nothing under it invites
+whoever reads it to repeat it as a judgement about themselves; every match names the fact id and
+the words that made it one, and the note says what the fraction is of. Only **confirmed** facts
+are offered to the scorer, so ADR-037's rule holds one step before the comparison. An empty
+profile is refused with a sentence rather than scored zero, because zero reads as a bad fit.
+
+**And writing the first caller found a defect in the scorer itself.** `_terms` allows `.` inside a
+token so `node.js` and `3.11` survive -- which meant **a word ending a sentence kept its full
+stop**, so `postgres skills.` in a fact shared one term with `strong postgres skills` in a
+requirement, and one term is below `MIN_OVERLAP`. The whole feature under-matched, silently,
+and nothing noticed because nothing called it. A trailing dot is stripped and an internal one
+kept, which is the rule `domain.wording.tokens` already applies.
+
+**`MIN_OVERLAP = 2` means a one-word requirement never matches**, which is conservative on purpose
+and is now asserted rather than assumed: a confident match on one common word is the worst kind of
+wrong here, because what it is wrong about is the person's own credibility.
+
+25 integration tests (16 for the tools, 9 for the producer), ruff and mypy strict clean, migration
+applied and reversed against the development database. The MCP tests reuse
+`test_mcp_endpoint.py`'s envelope helpers rather than rolling a second request builder: the
+2026-07-28 revision mirrors body fields into headers and the server compares the two, so a second
+implementation would be one more thing to keep honest.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

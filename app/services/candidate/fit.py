@@ -66,8 +66,20 @@ MIN_OVERLAP = 2
 
 
 def _terms(text: str) -> set[str]:
+    """Meaningful words, with a sentence's final full stop taken off.
+
+    **`.` is in the allowed characters so that `node.js` and `3.11` survive as one token**, and
+    the cost of that was a silent defect: a word ending a sentence kept its full stop, so
+    `postgres skills.` in a fact shared only one term with `strong postgres skills` in a
+    requirement -- and one shared term is below `MIN_OVERLAP`, so it was a miss. The whole
+    feature under-matched, and nothing noticed because `score_fit` had no caller until S16.1.
+
+    A **trailing** dot is stripped and an internal one is kept, which is the same rule
+    `domain.wording.tokens` applies for the same reason.
+    """
     words = re.split(r"[^a-z0-9+#.]+", (text or "").lower())
-    return {word for word in words if len(word) > 1 and word not in _NOISE}
+    cleaned = (word.rstrip(".") for word in words)
+    return {word for word in cleaned if len(word) > 1 and word not in _NOISE}
 
 
 @dataclass(frozen=True)
