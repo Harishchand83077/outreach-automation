@@ -3883,3 +3883,111 @@ and `acme.example` became two nodes for one company. Found by a test, fixed by m
   shared, one workspace's conclusions are not.
 - **A `confidence` column.** It would be a number nobody could justify, and a sentence either has
   a source or does not.
+
+## ADR-052 — A brief line carries its own source, and a model may only reword it
+
+**Date:** 2026-11-07
+**Status:** Accepted
+**Relates to:** F12, slice S15.3; builds on ADR-051; reuses ADR-043's rewording check
+
+### Context
+
+A brief is the set of sentences somebody repeats to a stranger on a call. The prototype's worst
+output was a confident paragraph about funding stage and traction for a company nobody had
+looked at (issues A1, A2), and hard rule 6 exists because of it. ADR-051 made the storage layer
+refuse a claim with no source; this is the layer that reads those rows back and hands them to a
+person — and, if asked, to a model.
+
+The brief that existed was an MCP tool that concatenated the lead summary and the research
+summary. Useful, and it had no structure, no sections, and no way to tell a line that came from
+a page we read from a line that came from a model's sense of what companies are like.
+
+### Decision
+
+**Five sections, fixed as a tuple**: who they are, what they are doing, what they use, what we
+found, the conversation so far. A section a model could invent is a section with nothing to put
+in it — the same device as `ProposedEdits` having no field for a heading (ADR-043) and
+`propose_reply` having no `subject` (ADR-030). `Line.__post_init__` refuses a section outside
+the five, so the vocabulary is enforced where the line is built rather than where it is drawn.
+
+**Every line carries a `source_url` or a `message_id`, and `Line.__post_init__` refuses one with
+neither.** `ck_edges_provenance` one layer down; the same reasoning, in the reader.
+
+**The brief is built from the three things that carry a source per item** — graph edges,
+research hooks (already verified against the page they were read from), and messages.
+
+**`domain_research.findings` is deliberately excluded, and that is the decision in this ADR
+somebody will want to reverse.** `what_they_do` is good prose and it is a synthesis of several
+pages, so no single page says it. A line citing "one of these four URLs" is a line whose source
+cannot be checked, and somebody would repeat it. So the synthesis is reported in `gaps` as
+something we hold and cannot cite, with the reader sent to the research panel. The rule being
+protected is not "cite something" but "a line and the page that says it".
+
+**The header is not a claim.** Who the lead is comes from the operator's own spreadsheet, and it
+says so. A brief is addressed *about* somebody; naming them is not a statement about the world
+that needs a footnote. Putting it in a section would have forced a fake citation for the one
+line that genuinely does not need one, which is how a citation becomes decorative.
+
+**The fifth thing a brief owes its reader is what it does not know**, so `gaps` names each empty
+section, a missing company domain, thin research, and the synthesis above. A brief with four
+thin sections invites whoever reads it to fill in the rest from memory; a model asked to "write
+a brief" fills it in from nothing. Naming the hole is the only honest version, and it doubles as
+the list of which button to press next.
+
+**A model may phrase a line and may never add one.** The contract is `{line_id: text}` in and
+`{line_id: text}` out:
+
+- It cannot add a line, because an invented claim has no `line_id` and a made-up id matches
+  nothing. The attempt is reported rather than silently dropped — a model returning an id it was
+  never given is a model trying to add a claim, and that is worth seeing.
+- It cannot change what a line says, because `domain.wording.invented` refuses a number or a
+  named thing the original does not contain.
+- It cannot drop a line, because a line it does not mention keeps its own wording. Silence is
+  not deletion: omitting the one awkward line would be the quietest way to mislead.
+- It never sees a source, so it cannot move one. `replace(line, text=...)` changes the words and
+  nothing else.
+
+**The check is `domain.wording`, extracted rather than copied.** ADR-043 wrote it to stop a model
+inventing a skill while rewording a resume fact; this is the same question about the same kind of
+edit. Two copies would be the signature defect in the place where a wrong answer is a sentence
+somebody says out loud. `resume/validate.py` now delegates to it.
+
+**A model failure is not a brief failure.** The deterministic text is already correct, so an
+outage, an exhausted chain or an unparseable answer leaves the brief as it was with a note. The
+opposite trade from drafting, where a failed model means no email: here the work is already done
+and the model is polish.
+
+**The route that reads is free; the one that spends is a press.** `GET /leads/{id}/brief` calls
+no model, so a refresh cannot spend anybody's token budget — the rule that keeps `GET /mailboxes`
+from minting an OAuth token and a contact lookup from spending a credit on a page load.
+`POST /leads/{id}/brief/phrasing` is the button, and a test asserts the GET writes no `llm_usage`
+row.
+
+**The MCP tool reads the same builder.** A brief assembled twice is two readers of one table
+that will eventually disagree — and here they would disagree about what we can *prove*, which is
+the one thing a brief is for.
+
+### Consequences
+
+- A brief can be audited line by line by whoever is about to make the call.
+- It will often be short, and the gaps section says why. That is the intended behaviour: a thin
+  brief for a company nobody has researched is the truth about that company.
+- `phrase_brief` joins the task registry on the **fast** tier with `has_pii=True`: a line quotes
+  a message subject and names a company, so it must not reach an `allow_pii=false` provider.
+- A rewording must begin with a word the original already uses, because position in the sentence
+  is not exempted (ADR-043's reasoning, unchanged). A real constraint in the harmless direction.
+- What the check cannot catch is a lower-case exaggeration, exactly as on a resume. Stated here
+  rather than discovered later; what makes it acceptable is that a person reads the brief, and
+  that the source is beside every line so they can check the one that matters.
+
+### Rejected
+
+- **Letting a model write the brief from the rows.** It would produce a better-reading document
+  and there would be no way to tell which sentences were in the rows.
+- **Citing a synthesis to its first source.** The citation would be checkable and wrong, which is
+  worse than absent.
+- **A footnote block at the end.** A list of sources after the text is exactly how a line gets
+  separated from the thing that justified it.
+- **A confidence score per line.** ADR-051 rejected it for edges for the same reason: a line
+  either has a source or does not.
+- **Phrasing on load.** A read that spends is the pattern this project refuses everywhere else.

@@ -37,10 +37,10 @@ consumer with nothing checking that they agreed; here the check is the artefact 
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from app.db.models import RESUME_SECTIONS
+from app.domain import wording
 from app.services.resume.ops import EditOp
 
 #: How a bullet is written into the document. `check_rendered` matches on it exactly, so it is
@@ -83,60 +83,35 @@ class Report:
         return [problem.message for problem in self.problems]
 
 
-_NUMBER = re.compile(r"\d[\d,_.]*")
-_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9+#./_-]*")
-_NAMED_PUNCTUATION = re.compile(r"[0-9+#.]")
-
-
 def _numbers(text: str) -> set[str]:
-    """Numbers in a string, normalised so the same quantity written two ways is one value."""
-    found: set[str] = set()
-    for raw in _NUMBER.findall(text or ""):
-        value = raw.replace(",", "").replace("_", "").rstrip(".")
-        if value:
-            found.add(value)
-    return found
+    """Delegates to `domain.wording`: S15.3's brief asks the same question of the same kind of
+    edit, and two copies of this rule would be the signature defect in the worst place."""
+    return wording.numbers(text)
 
 
 def _tokens(text: str) -> set[str]:
-    return {match.group(0).lower().strip(".") for match in _TOKEN.finditer(text or "")}
+    return wording.tokens(text)
 
 
 def _named(text: str) -> set[str]:
-    """Tokens that name a thing rather than describe one.
-
-    Capitalised, all-capitals, or carrying an internal digit or `+`, `#`, `.` -- which between
-    them cover the three kinds of invention that matter on a resume: a skill, a product and an
-    employer. Position in the sentence is deliberately **not** used: exempting the first word
-    would leave a bullet that opens on a brand new technology unchecked, and that is precisely
-    the bullet somebody would write.
-    """
-    found: set[str] = set()
-    for match in _TOKEN.finditer(text or ""):
-        token = match.group(0)
-        body = token[1:]
-        if token[0].isupper() or token.isupper() or _NAMED_PUNCTUATION.search(body):
-            found.add(token.lower().strip("."))
-    return found
+    return wording.named(text)
 
 
 def check_rewording(text: str, fact: KnownFact) -> list[str]:
     """What a rewording asserts that its fact does not. Empty means it asserts nothing new."""
     problems: list[str] = []
+    invented_numbers, invented_names = wording.invented(text, source=fact.statement)
 
-    invented_numbers = sorted(_numbers(text) - _numbers(fact.statement))
     if invented_numbers:
         problems.append(
             f"{fact.fact_id} is reworded with {', '.join(invented_numbers)}, which is not in "
             "the fact. A resume may not state a number you have not confirmed."
         )
-
-    invented = sorted(_named(text) - _tokens(fact.statement))
-    if invented:
+    if invented_names:
         problems.append(
-            f"{fact.fact_id} is reworded with {', '.join(invented)}, which is not in the fact. "
-            "Reword using the fact's own words, add a fact that says this, or include the fact "
-            "as it stands."
+            f"{fact.fact_id} is reworded with {', '.join(invented_names)}, which is not in the "
+            "fact. Reword using the fact's own words, add a fact that says this, or include the "
+            "fact as it stands."
         )
     return problems
 

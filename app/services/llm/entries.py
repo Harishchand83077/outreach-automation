@@ -46,6 +46,9 @@ TASK_TIER: dict[str, Tier] = {
     "validate_claims": "fast",
     "draft_reply": "primary",
     "classify_reply": "fast",
+    # Polish on text that is already correct, so the cheap tier: a brief whose wording was not
+    # improved is a brief, and spending a primary-tier call on tidying would starve drafting.
+    "phrase_brief": "fast",
 }
 
 #: True when a task's prompt necessarily contains lead PII.
@@ -55,6 +58,9 @@ TASK_HAS_PII: dict[str, bool] = {
     "validate_claims": True,
     "draft_reply": True,
     "classify_reply": True,
+    # A brief line quotes a message subject and names a company, so this prompt carries PII and
+    # must not reach a provider configured `allow_pii=false`.
+    "phrase_brief": True,
 }
 
 

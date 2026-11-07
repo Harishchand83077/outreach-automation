@@ -31,7 +31,13 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
+from app.api.deps import (
+    CurrentUser,
+    CurrentUserDep,
+    SessionDep,
+    SettingsDep,
+    require_role,
+)
 from app.api.pagination import Cursor, build_page, clamp_limit
 from app.db import attachments as attachment_store
 from app.db import outbox
@@ -58,6 +64,10 @@ from app.domain.campaign_schedule import schedule_note, scheduled_status
 from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
+from app.services.brief import build as brief_build
+from app.services.brief import phrase as brief_phrase
+from app.services.llm.router import build_router
+from app.services.llm.usage import DbUsageStore
 from app.services.mail.connection import unavailable_reason
 from app.services.mail.expiry import grant_status
 from app.services.mail.smtp import effective_send_mode
@@ -1734,3 +1744,48 @@ def _as_utc(moment: datetime | None) -> datetime | None:
     if moment is None:
         return None
     return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------- the brief (S15.3)
+
+
+@router.get("/leads/{lead_id}/brief")
+async def get_brief(
+    lead_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Five sections, every line carrying the thing that says so (ADR-052).
+
+    **Deterministic, free and non-networked.** No model is called here, so a refresh costs one
+    query set and cannot spend anybody's token budget -- the same rule that keeps `GET
+    /mailboxes` from minting an OAuth token and a contact lookup from spending a credit on a
+    page load. Improving the wording is a separate, explicit press.
+    """
+    lead = await session.get(Lead, lead_id)
+    if lead is None or lead.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+
+    built = await brief_build.build(session, user.ctx, lead=lead)
+    return {**brief_build.as_dict(built), "refusals": []}
+
+
+@router.post("/leads/{lead_id}/brief/phrasing")
+async def phrase_brief(
+    lead_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Ask a model to tidy the wording of a brief, and refuse whatever it added.
+
+    A press rather than a query parameter, because this spends a model call. What comes back is
+    the same five sections with the same sources: a rewording that asserts a number or a named
+    thing its own line does not is discarded and reported, and the deterministic sentence stands.
+    """
+    lead = await session.get(Lead, lead_id)
+    if lead is None or lead.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+
+    built = await brief_build.build(session, user.ctx, lead=lead)
+    llm = build_router(settings, DbUsageStore(session, user.org_id))
+    reworded, refusals = await brief_phrase.phrase(llm, built)
+    return {**brief_build.as_dict(reworded), "refusals": refusals}
