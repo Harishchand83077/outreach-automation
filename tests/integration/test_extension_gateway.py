@@ -24,6 +24,7 @@ from app.db.models import Capture, Member, Org, Suggestion
 from app.db.repo import OrgContext
 from app.services import api_tokens
 from app.services.candidate import profile
+from app.services.mcp import protocol
 
 from .test_api_settings import api, keypair, member, owner, token_for  # noqa: F401
 
@@ -332,9 +333,22 @@ class TestTheGatewayCannotAct:
         for name in ("httpx", "requests", "aiohttp", "smtplib", "aiosmtplib"):
             assert name not in imported, f"the extension gateway imports {name}"
 
-    def test_the_scope_set_is_three_and_no_more(self):
-        """The database's check constraint is built from this tuple."""
-        assert api_tokens.ALL_SCOPES == ("mcp:read", "mcp:propose", "ext:suggest")
+    def test_the_extension_has_exactly_one_scope_and_it_is_not_an_mcp_one(self):
+        """The database's check constraint is built from this tuple.
+
+        **Restated when F24 split the MCP scopes (ADR-056).** This asserted the exact tuple of
+        three, which is a proxy: it fails whenever a scope is added for a good reason, and says
+        nothing about the property that matters -- that the extension's door is one scope, that
+        it is not an `mcp:` one, and that no scope exists which could open both. That is the
+        ninth test in this project found to encode something other than the rule it was named
+        for, and the second this week.
+        """
+        extension_scopes = [scope for scope in api_tokens.ALL_SCOPES if scope.startswith("ext:")]
+        assert extension_scopes == [api_tokens.EXT_SUGGEST_SCOPE]
+        assert not api_tokens.EXT_SUGGEST_SCOPE.startswith("mcp:")
+        # No scope is in both families, which is what makes "each key opens one door" a fact
+        # about the vocabulary rather than about each gate remembering.
+        assert not set(extension_scopes) & set(protocol.SCOPES)
 
     def test_an_unknown_scope_cannot_be_minted(self):
         assert "ext:submit" not in api_tokens.ALL_SCOPES

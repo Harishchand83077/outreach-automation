@@ -3328,6 +3328,22 @@ scope names a send, an approval, a mode or an allowlist. And
 which that guard reserves -- the field is `ready_to_use` now, because **renaming it was cheaper
 than weakening the guard** and the guard owns the word.
 
+**And CI found a third pinned list, which is the ninth instance.**
+`test_the_scope_set_is_three_and_no_more` in the extension gateway's tests asserted the exact
+tuple of three scopes -- a proxy that fails whenever a scope is added for a good reason while
+saying nothing about the property that matters: that the extension's door is one scope, that it
+is not an `mcp:` one, and that no scope exists which could open both. It asserts that now. Worth
+recording that **two of the three were found by CI rather than by me**, because the integration
+suite is unusable locally in bulk (DEV-1) and both lived there.
+
+**The drift test earned its keep in the same run.** `ix_watchlist_page_due` was declared in
+S15.5's migration and not in `models.py`, so `test_there_is_no_drift` failed with
+`remove_index` -- which is the exact trap ADR-032 records, where autogenerate reads an
+undeclared index as drift and writes a migration that DROPS it. It has happened once in this
+repository already. Worth noting what that test does **not** catch: autogenerate does not
+compare check constraints, which is why the `ck_api_tokens_scopes` staleness above survived two
+slices with the drift test green the whole time.
+
 30 integration tests and 25 structural, ruff and mypy strict clean, migration applied and reversed
 against the development database. The downgrade revokes a token carrying one of the new scopes
 rather than stripping it, as ADR-030's did: a credential whose permissions change under it while
