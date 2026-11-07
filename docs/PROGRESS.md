@@ -3050,6 +3050,62 @@ next: the API reporting its build and the dashboard comparing.
 19 integration tests, ruff and mypy strict clean, migration applied and reversed against the
 development database.
 
+**A brief line carries its own source, and a model may only reword it (F12, ADR-052, slice
+S15.3).** Five sections, every line with the page or the message that says so, and a `gaps`
+section that names what the brief does not know.
+
+**The sections are a fixed tuple and `Line.__post_init__` refuses anything outside it**, so a
+section a model could invent is a section with nothing to put in it -- the same device as
+`ProposedEdits` having no field for a heading and `propose_reply` having no `subject`. And a line
+with neither a `source_url` nor a `message_id` is refused where it is built, which is
+`ck_edges_provenance` one layer up, in the reader.
+
+**The decision somebody will want to reverse is what is left out.**
+`domain_research.findings.what_they_do` is the best prose this system holds about a company and
+it is a synthesis of several pages, so no single page says it. A line citing "one of these four
+URLs" is a line whose source cannot be checked, and somebody would repeat it on a call. So the
+synthesis is reported in `gaps` as something we hold and cannot cite, and the reader is sent to
+the research panel. The rule being protected is not "cite something", it is "a line and the page
+that says it".
+
+**The header is not a claim, and that is why it is above the sections rather than in one.** Who
+the lead is came from the operator's own spreadsheet, and the brief says so. Putting it in a
+section would have forced a fake citation on the one line that genuinely does not need one,
+which is how a citation becomes decorative.
+
+**A model may phrase and may never add, and the contract is what makes that true rather than the
+prompt.** `{line_id: text}` in, `{line_id: text}` out. It cannot add a line, because an invented
+claim has no id; it cannot change what a line says, because `domain.wording.invented` refuses a
+number or a named thing the original does not contain; it cannot drop a line, because a line it
+does not mention keeps its own wording -- silence is not deletion, and omitting the one awkward
+line would be the quietest way to mislead. It never sees a source at all, so it cannot move one.
+
+**The check was extracted rather than copied, because a second caller appeared.**
+`domain/wording.py` is ADR-043's resume rewording check -- invented numbers, invented named
+things -- asked here of the same kind of edit, with `resume/validate.py` delegating to it. Two
+copies of that rule would have been the signature defect in the one place where a wrong answer
+is a sentence somebody says out loud to a stranger.
+
+**The free route and the spending route are different routes.** `GET /leads/{id}/brief` calls no
+model, so a refresh costs one query set -- the rule that keeps `GET /mailboxes` from minting an
+OAuth token and a contact lookup from spending a credit on a page load. A test asserts the GET
+writes no `llm_usage` row. `POST /leads/{id}/brief/phrasing` is the button, and a refused
+rewording is shown on the screen rather than swallowed, because a model trying to add a claim is
+worth seeing.
+
+**A model failure is not a brief failure**, which is the opposite trade from drafting. The
+deterministic text is already a correct brief, so an outage leaves it exactly as read with a
+note. There, a failed model means no email; here the work is done and the model is polish.
+
+**And the MCP brief now reads the same builder** rather than composing the same rows a second
+time. Two readers of one table eventually disagree -- this project has paid for that eight times
+-- and these two would have disagreed about what we can *prove*.
+
+17 unit tests and 10 integration. The two invention tests were run against the check removed, to
+watch an invented `Kubernetes` sail through. mypy caught `Lead.name`, which is `full_name`: the
+fifth instance of that naming trap and the fifth time the type checker found it rather than a
+screen showing the wrong thing for ever.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

@@ -38,6 +38,7 @@ from app.db.models import (
     Research,
 )
 from app.db.repo import OrgContext
+from app.services.brief import build as brief_build
 from app.services.mcp import proposals, protocol
 
 #: `tools/list` is cached by the client. Five minutes is long enough to matter and short enough
@@ -444,20 +445,31 @@ async def _list_reply_queue(
 async def _get_meeting_brief(
     session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
 ) -> tuple[str, Any]:
-    """Everything known about one lead, for somebody about to get on a call.
+    """Five sections, every line carrying its own source (ADR-052).
 
-    Composed from the other read paths rather than querying afresh, so it cannot show something
-    they do not — this is the sixth place in this project where two readers of the same rows
-    would eventually disagree.
+    **The same builder the dashboard reads**, rather than a second composition of the same rows.
+    A brief assembled twice is two readers of one table that will eventually disagree, and this
+    project has paid for that eight times; worse, here the two would disagree about what we can
+    *prove*, which is the one thing a brief is for.
+
+    No model runs on this path. The wording improvement is a button on the dashboard, because
+    the agent reading this already has a model -- it may reword these lines itself, and it
+    cannot add one, because a line it invented would arrive with no source and a sentence
+    arriving without one did not come from here.
     """
-    lead_summary, lead_detail = await _get_lead(session, ctx, args)
-    if lead_detail is None:
-        return lead_summary, None
-    research_summary, research_detail = await _get_research_with_sources(session, ctx, args)
+    lead_id = args.get("lead_id")
+    lead = await session.get(Lead, uuid.UUID(str(lead_id))) if lead_id else None
+    if lead is None or lead.org_id != ctx.org_id:
+        return "No such lead in your workspace.", None
 
+    built = await brief_build.build(session, ctx, lead=lead)
+    rendered = brief_build.render(built)
+    # The conversation lines quote subjects somebody else wrote, so the whole rendering crosses
+    # the trust boundary wrapped (hard rule 7) -- the agent holds tools, and a brief is text an
+    # agent was asked to read rather than obey.
     return (
-        f"{lead_summary}\n\n{research_summary}",
-        {"lead": lead_detail, "research": research_detail},
+        protocol.untrusted(rendered, source="meeting-brief", id=str(lead.id)),
+        brief_build.as_dict(built),
     )
 
 
