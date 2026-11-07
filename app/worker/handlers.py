@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import httpx
@@ -30,7 +31,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import drafts as draft_store
-from app.db.models import Campaign, Classification, Job, JobPost, Lead, Message
+from app.db.models import (
+    Campaign,
+    Classification,
+    Job,
+    JobPost,
+    Lead,
+    Message,
+    WatchlistEntry,
+)
 from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
 from app.db.state import record_event, transition
@@ -43,9 +52,10 @@ from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
 from app.services.drafting.prompts import reply_subject
 from app.services.experiments import store as experiments
+from app.services.jobposts import pages, terms
 from app.services.jobposts.client import fetch_board
 from app.services.jobposts.feeds import FeedError
-from app.services.jobposts.intake import store
+from app.services.jobposts.intake import close_missing, store
 from app.services.lifecycle import followup_number
 from app.services.reply.drafter import draft_reply
 from app.services.research import chain
@@ -542,6 +552,13 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
     if not source or not slug:
         raise PermanentFailure("a feed poll needs a source and a slug")
 
+    # **Checked here as well as at the door** (F22, ADR-054). The route refuses to watch a board
+    # on a source whose terms we have not read, and this is the same question asked where the
+    # request actually leaves the machine -- a row written before this check existed, or by hand,
+    # would otherwise be polled daily for ever on nobody's authority. Hard rule 8.
+    if not terms.may_poll(source):
+        raise PermanentFailure(f"we do not poll {source}: {terms.terms_for(source).note}")
+
     try:
         postings = await fetch_board(source, slug)
     except FeedError as exc:
@@ -551,6 +568,17 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
 
     org_ctx = OrgContext(org_id=job.org_id)
     result = await store(session, org_ctx, postings)
+
+    # **The diff, in the same transaction as the upsert** (F22). `fetch_board` raised above on
+    # any failure, so reaching here means this is the board's whole current list and a posting
+    # absent from it is genuinely gone. A poll that failed never archives anything.
+    diff = await close_missing(
+        session,
+        org_ctx,
+        source=source,
+        slug=slug,
+        seen={posting.external_id for posting in postings},
+    )
 
     # **The signal producer, in the same transaction as the postings that justify it.** A watched
     # company's new roles become `signal_events` rows -- a reason to write to them today -- and
@@ -568,6 +596,8 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
             "slug": slug,
             "created": result.created,
             "updated": result.updated,
+            "closed": diff.closed,
+            "reopened": diff.reopened,
             "signals": len(signals.created),
         },
     )
@@ -684,12 +714,96 @@ async def handle_render_resume_pdf(ctx: WorkerContext, session: AsyncSession, jo
     )
 
 
+async def handle_poll_careers_page(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:
+    """Fetch one watched careers page and record only that it changed (F22, ADR-054).
+
+    **A hash change produces a signal and never a graph edge.** "The text of this page is
+    different today" is evidence that something happened and no evidence of what, so there is
+    nothing to put in `ck_edges_provenance`'s columns beyond the URL -- and an edge saying a
+    company is hiring because their careers page changed would be exactly the unsupported claim
+    ADR-051 exists to make unstorable. The signal says what we actually know: look at this page.
+
+    **The first fetch never reports a change.** `content_hash` is NULL until there is one, and
+    "different from nothing" is not a change -- a watch added today would otherwise announce a
+    change tomorrow for every company on it, which is how somebody learns to ignore the list.
+    """
+    page_id = str((job.payload or {}).get("watchlist_id") or "")
+    if not page_id:
+        raise PermanentFailure("a careers page poll needs a watchlist id")
+
+    page = await session.get(WatchlistEntry, uuid.UUID(page_id))
+    if page is None or page.org_id != job.org_id or not page.careers_url:
+        # The watch was forgotten between the enqueue and the run. Nothing to do, and nothing
+        # wrong: a permanent failure here would put a dead job in front of somebody for a row
+        # they deliberately deleted.
+        logger.info("careers page watch is gone", extra={"page_id": page_id})
+        return
+
+    try:
+        state = await pages.read_page(page.careers_url)
+    except pages.PageRefused as exc:
+        # Permanent until the site changes its mind, and recorded on the row so the screen can
+        # say why nothing arrives. Not a dead job: there is nothing for an operator to fix.
+        page.page_refused_reason = str(exc)[:300]
+        page.page_polled_at = datetime.now(UTC)
+        return
+    except pages.PageUnavailable as exc:
+        # Transient. Raised so the lease reaper requeues it rather than being swallowed, which
+        # would make a page that has been unreachable for a month look like one that never
+        # changes.
+        raise RuntimeError(str(exc)) from exc
+
+    org_ctx = OrgContext(org_id=job.org_id)
+    changed = page.page_hash is not None and page.page_hash != state.content_hash
+    first = page.page_hash is None
+
+    page.page_refused_reason = None
+    page.page_hash = state.content_hash
+    page.page_length = state.length
+    page.page_polled_at = state.fetched_at
+
+    created = 0
+    if changed:
+        page.page_changed_at = state.fetched_at
+        signals = await signal_intake.record(
+            session,
+            org_ctx,
+            page,
+            [
+                signal_intake.Candidate(
+                    kind="hiring",
+                    source="page",
+                    # The date is in the id on purpose: a page that changes twice in one day is
+                    # one reason to look, and a page that changes on Tuesday and again on
+                    # Thursday is two. Without it the unique key would swallow every change
+                    # after the first for ever.
+                    external_id=f"{page.id}:{state.fetched_at.date().isoformat()}",
+                    title=f"{page.label or page.domain} changed their careers page",
+                    url=page.careers_url,
+                    observed_at=state.fetched_at,
+                )
+            ],
+        )
+        created = len(signals.created)
+
+    logger.info(
+        "polled a careers page",
+        extra={
+            "page_id": page_id,
+            "changed": changed,
+            "first_fetch": first,
+            "signals": created,
+        },
+    )
+
+
 HANDLERS: dict[str, Handler] = {
     JobKind.RESEARCH_LEAD: handle_research_lead,
     JobKind.DRAFT_LEAD: handle_draft_lead,
     JobKind.DRAFT_FOLLOWUP: handle_draft_followup,
     JobKind.DRAFT_REPLY: handle_draft_reply,
     JobKind.POLL_ATS_FEED: handle_poll_ats_feed,
+    JobKind.POLL_CAREERS_PAGE: handle_poll_careers_page,
     JobKind.TAILOR_RESUME: handle_tailor_resume,
     JobKind.RENDER_RESUME_PDF: handle_render_resume_pdf,
 }

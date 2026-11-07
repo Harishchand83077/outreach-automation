@@ -181,3 +181,71 @@ async def archive(session: AsyncSession, ctx: OrgContext, *, post_id: uuid.UUID)
         return False
     row.status = "archived"
     return True
+
+
+@dataclass
+class DiffResult:
+    """What one complete poll of a board changed.
+
+    `closed` is the half F22 adds: a posting that was in yesterday's feed and is not in today's.
+    """
+
+    closed: int = 0
+    reopened: int = 0
+    closed_titles: list[str] = field(default_factory=list)
+
+
+async def close_missing(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    source: str,
+    slug: str,
+    seen: set[str],
+    now: datetime | None = None,
+) -> DiffResult:
+    """Archive the open postings of one board that this poll did not see (F22, ADR-054).
+
+    **Only ever called with the authoritative id set from a poll that parsed successfully**, and
+    that is the whole safety argument. A fetch that failed raises `FeedError` long before here,
+    so this is never reached with an accidentally empty set -- which would archive a company's
+    entire board on one bad afternoon and report it as every role being filled. The job-post
+    intake has already paid for the neighbouring version of this mistake once: an unknown source
+    with a plausible payload returned zero postings, which read as an empty board.
+
+    A genuinely empty board is still an empty board. A company that closed its last role is a
+    real and interesting event, and refusing to believe it would be second-guessing the only
+    evidence we have.
+
+    **Archived, never deleted.** `applications` may point at a posting the candidate applied to,
+    and the record of what they applied to must survive the role being filled. `status` has said
+    `open | archived` since F5 and nothing ever wrote the second value.
+    """
+    moment = now or datetime.now(tz=UTC)
+    result = DiffResult()
+
+    rows = (
+        await session.scalars(
+            select(JobPost).where(
+                JobPost.org_id == ctx.org_id,
+                JobPost.source == source,
+                JobPost.board_slug == slug,
+            )
+        )
+    ).all()
+
+    for row in rows:
+        present = row.external_id in seen
+        if present and row.status == "archived":
+            # A role relisted after being filled. Worth distinguishing from a new posting: the
+            # id is the board's own, so this is the same role rather than a second one.
+            row.status = "open"
+            row.fetched_at = moment
+            result.reopened += 1
+        elif not present and row.status == "open":
+            row.status = "archived"
+            result.closed += 1
+            result.closed_titles.append(row.title)
+
+    await session.flush()
+    return result

@@ -4101,3 +4101,116 @@ a four-value constraint.
   wording and nothing else.
 - **Declaring a winner on the screen.** At this volume it would be noise with a confidence
   interval nobody reads.
+
+## ADR-054 — A poll that failed closes nothing, and a page may only say that it changed
+
+**Date:** 2026-11-07
+**Status:** Accepted
+**Relates to:** F22, slice S15.5; builds on ADR-036 (job posts), ADR-049 (signals), ADR-051 (graph)
+
+### Context
+
+The daily ATS poll has existed since F5 and only ever *added*. A posting that left a board was
+left exactly as it was, so `job_posts.status`, which has said `open | archived` since the first
+migration, had never once held the second value — and nothing could answer "did they fill that
+role?". Separately, most Indian companies this product cares about are on no ATS at all, so the
+poll has nothing to read for them.
+
+### Decision
+
+**The diff is computed from the authoritative id set of a poll that parsed successfully, and
+from nothing else.** `close_missing` archives every open posting of one board that the current
+poll did not return. The safety argument is entirely about where it is called: `fetch_board`
+raises `FeedError` on any failure long before, so this is never reached with an accidentally
+empty set — which would archive a company's entire board on one bad afternoon and report it as
+every role being filled. The job-post intake has already paid for the neighbouring version of
+this: an unknown source with a plausible payload returned zero postings, which read as an empty
+board.
+
+**A genuinely empty board is an empty board.** A company that closed its last role is a real and
+interesting event, and refusing to believe it would be second-guessing the only evidence we have.
+
+**Archived, never deleted.** `applications` may point at a posting the candidate applied to, and
+the record of what they applied to must survive the role being filled.
+
+**A relisted role reopens rather than becoming a second posting**, because the id is the board's
+own. Treating it as new would double-count a company's hiring in any funnel built on these rows.
+
+**A careers page may be watched by its hash, and may only ever say that it changed.** For a
+company with no feed: fetch once a day, hash the visible text, and record a `signal_events` row
+when the hash moves.
+
+**That produces a signal and deliberately no graph edge.** "The text of this page is different
+today" is evidence that something happened and no evidence of what, so there is nothing to put in
+`ck_edges_provenance`'s columns beyond a URL — and an edge saying a company is hiring because
+their careers page changed is exactly the unsupported claim ADR-051 exists to make unstorable.
+The signal says what we actually know: look at this page.
+
+**Scripts and styles are stripped before hashing.** A build id or an analytics nonce in a
+`<script>` changes on every deploy, so hashing it would report a change every single day — which
+is the same as reporting nothing, except that somebody would act on the first few.
+
+**The hash and never the text.** Storing the page would make this a crawler with a cache —
+somebody else's copy of their own site, in our database, for every company any workspace watches
+— and `PRIVACY.md` could no longer say we keep no page text. There is no column for it.
+
+**The first fetch never reports a change**, because `page_hash` is NULL until there is one and
+"different from nothing" is not a change. A watch added today would otherwise announce a change
+tomorrow for every company on it, which is how somebody learns to ignore the list.
+
+**`robots.txt` is the permission model for a page**, and it is the only statement of intent
+available: a board's terms are a document somebody read in advance, and a company's careers page
+has no such document. A file we cannot read is permission, which is the convention the standard
+describes and the only workable reading — most sites serve no such file. A file that disallows us
+is honoured, the page is **not requested at all**, and `page_refused_reason` is stored so the
+screen says why nothing arrives rather than showing a watch that silently never updates.
+
+**Two failure classes, not one.** `PageRefused` is permanent until the site changes its mind;
+`PageUnavailable` is worth trying again tomorrow. Collapsing them is how a site that said no gets
+asked again every day, and how one bad afternoon permanently stops a watch.
+
+**The page watch lives on the watchlist row, not in a table of its own.** Found while wiring the
+producer: `signals.intake.record` takes a `WatchlistEntry`, because that is what carries the
+pause, the company's domain and the lead match. A second table would have needed its own copy of
+all three and produced two answers to "which companies do we watch".
+
+**Which sources may be polled is a recorded human judgement, in `terms.py`.** One entry per
+source saying what was read, when, and what it permits. **`UNKNOWN` is a refusal here**, which is
+the opposite of how the deliverability report treats it and deliberately so: there, "we could not
+tell" goes to a person who then decides, and here the next step is an automated fetch repeated
+daily for ever. The check is made at the door *and* in the poll handler, because a row written by
+hand or before the check existed would otherwise be polled for ever on nobody's authority.
+
+**`watchlist.POLLABLE` now asks that module.** It used to be "every source in `SOURCES` except
+`pasted`" — a guess about what we may poll, dressed as a fact, which would have admitted any
+source added later on nobody's authority. Hard rule 8 is a promise to a provider, so the basis
+for each one is shown on the screen, where the person making the promise can read it.
+
+### Consequences
+
+- `job_posts.status` finally holds `archived`, and the poll log line reports `closed` and
+  `reopened`.
+- A company with no ATS can be watched, and what that buys is weaker than a feed. The screen
+  says so in the field's own hint rather than letting somebody discover it after a week.
+- A page change arrives as a `hiring` signal whose title names the page rather than a role. That
+  is the honest shape, and it means the Signals screen needs no new state.
+- Changing a watch's careers URL clears its hash, so the next poll is a first fetch. Keeping the
+  old hash would compare one page against another and announce a change that is only the operator
+  having pointed us somewhere else.
+- A board URL typed into the careers-page field is refused, with the thing to do instead: it
+  would be hashed as a page, giving a daily "something changed" about a feed we could have read
+  properly, with the roles thrown away.
+
+### Rejected
+
+- **Inferring a diff from `fetched_at` being stale.** A poll that failed leaves every posting
+  stale, so this would archive a board whenever a fetch broke — the failure mode the whole ADR
+  is about, reached by a different route.
+- **Guessing what changed on a page.** It would need the previous text, which is the thing we
+  deliberately do not keep, and a model's description of a diff is a claim with no source.
+- **Writing a graph edge from a hash change.** There is nothing true to put in it.
+- **Deriving "pollable" from the source list.** That is what was there, and it is a guess.
+- **A `watched_pages` table.** Two answers to which companies we watch.
+- **Scraping a careers page for the roles themselves.** Hard rule 4's neighbour: the ATS feeds
+  are offered for this and a company's own page is not. A hash asks for nothing a visitor does
+  not ask for, and a parser pretending to be one would.

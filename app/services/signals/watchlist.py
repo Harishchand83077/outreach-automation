@@ -16,11 +16,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import WatchedBoard, WatchlistEntry
 from app.db.repo import OrgContext
-from app.services.jobposts.feeds import SOURCES
+from app.services.jobposts import boards, terms
 from app.services.research.net import company_domain
 
-#: The boards the daily poll can read. `pasted` is in `SOURCES` and is not a board.
-POLLABLE = tuple(name for name in SOURCES if name != "pasted")
+#: **Asked of `terms.py` rather than derived from the source list.** This used to be "every
+#: source except `pasted`", which is a guess about what we may poll dressed as a fact: it would
+#: have admitted any source added to `SOURCES` later, on nobody's authority. Hard rule 8 says
+#: respect provider terms, and `terms.py` is the one place that records which terms were read.
+POLLABLE = terms.pollable_sources()
 
 
 class WatchRefused(Exception):
@@ -46,6 +49,7 @@ async def add(
     label: str | None = None,
     ats_source: str | None = None,
     ats_slug: str | None = None,
+    careers_url: str | None = None,
     campaign_id: uuid.UUID | None = None,
 ) -> tuple[WatchlistEntry, bool]:
     """Watch a company. Returns `(row, created)`; watching twice updates rather than fails.
@@ -67,6 +71,19 @@ async def add(
     if slug and not source:
         raise WatchRefused("a slug needs the board it belongs to.")
 
+    page = (careers_url or "").strip() or None
+    if page and not page.lower().startswith(("http://", "https://")):
+        raise WatchRefused("a careers page must be an http or https URL.")
+    if page and boards.is_board_url(page):
+        # A board URL in the page field would be hashed as a page: a daily "something changed"
+        # about a feed we could have read properly, with the roles thrown away. Refused with the
+        # thing to do instead, because the operator is one field away from the right answer.
+        raise WatchRefused(
+            "that is a job board's own URL. Put the board and the company's slug in the board "
+            "fields instead -- a feed tells us which roles, where a page only tells us that "
+            "something changed."
+        )
+
     existing = await session.scalar(
         select(WatchlistEntry).where(
             WatchlistEntry.org_id == ctx.org_id, WatchlistEntry.domain == key
@@ -77,6 +94,15 @@ async def add(
         if source:
             existing.ats_source = source
             existing.ats_slug = slug
+        if page:
+            # A new URL clears the hash, so the next poll is a first fetch and reports no
+            # change. Keeping the old hash would compare one page against another and announce
+            # a change that is only the operator having pointed us somewhere else.
+            if page != existing.careers_url:
+                existing.page_hash = None
+                existing.page_changed_at = None
+                existing.page_refused_reason = None
+            existing.careers_url = page
         if campaign_id is not None:
             existing.campaign_id = campaign_id
         await _ensure_board(session, ctx, existing)
@@ -89,6 +115,7 @@ async def add(
         label=(label or "").strip()[:300] or None,
         ats_source=source,
         ats_slug=slug,
+        careers_url=page,
         campaign_id=campaign_id,
     )
     session.add(row)

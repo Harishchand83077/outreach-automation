@@ -21,6 +21,7 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
 from app.db.models import SIGNAL_KINDS, SIGNAL_STATES, Lead, SignalEvent, WatchlistEntry
 from app.services.graph import store as graph
+from app.services.jobposts import terms
 from app.services.signals import intake, watchlist
 
 router = APIRouter(tags=["signals"])
@@ -33,6 +34,12 @@ def _entry(row: WatchlistEntry) -> dict[str, Any]:
         "label": row.label,
         "ats_source": row.ats_source,
         "ats_slug": row.ats_slug,
+        "careers_url": row.careers_url,
+        # Reported so the screen can tell a page that has never changed from one we are not
+        # allowed to read. A watch that silently never updates is the thing this avoids.
+        "page_polled_at": row.page_polled_at.isoformat() if row.page_polled_at else None,
+        "page_changed_at": row.page_changed_at.isoformat() if row.page_changed_at else None,
+        "page_refused_reason": row.page_refused_reason,
         "campaign_id": str(row.campaign_id) if row.campaign_id else None,
         "paused": row.paused,
         # The one field that tells "nothing has happened at this company" from "this was never
@@ -61,6 +68,27 @@ def _signal(row: SignalEvent, *, lead_name: str | None = None) -> dict[str, Any]
     }
 
 
+def _watch_note(row: WatchlistEntry) -> str:
+    """What this watch will actually do, said plainly.
+
+    Three states rather than two, because the page fallback is weaker than a feed and somebody
+    choosing it should know that before they wait a week for a signal that says less than they
+    expected.
+    """
+    if row.ats_source and row.careers_url:
+        return (
+            "Its board will be read once a day, and its careers page watched for changes as well."
+        )
+    if row.ats_source:
+        return "Its board will be read once a day."
+    if row.careers_url:
+        return (
+            "No board, so its careers page is watched instead: once a day, and we can tell you "
+            "that it changed but never what changed."
+        )
+    return "No board and no careers page, so nothing will produce signals for this company yet."
+
+
 @router.get("/watchlist")
 async def list_watchlist(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
     """The companies this workspace watches."""
@@ -68,9 +96,18 @@ async def list_watchlist(user: CurrentUserDep, session: SessionDep) -> dict[str,
     return {
         "watchlist": [_entry(row) for row in rows],
         "sources": list(watchlist.POLLABLE),
+        # Why each source is pollable, in the words of whoever read its terms. On the screen
+        # rather than in a comment, because hard rule 8 is a promise to the provider and an
+        # operator watching a board is the person making it.
+        "source_terms": {name: terms.terms_for(name).note for name in watchlist.POLLABLE},
         "note": (
             "A watched company's new job postings become a reason to write to them. Nothing is "
             "drafted or sent because of a signal: it is an entry on a list you read."
+        ),
+        "page_note": (
+            "A company with no board can be watched by its careers page instead. We fetch it "
+            "once a day, keep only a hash of its text, and can tell you that it changed -- "
+            "never what changed. If the site's robots.txt asks us not to, we do not."
         ),
     }
 
@@ -83,6 +120,7 @@ async def watch_a_company(
     label: Annotated[str | None, Body(embed=True)] = None,
     ats_source: Annotated[str | None, Body(embed=True)] = None,
     ats_slug: Annotated[str | None, Body(embed=True)] = None,
+    careers_url: Annotated[str | None, Body(embed=True)] = None,
     campaign_id: Annotated[uuid.UUID | None, Body(embed=True)] = None,
 ) -> dict[str, Any]:
     """Watch a company, and poll its board if it has one we can read.
@@ -99,6 +137,7 @@ async def watch_a_company(
             label=label,
             ats_source=ats_source,
             ats_slug=ats_slug,
+            careers_url=careers_url,
             campaign_id=campaign_id,
         )
     except watchlist.WatchRefused as exc:
@@ -110,11 +149,7 @@ async def watch_a_company(
     return {
         "watch": _entry(row),
         "created": created,
-        "note": (
-            "Its board will be read once a day."
-            if row.ats_source
-            else "No board given, so nothing will produce signals for this company yet."
-        ),
+        "note": _watch_note(row),
     }
 
 
