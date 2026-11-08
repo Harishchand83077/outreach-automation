@@ -248,12 +248,9 @@
 
 /* ================================================================ typography */
 
-.page-title {
-  font-size: var(--text-2xl);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: var(--leading-tight);
-}
+/* `.page-title` moved to `chrome.css` in S17.2, which owns the page frame. It was briefly
+   defined in both files -- the exact ambiguity that file's own header says it avoids -- and
+   `test_dashboard_tokens_resolve.py` now fails if any class is defined in both. */
 
 .page-note {
   margin-top: var(--space-2);

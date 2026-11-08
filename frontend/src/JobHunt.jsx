@@ -31,7 +31,7 @@ import {
   uploadFile,
 } from "./api";
 import { useLoad } from "./useLoad";
-import { Drawer, Empty, Icons, SkeletonList } from "./ui";
+import { Drawer, Empty, Icons, PageHeader, SkeletonList } from "./ui";
 
 const TABS = [
   { id: "postings", label: "Postings" },
@@ -1237,13 +1237,12 @@ export default function JobHunt({ campaign, onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <h1 className="page-title">Job hunt</h1>
-      <p className="page-note">
+      <PageHeader title={<>Job hunt</>}>
         The candidate half of this system: postings, the facts you are willing
         to claim, a tailored resume built only from those facts, your own
         network, and hiring contacts on your own provider key.{" "}
         <strong>Nothing on this screen contacts anybody.</strong>
-      </p>
+      </PageHeader>
 
       <div className="tabs" role="tablist">
         {TABS.map((item) => (

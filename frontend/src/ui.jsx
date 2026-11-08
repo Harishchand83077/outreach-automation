@@ -8,7 +8,7 @@
  * update and explain for as long as the project lives.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ icons */
 
@@ -29,7 +29,7 @@ function Icon({ children, size = 17, ...rest }) {
     >
       {children}
     </svg>
-  )
+  );
 }
 
 export const Icons = {
@@ -235,11 +235,11 @@ export const Icons = {
       <path d="M3 13l9 5 9-5" />
     </Icon>
   ),
-}
+};
 
 /* ------------------------------------------------------------------ theme */
 
-const THEME_KEY = 'outreach.theme'
+const THEME_KEY = "outreach.theme";
 
 /** The chosen theme, or `null` meaning "whatever the system says".
  *
@@ -248,41 +248,46 @@ const THEME_KEY = 'outreach.theme'
 export function useTheme() {
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem(THEME_KEY)
+      return localStorage.getItem(THEME_KEY);
     } catch {
       // Private browsing, or storage blocked. A theme is a convenience, never a requirement.
-      return null
+      return null;
     }
-  })
+  });
 
   useEffect(() => {
-    const root = document.documentElement
-    if (theme) root.setAttribute('data-theme', theme)
-    else root.removeAttribute('data-theme')
+    const root = document.documentElement;
+    if (theme) root.setAttribute("data-theme", theme);
+    else root.removeAttribute("data-theme");
     try {
-      if (theme) localStorage.setItem(THEME_KEY, theme)
-      else localStorage.removeItem(THEME_KEY)
+      if (theme) localStorage.setItem(THEME_KEY, theme);
+      else localStorage.removeItem(THEME_KEY);
     } catch {
       /* ignored for the same reason as above */
     }
-  }, [theme])
+  }, [theme]);
 
   const toggle = useCallback(() => {
     setTheme((current) => {
       const resolved =
         current ||
-        (window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
-      return resolved === 'dark' ? 'light' : 'dark'
-    })
-  }, [])
+        (window.matchMedia?.("(prefers-color-scheme: light)").matches
+          ? "light"
+          : "dark");
+      return resolved === "dark" ? "light" : "dark";
+    });
+  }, []);
 
-  return [theme, toggle]
+  return [theme, toggle];
 }
 
 export function ThemeToggle({ theme, onToggle }) {
   const resolved =
-    theme || (window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
-  const next = resolved === 'dark' ? 'light' : 'dark'
+    theme ||
+    (window.matchMedia?.("(prefers-color-scheme: light)").matches
+      ? "light"
+      : "dark");
+  const next = resolved === "dark" ? "light" : "dark";
   return (
     <button
       type="button"
@@ -293,9 +298,9 @@ export function ThemeToggle({ theme, onToggle }) {
       title={`Switch to ${next} mode`}
       aria-label={`Switch to ${next} mode`}
     >
-      {resolved === 'dark' ? <Icons.sun size={16} /> : <Icons.moon size={16} />}
+      {resolved === "dark" ? <Icons.sun size={16} /> : <Icons.moon size={16} />}
     </button>
-  )
+  );
 }
 
 /* ------------------------------------------------------------------ states */
@@ -304,14 +309,14 @@ export function ThemeToggle({ theme, onToggle }) {
  *
  * A spinner says "something is happening"; a skeleton says "a list of four things is
  * happening", which is the part worth knowing while waiting. */
-export function Skeleton({ rows = 3, className = '' }) {
+export function Skeleton({ rows = 3, className = "" }) {
   return (
     <div className={`card ${className}`} aria-hidden="true">
       {Array.from({ length: rows }, (_, index) => (
         <div key={index} className="skeleton skeleton-text" />
       ))}
     </div>
-  )
+  );
 }
 
 export function SkeletonList({ count = 3, rows = 3 }) {
@@ -319,10 +324,10 @@ export function SkeletonList({ count = 3, rows = 3 }) {
     <div aria-busy="true" aria-live="polite">
       <span className="muted">Loading…</span>
       {Array.from({ length: count }, (_, index) => (
-        <Skeleton key={index} rows={rows} className={index ? '' : 'first'} />
+        <Skeleton key={index} rows={rows} className={index ? "" : "first"} />
       ))}
     </div>
-  )
+  );
 }
 
 /** An empty state that says what *would* be here and what to do about it.
@@ -330,7 +335,12 @@ export function SkeletonList({ count = 3, rows = 3 }) {
  * "No results" is a dead end. A heading, a sentence of cause, and the one action that changes
  * the situation is the difference between a screen that looks broken and one that is simply
  * waiting. */
-export function Empty({ icon: IconComponent = Icons.inbox, title, children, action }) {
+export function Empty({
+  icon: IconComponent = Icons.inbox,
+  title,
+  children,
+  action,
+}) {
   return (
     <div className="empty">
       <span className="empty-icon">
@@ -340,7 +350,7 @@ export function Empty({ icon: IconComponent = Icons.inbox, title, children, acti
       {children ? <span>{children}</span> : null}
       {action}
     </div>
-  )
+  );
 }
 
 /* ------------------------------------------------------------------ drawer */
@@ -352,23 +362,23 @@ export function Empty({ icon: IconComponent = Icons.inbox, title, children, acti
  * into the panel on open so a keyboard user is not left behind on the page underneath.
  */
 export function Drawer({ title, badges, onClose, children }) {
-  const panel = useRef(null)
+  const panel = useRef(null);
 
   useEffect(() => {
     const onKey = (event) => {
-      if (event.key === 'Escape') onClose()
-    }
-    window.addEventListener('keydown', onKey)
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
     // Scrolling the list under an open panel is disorienting, and on a phone it is the whole
     // page moving behind a sheet.
-    const previous = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    panel.current?.focus()
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    panel.current?.focus();
     return () => {
-      window.removeEventListener('keydown', onKey)
-      document.body.style.overflow = previous
-    }
-  }, [onClose])
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previous;
+    };
+  }, [onClose]);
 
   return (
     <>
@@ -400,7 +410,7 @@ export function Drawer({ title, badges, onClose, children }) {
         <div className="drawer-body">{children}</div>
       </aside>
     </>
-  )
+  );
 }
 
 /* ------------------------------------------------------------------ command palette */
@@ -415,55 +425,60 @@ export function Drawer({ title, badges, onClose, children }) {
  * should show the campaigns, not a scored permutation of every item in the app.
  */
 export function CommandPalette({ open, onClose, commands }) {
-  const [query, setQuery] = useState('')
-  const [active, setActive] = useState(0)
-  const input = useRef(null)
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const input = useRef(null);
 
   useEffect(() => {
     if (open) {
-      setQuery('')
-      setActive(0)
+      setQuery("");
+      setActive(0);
       // The frame delay matters: focusing before the element is painted silently does nothing.
-      requestAnimationFrame(() => input.current?.focus())
+      requestAnimationFrame(() => input.current?.focus());
     }
-  }, [open])
+  }, [open]);
 
   const matches = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (!needle) return commands
+    const needle = query.trim().toLowerCase();
+    if (!needle) return commands;
     return commands.filter((command) =>
-      `${command.group} ${command.label} ${command.hint || ''}`.toLowerCase().includes(needle)
-    )
-  }, [commands, query])
+      `${command.group} ${command.label} ${command.hint || ""}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  }, [commands, query]);
 
   useEffect(() => {
-    setActive((current) => Math.min(current, Math.max(matches.length - 1, 0)))
-  }, [matches.length])
+    setActive((current) => Math.min(current, Math.max(matches.length - 1, 0)));
+  }, [matches.length]);
 
-  if (!open) return null
+  if (!open) return null;
 
   const run = (command) => {
-    onClose()
-    command.run()
-  }
+    onClose();
+    command.run();
+  };
 
   const onKeyDown = (event) => {
-    if (event.key === 'ArrowDown') {
-      event.preventDefault()
-      setActive((current) => (current + 1) % Math.max(matches.length, 1))
-    } else if (event.key === 'ArrowUp') {
-      event.preventDefault()
-      setActive((current) => (current - 1 + matches.length) % Math.max(matches.length, 1))
-    } else if (event.key === 'Enter' && matches[active]) {
-      event.preventDefault()
-      run(matches[active])
-    } else if (event.key === 'Escape') {
-      event.preventDefault()
-      onClose()
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActive((current) => (current + 1) % Math.max(matches.length, 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActive(
+        (current) =>
+          (current - 1 + matches.length) % Math.max(matches.length, 1),
+      );
+    } else if (event.key === "Enter" && matches[active]) {
+      event.preventDefault();
+      run(matches[active]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      onClose();
     }
-  }
+  };
 
-  let lastGroup = null
+  let lastGroup = null;
 
   return (
     <div className="palette-backdrop" onClick={onClose} role="presentation">
@@ -489,16 +504,19 @@ export function CommandPalette({ open, onClose, commands }) {
 
         <div className="palette-list">
           {matches.length === 0 ? (
-            <p className="muted" style={{ padding: '14px 8px' }}>
+            <p className="muted" style={{ padding: "14px 8px" }}>
               Nothing matches “{query}”.
             </p>
           ) : (
             matches.map((command, index) => {
-              const heading = command.group !== lastGroup ? command.group : null
-              lastGroup = command.group
+              const heading =
+                command.group !== lastGroup ? command.group : null;
+              lastGroup = command.group;
               return (
                 <div key={command.id}>
-                  {heading ? <div className="palette-group">{heading}</div> : null}
+                  {heading ? (
+                    <div className="palette-group">{heading}</div>
+                  ) : null}
                   <button
                     type="button"
                     className="palette-item"
@@ -516,7 +534,7 @@ export function CommandPalette({ open, onClose, commands }) {
                     ) : null}
                   </button>
                 </div>
-              )
+              );
             })
           )}
         </div>
@@ -532,25 +550,25 @@ export function CommandPalette({ open, onClose, commands }) {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 /** True while Cmd/Ctrl+K should have the palette open. */
 export function usePaletteShortcut() {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     const onKey = (event) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        setOpen((current) => !current)
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setOpen((current) => !current);
       }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
-  return [open, setOpen]
+  return [open, setOpen];
 }
 
 /* ------------------------------------------------------------------ chart */
@@ -565,30 +583,41 @@ export function usePaletteShortcut() {
  * what went out came back", and two adjacent bars make that a comparison the eye has to do.
  */
 export function ActivityChart({ series, loading }) {
-  if (loading) return <div className="skeleton" style={{ height: 150, borderRadius: 10 }} />
-  if (!series?.length) return null
+  if (loading)
+    return (
+      <div className="skeleton" style={{ height: 150, borderRadius: 10 }} />
+    );
+  if (!series?.length) return null;
 
-  const peak = Math.max(1, ...series.map((point) => point.sent + point.replies))
-  const width = 100
-  const height = 34
-  const gap = 0.6
-  const barWidth = width / series.length - gap
-  const totalSent = series.reduce((sum, point) => sum + point.sent, 0)
-  const totalReplies = series.reduce((sum, point) => sum + point.replies, 0)
+  const peak = Math.max(
+    1,
+    ...series.map((point) => point.sent + point.replies),
+  );
+  const width = 100;
+  const height = 34;
+  const gap = 0.6;
+  const barWidth = width / series.length - gap;
+  const totalSent = series.reduce((sum, point) => sum + point.sent, 0);
+  const totalReplies = series.reduce((sum, point) => sum + point.replies, 0);
 
   const label = (iso) =>
-    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, {
+      day: "numeric",
+      month: "short",
+    });
 
   return (
     <div className="chart">
       <div className="chart-head">
-        <span className="chart-key" style={{ color: 'var(--accent)' }}>
+        <span className="chart-key" style={{ color: "var(--accent)" }}>
           <i />
-          <span style={{ color: 'var(--text-muted)' }}>{totalSent} sent</span>
+          <span style={{ color: "var(--text-muted)" }}>{totalSent} sent</span>
         </span>
-        <span className="chart-key" style={{ color: 'var(--success)' }}>
+        <span className="chart-key" style={{ color: "var(--success)" }}>
           <i />
-          <span style={{ color: 'var(--text-muted)' }}>{totalReplies} replied</span>
+          <span style={{ color: "var(--text-muted)" }}>
+            {totalReplies} replied
+          </span>
         </span>
         <span className="spacer" />
         <span>last {series.length} days</span>
@@ -601,9 +630,9 @@ export function ActivityChart({ series, loading }) {
         aria-label={`${totalSent} sent and ${totalReplies} replies over ${series.length} days`}
       >
         {series.map((point, index) => {
-          const x = index * (barWidth + gap)
-          const sentHeight = (point.sent / peak) * height
-          const replyHeight = (point.replies / peak) * height
+          const x = index * (barWidth + gap);
+          const sentHeight = (point.sent / peak) * height;
+          const replyHeight = (point.replies / peak) * height;
           return (
             <g key={point.day} className="bar">
               <title>
@@ -611,7 +640,13 @@ export function ActivityChart({ series, loading }) {
               </title>
               {/* A full-height invisible target, so hovering a quiet day still shows its
                   tooltip rather than needing a two-pixel bar hit exactly. */}
-              <rect x={x} y={0} width={barWidth} height={height} fill="transparent" />
+              <rect
+                x={x}
+                y={0}
+                width={barWidth}
+                height={height}
+                fill="transparent"
+              />
               <rect
                 x={x}
                 y={height - sentHeight - replyHeight}
@@ -629,7 +664,7 @@ export function ActivityChart({ series, loading }) {
                 rx="0.4"
               />
             </g>
-          )
+          );
         })}
       </svg>
 
@@ -638,5 +673,42 @@ export function ActivityChart({ series, loading }) {
         <span>{label(series[series.length - 1].day)}</span>
       </div>
     </div>
-  )
+  );
+}
+
+/**
+ * The top of a page: where you are, what this is, and what you can do from here (S17.2).
+ *
+ * **Twelve screens each rendered their own `<h1 className="page-title">` followed by a
+ * `<p className="page-note">`**, and they had drifted -- some had the paragraph, some did not,
+ * none had an eyebrow, and the actions were wherever each screen happened to put them. That is
+ * the difference between a set of screens and a product: not any one of them being wrong, but
+ * no two of them agreeing on where the title sits.
+ *
+ * `icon` and `eyebrow` together are what make a page identifiable at a glance when two screens
+ * one level apart have similar titles. `actions` sits on the same baseline as the title rather
+ * than above or below it, so the eye finds the verb in the same place on every screen.
+ */
+export function PageHeader({
+  icon: IconComponent,
+  eyebrow,
+  title,
+  children,
+  actions,
+}) {
+  return (
+    <div className="page-head">
+      <div className="page-head-text">
+        {eyebrow ? (
+          <div className="eyebrow">
+            {IconComponent ? <IconComponent size={14} /> : null}
+            {eyebrow}
+          </div>
+        ) : null}
+        <h1 className="page-title">{title}</h1>
+        {children ? <p className="page-sub">{children}</p> : null}
+      </div>
+      {actions ? <div className="page-actions">{actions}</div> : null}
+    </div>
+  );
 }
