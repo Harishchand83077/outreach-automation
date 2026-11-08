@@ -3349,6 +3349,67 @@ against the development database. The downgrade revokes a token carrying one of 
 rather than stripping it, as ADR-030's did: a credential whose permissions change under it while
 it keeps working is worse than one that stops.
 
+**The product has a front door, pages with addresses, and a brand (ADR-057, slice S17.1).**
+Asked for directly: make it presentable, with colour and with pages rather than buttons, for
+showing to investors.
+
+**There were no addresses.** `view` was a `useState`, so every screen in the product was one URL
+-- nothing could be linked to, bookmarked, opened in a second tab or reached with the back
+button. There are thirteen pages now, behind a router written here in about a hundred lines with
+no dependency: `frontend/wrangler.jsonc` already sets `not_found_handling:
+"single-page-application"` and its comment says that is "what makes a refresh on /leads/123
+work", so real paths were safe before any router existed. The nav items are anchors, because a
+real `href` is what makes middle-click, copy-link and the back button work, and those three are
+most of what "pages instead of buttons" means to whoever is using it.
+
+**Colour in the chrome, calm in the content.** The way "add colour" goes wrong in an operational
+tool is colouring the content: a red number here means a bounce and an amber one means a
+deadline, so decoration in that space costs the semantic colours their meaning. The brand is in
+the rail, the page headers, the funnel, the hero and the mark; a lead's row is untouched. And the
+brand is deliberately **not** the semantic accent, because a brand that is the same colour as
+"this is clickable" is not a brand -- which was the old rail's actual problem.
+
+**Every claim on the landing page is checkable against the code**, and the ADR names where each
+one lives. A landing page that overstates what the system does is the same defect as a draft that
+invents a statistic, aimed at a different reader -- and this is the page the product gets pitched
+from. The name is the deployment's own: `api.arkvane.in`, and "Arkvane" was already the agency
+name in the live campaign's persona.
+
+**Three defects, every one found by opening the page.** ADR-048's honest note -- that those
+screens had never been rendered in a browser and the guards were a substitute for looking rather
+than a proof -- was right again. The build was green, the frontend suite passed, all four
+structural guards passed, and:
+
+1. **The unset theme was a mixture of both.** `:root[data-theme='light']` matches only once
+   somebody has *used* the toggle, so a visitor on a light system got the light base tokens and
+   the **dark** brand tokens: a dark hero gradient under dark navy text. Invisible, no error.
+2. **`align-items: center` on the hero** -- a centred grid item taller than its row overflows in
+   *both* directions, so on a short window the headline was cut off above the top of the page.
+3. **`<SignIn embedded />` was passed a prop that did not exist**, so the form brought its own
+   80vh centred panel inside the card it was already in.
+
+**And a fourth guard, for a class the other three could not see.** **Six `var(--x)` references
+named tokens that do not exist** -- `--textMuted` against `--text-muted`, `--text-2` against
+nothing -- across three files. `var()` with an unknown name and no fallback resolves to *nothing*:
+the declaration is dropped and the element inherits, so the sign-in page's muted paragraphs and
+the settings tick-boxes had been rendering in body colour. `index.css` states the rule that
+drifted -- a component never uses a raw colour -- and the rule was followed; what drifted was the
+*names*, which produces the same symptom and is much harder to see.
+`test_dashboard_tokens_resolve.py` now asserts that every reference resolves, that both themes
+define the same names, and that every light value also appears in the `prefers-color-scheme`
+block -- which is the guard for defect 1, written after it and run against it to watch it name
+`--grad-hero`.
+
+**One `useLoad` where there were four**, each screen having grown its own copy and started to
+differ. The shared one adds `asked`, meaning "we have heard back, including hearing an error",
+which is the distinction that twice made this dashboard state something false while it waited and
+which none of the four copies had.
+
+**Verified in a browser rather than inferred from a green build**: both themes, the router, the
+rail, the overview and the landing page.
+
+1,399 unit tests, 5 of them the new token guard, ruff and mypy strict clean, no migration.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

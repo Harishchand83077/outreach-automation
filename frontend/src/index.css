@@ -183,6 +183,29 @@
     --shadow: 0 1px 3px rgb(16 24 40 / 0.08), 0 8px 24px -16px rgb(16 24 40 / 0.2);
     --shadow-lg: 0 12px 40px -12px rgb(16 24 40 / 0.22);
     --ring: 0 0 0 3px rgb(37 99 235 / 0.2);
+
+    /* The brand values too, and leaving them out was a real bug found by opening the page
+       (S17.1). `:root[data-theme='light']` only matches once somebody has *used* the toggle, so
+       a visitor on a light system who never has gets the light base tokens from this block and
+       the **dark** brand tokens from `:root` -- a dark hero gradient under dark navy text, which
+       is invisible. Every token with a light value belongs in both places, and
+       `test_dashboard_tokens_resolve.py` now asserts that rather than trusting it. */
+    --brand: #5b4cdb;
+    --brand-hover: #4a3ccb;
+    --brand-strong: #4336b8;
+    --brand-soft: #efedfe;
+    --brand-softer: #f7f6ff;
+    --brand-text: #4336b8;
+    --brand-contrast: #ffffff;
+    --brand-2: #0f9e8c;
+    --brand-2-soft: #e4f7f4;
+    --brand-2-text: #0b7466;
+    --grad-brand: linear-gradient(135deg, #5b4cdb 0%, #4f6ef0 55%, #0f9e8c 130%);
+    --grad-hero: radial-gradient(120% 120% at 15% 0%, #eceafe 0%, #f6f7fb 55%, #f6f7f9 100%);
+    --grad-rail: linear-gradient(180deg, #ffffff 0%, #f7f8fb 100%);
+    --glow-brand: radial-gradient(60% 60% at 50% 0%, rgb(91 76 219 / 0.12), transparent 70%);
+    --ring-brand: 0 0 0 3px rgb(91 76 219 / 0.22);
+    --shadow-brand: 0 10px 30px -14px rgb(91 76 219 / 0.4);
   }
 }
 
@@ -369,4 +392,81 @@ code {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* -------------------------------------------------------------- brand (S17.1)
+
+   **Colour in the chrome, calm in the content.** The ask was "introduce colours", and the way
+   that goes wrong is colouring the content: this is an operational tool where a red number means
+   a bounce and an amber one means a deadline, so a decorative colour in the same space steals
+   meaning from a semantic one. So the brand lives in the frame -- the rail, page headers, the
+   hero, charts, the mark -- and a lead's row stays quiet.
+
+   Two brand hues rather than one, because a single accent has to do too many jobs at once:
+   `--brand` is identity and primary action, `--brand-2` is the second chart series, the
+   job-hunt half of the product, and anything that needs to be distinct from a primary action
+   without implying success or danger. */
+
+:root,
+:root[data-theme='dark'] {
+  /* Indigo, and deliberately not the generic product blue the semantic `--accent` already uses:
+     a brand that is the same colour as "this link is clickable" is not a brand. */
+  --brand: #7c6cf5;
+  --brand-hover: #9488f8;
+  --brand-strong: #6354e8;
+  --brand-soft: #1a1830;
+  --brand-softer: #141225;
+  --brand-text: #b9b0fb;
+  --brand-contrast: #ffffff;
+
+  --brand-2: #2fc8b4;
+  --brand-2-soft: #0d2420;
+  --brand-2-text: #68e0d0;
+
+  /* The hero and the rail. A gradient rather than a flat fill because a flat dark panel is what
+     every internal tool looks like, and two stops cost nothing. */
+  --grad-brand: linear-gradient(135deg, #7c6cf5 0%, #5b7cf8 55%, #2fc8b4 130%);
+  --grad-hero: radial-gradient(120% 120% at 15% 0%, #1d1a38 0%, #0d1016 55%, #090b0f 100%);
+  --grad-rail: linear-gradient(180deg, #11131d 0%, #0d0f16 100%);
+  --glow-brand: radial-gradient(60% 60% at 50% 0%, rgb(124 108 245 / 0.22), transparent 70%);
+
+  --ring-brand: 0 0 0 3px rgb(124 108 245 / 0.32);
+  --shadow-brand: 0 10px 30px -12px rgb(124 108 245 / 0.5);
+
+  /* Surfaces get a trace of the brand hue instead of being neutral grey. It is a two-point
+     shift nobody can name and everybody reads as "designed". */
+  --surface: #12141b;
+  --surface-2: #181b24;
+  --surface-3: #20242f;
+  --surface-hover: #1c2029;
+}
+
+:root[data-theme='light'] {
+  --brand: #5b4cdb;
+  --brand-hover: #4a3ccb;
+  --brand-strong: #4336b8;
+  --brand-soft: #efedfe;
+  --brand-softer: #f7f6ff;
+  --brand-text: #4336b8;
+  --brand-contrast: #ffffff;
+
+  --brand-2: #0f9e8c;
+  --brand-2-soft: #e4f7f4;
+  --brand-2-text: #0b7466;
+
+  --grad-brand: linear-gradient(135deg, #5b4cdb 0%, #4f6ef0 55%, #0f9e8c 130%);
+  --grad-hero: radial-gradient(120% 120% at 15% 0%, #eceafe 0%, #f6f7fb 55%, #f6f7f9 100%);
+  --grad-rail: linear-gradient(180deg, #ffffff 0%, #f7f8fb 100%);
+  --glow-brand: radial-gradient(60% 60% at 50% 0%, rgb(91 76 219 / 0.12), transparent 70%);
+
+  --ring-brand: 0 0 0 3px rgb(91 76 219 / 0.22);
+  --shadow-brand: 0 10px 30px -14px rgb(91 76 219 / 0.4);
+}
+
+/* A display size, because a page needs one line that is clearly the title of the page and the
+   old scale topped out at 30px -- which on a 1440px screen reads as a section heading. */
+:root {
+  --text-3xl: clamp(28px, 2vw + 20px, 38px);
+  --text-display: clamp(34px, 3.4vw + 20px, 56px);
+  --leading-display: 1.08;
 }

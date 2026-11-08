@@ -20,6 +20,9 @@
 }
 
 .sidebar {
+  /* The one surface that wears the brand (S17.1). Everything else stays quiet, which
+     is what lets a red number keep meaning a bounce rather than meaning decoration. */
+  background: var(--grad-rail);
   position: sticky;
   top: 0;
   align-self: start;
@@ -91,6 +94,10 @@
 }
 
 .nav-item[aria-current='page'] {
+  /* Brand, not the semantic accent: "where I am" and "this is clickable" being one
+     colour is why the old rail was hard to read at a glance. */
+  background: var(--brand-soft);
+  color: var(--brand-text);
   background: var(--accent-soft);
   color: var(--accent-text);
   font-weight: 600;
@@ -99,6 +106,7 @@
 /* The active marker is a pseudo-element rather than a border, so switching tabs does not shift
    the label by a pixel. */
 .nav-item[aria-current='page']::before {
+  background: var(--brand);
   content: '';
   position: absolute;
   left: -var(--space-3);
@@ -122,6 +130,8 @@
 }
 
 .count {
+  background: var(--brand);
+  color: var(--brand-contrast);
   margin-left: auto;
   min-width: 21px;
   padding: 1px 6px;
@@ -1339,7 +1349,7 @@ tbody tr:hover {
   border-radius: var(--radius-sm);
   background: var(--surface-2);
   font-size: var(--text-sm);
-  color: var(--text-2);
+  color: var(--text-muted);
   cursor: pointer;
 }
 
@@ -1355,7 +1365,7 @@ tbody tr:hover {
 }
 
 .check-row strong {
-  color: var(--text-1);
+  color: var(--text);
   font-weight: 600;
 }
 

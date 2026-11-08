@@ -40,6 +40,10 @@ import {
   uploadFile,
 } from "./api";
 import { signOut } from "./supabase";
+import { Mark, PRODUCT } from "./Brand";
+import Landing from "./Landing";
+import Overview from "./Overview";
+import { Link, RouterProvider, navigate, useMatch, useRoute } from "./router";
 import {
   ActivityChart,
   CommandPalette,
@@ -52,6 +56,7 @@ import {
   useTheme,
 } from "./ui";
 import "./app.css";
+import "./chrome.css";
 
 const STATES = [
   "NEW",
@@ -91,9 +96,44 @@ export default function App() {
   const session = useSession();
 
   if (session === undefined) return <Centered>Checking your session…</Centered>;
-  if (!session) return <SignIn />;
-  return <Dashboard session={session} />;
+  // **The first screen anybody is ever shown.** It used to be the sign-in form alone on a grey
+  // page, which is a login screen; this is a front door. The form itself is unchanged -- still a
+  // magic link, still no password field anywhere in the bundle.
+  if (!session) return <Landing />;
+  return (
+    <RouterProvider>
+      <Dashboard session={session} />
+    </RouterProvider>
+  );
 }
+
+/* ------------------------------------------------------------------ the route table
+
+   **Order matters, and this is the one way it is easy to get wrong**: `/campaigns/new` has to
+   come before `/campaigns/:id`, or "new" is read as an id and the screen asks the API for a
+   campaign by that name. `router.match` returns the first pattern that fits, so the specific
+   path goes above the parameterised one.
+
+   `scoped` means the screen needs a campaign. Those keep the campaign picker in the top bar
+   rather than nesting under `/campaigns/:id/...`: moving six screens under a campaign's path is
+   a change to how every one of them gets its data, and this slice is about the frame. Stated
+   here rather than left as a silence, because the nesting is the obvious next step. */
+const ROUTES = [
+  { path: "/", id: "overview" },
+  { path: "/review", id: "review", scoped: true },
+  { path: "/leads", id: "leads", scoped: true },
+  { path: "/leads/:leadId", id: "leads", scoped: true },
+  { path: "/import", id: "import", scoped: true },
+  { path: "/campaigns/new", id: "new" },
+  { path: "/campaigns/:campaignId", id: "campaign", scoped: true },
+  { path: "/signals", id: "signals" },
+  { path: "/sending", id: "sending", scoped: true },
+  { path: "/job-hunt", id: "jobhunt" },
+  { path: "/operations", id: "operations" },
+  { path: "/team", id: "admin" },
+  { path: "/settings", id: "settings", scoped: true },
+  { path: "/platform", id: "platform" },
+];
 
 function Dashboard({ session }) {
   const [theme, toggleTheme] = useTheme();
@@ -108,7 +148,15 @@ function Dashboard({ session }) {
   //: two campaigns. A loading state that states a falsehood is worse than a spinner.
   const [campaignsLoaded, setCampaignsLoaded] = useState(false);
   const [campaignId, setCampaignId] = useState(null);
-  const [view, setView] = useState("review");
+  /* **The route is the state now.** `view` was a `useState`, so every screen was one
+     address: no deep link, no back button, nothing to send somebody. `matched` is the first
+     route in `ROUTES` whose pattern fits, and `view` is derived from it so the rest of this
+     component -- the nav's `aria-current`, the error boundary's reset key -- reads exactly as
+     it did. A path nobody recognises falls back to the overview rather than rendering nothing,
+     because a blank screen is the one outcome a wrong URL must not produce. */
+  const { path } = useRoute();
+  const matched = useMatch(ROUTES);
+  const view = matched?.route.id ?? "overview";
   const [attention, setAttention] = useState(null);
   const [queueCount, setQueueCount] = useState(null);
 
@@ -188,9 +236,22 @@ function Dashboard({ session }) {
     refreshQueueCount();
   }, [me, refreshQueueCount]);
 
+  /* **A campaign in the URL is the selected campaign.** `/campaigns/:id` is a link somebody
+     can send, so opening one has to switch the picker rather than show a different campaign's
+     name above this one's data -- which is the mismatch that made Connect Gmail aim at the
+     wrong mailbox for three phases. */
+  const routeCampaignId = matched?.params.campaignId ?? null;
+  useEffect(() => {
+    if (routeCampaignId && routeCampaignId !== campaignId) {
+      setCampaignId(routeCampaignId);
+    }
+  }, [routeCampaignId, campaignId]);
+
   const campaign = useMemo(
-    () => campaigns.find((row) => row.id === campaignId) || null,
-    [campaigns, campaignId],
+    () =>
+      campaigns.find((row) => row.id === (routeCampaignId || campaignId)) ||
+      null,
+    [campaigns, campaignId, routeCampaignId],
   );
 
   // The gate is the API's; this only decides what to draw. A hidden button is not security, so
@@ -222,34 +283,74 @@ function Dashboard({ session }) {
     );
   }
 
+  /* **Three groups rather than one list of nine.** Nine items in a flat list is a list you
+     read word by word; three short runs is one you scan -- and the grouping says something true,
+     which is that this product has an outreach half, a job-hunt half and a set of controls.
+
+     Every item carries a `to`, so the command palette gets the paths for free: it is built from
+     this same array, which is why a screen added later appears in it without anybody
+     remembering. */
   const nav = [
+    { group: "Workspace" },
+    { id: "overview", label: "Overview", icon: Icons.home, to: "/" },
     {
       id: "review",
       label: "Review queue",
       icon: Icons.review,
+      to: "/review",
       count: queueCount ?? undefined,
     },
-    { id: "leads", label: "Leads", icon: Icons.leads },
-    { id: "import", label: "Import", icon: Icons.import },
-    { id: "campaign", label: "Campaign", icon: Icons.campaign },
-    { id: "signals", label: "Signals", icon: Icons.campaign },
-    { id: "sending", label: "Sending", icon: Icons.inbox },
+    { id: "leads", label: "Leads", icon: Icons.leads, to: "/leads" },
+    { id: "import", label: "Import", icon: Icons.import, to: "/import" },
+    { group: "Outreach" },
+    {
+      id: "campaign",
+      label: "Campaign",
+      icon: Icons.campaign,
+      to: campaignId ? `/campaigns/${campaignId}` : "/campaigns/new",
+    },
+    { id: "signals", label: "Signals", icon: Icons.signal, to: "/signals" },
+    { id: "sending", label: "Sending", icon: Icons.send, to: "/sending" },
     // The candidate half of the product (F5, F6, F9, F10, F20). Shown to everybody rather than
     // gated on the campaign's kind: the facts, the connections and the answer bank are the
     // workspace's own and are worth filling in before a job-hunt campaign exists.
-    { id: "jobhunt", label: "Job hunt", icon: Icons.leads },
+    { group: "Job hunt" },
+    {
+      id: "jobhunt",
+      label: "Job hunt",
+      icon: Icons.briefcase,
+      to: "/job-hunt",
+    },
     ...(mayAdminister
       ? [
-          { id: "admin", label: "Admin", icon: Icons.inbox },
-          { id: "operations", label: "Operations", icon: Icons.campaign },
-          { id: "settings", label: "Settings", icon: Icons.settings },
+          { group: "Controls" },
+          { id: "admin", label: "Team", icon: Icons.people, to: "/team" },
+          {
+            id: "operations",
+            label: "Operations",
+            icon: Icons.pulse,
+            to: "/operations",
+          },
+          {
+            id: "settings",
+            label: "Settings",
+            icon: Icons.settings,
+            to: "/settings",
+          },
         ]
       : []),
     // The scope above orgs (ADR-024): granted by hand, held by almost nobody. Drawn from `/me`
     // rather than by calling the route and reading a 403, which would log an error on every
     // load for every ordinary user.
     ...(isOperator
-      ? [{ id: "platform", label: "Platform", icon: Icons.platform }]
+      ? [
+          {
+            id: "platform",
+            label: "Platform",
+            icon: Icons.platform,
+            to: "/platform",
+          },
+        ]
       : []),
   ];
 
@@ -258,30 +359,29 @@ function Dashboard({ session }) {
   // Every screen and every campaign, two keystrokes away. Built from the same `nav` list the
   // sidebar draws, so a screen added later appears here without anybody remembering to add it.
   const commands = [
-    ...nav.map((item) => ({
-      id: `view:${item.id}`,
-      group: "Go to",
-      label: item.label,
-      icon: item.icon,
-      run: () => setView(item.id),
-    })),
+    ...nav
+      .filter((item) => item.to)
+      .map((item) => ({
+        id: `view:${item.id}`,
+        group: "Go to",
+        label: item.label,
+        icon: item.icon,
+        run: () => navigate(item.to),
+      })),
     ...campaigns.map((row) => ({
       id: `campaign:${row.id}`,
       group: "Switch campaign",
       label: row.name,
       icon: Icons.campaign,
       hint: row.paused ? "paused" : row.status,
-      run: () => {
-        setCampaignId(row.id);
-        setView("campaign");
-      },
+      run: () => navigate(`/campaigns/${row.id}`),
     })),
     {
       id: "action:new",
       group: "Actions",
       label: "New campaign",
       icon: Icons.plus,
-      run: () => setView("new"),
+      run: () => navigate("/campaigns/new"),
     },
     {
       id: "action:theme",
@@ -295,31 +395,36 @@ function Dashboard({ session }) {
   return (
     <div className="shell">
       <nav className="sidebar" aria-label="Sections">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            O
-          </span>
-          <span className="brand-name">Outreach</span>
-        </div>
+        <Link to="/" className="brand" style={{ textDecoration: "none" }}>
+          <Mark size={30} title={PRODUCT} />
+          <span className="brand-name">{PRODUCT}</span>
+        </Link>
 
-        <span className="nav-label">Workspace</span>
-        {nav.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            className="nav-item"
-            aria-current={view === item.id ? "page" : undefined}
-            onClick={() => setView(item.id)}
-          >
-            <item.icon className="nav-icon" size={17} />
-            {item.label}
-            {item.count === undefined ? null : (
-              <span className="count" data-zero={item.count === 0}>
-                {item.count}
-              </span>
-            )}
-          </button>
-        ))}
+        {/* An anchor per item, not a button: a real `href` is what makes middle-click, "copy
+            link" and the browser's own back button work, and those three are most of what
+            "pages instead of buttons" actually means to somebody using it. */}
+        {nav.map((item, index) =>
+          item.group ? (
+            <span key={`group:${item.group}`} className="nav-group-label">
+              {item.group}
+            </span>
+          ) : (
+            <Link
+              key={item.id}
+              to={item.to}
+              className="nav-item"
+              aria-current={view === item.id ? "page" : undefined}
+            >
+              <item.icon className="nav-icon" size={17} />
+              {item.label}
+              {item.count === undefined ? null : (
+                <span className="count" data-zero={item.count === 0}>
+                  {item.count}
+                </span>
+              )}
+            </Link>
+          ),
+        )}
 
         <div className="sidebar-foot">
           <div className="sidebar-user">
@@ -381,6 +486,20 @@ function Dashboard({ session }) {
               )}
             </>
           ) : null}
+          {/* Where you are, in the frame rather than in the page. A title alone cannot say it
+              when two screens one level apart are both called Settings. */}
+          <span className="crumbs">
+            <Link to="/">{PRODUCT}</Link>
+            {view === "overview" ? null : (
+              <>
+                <Icons.chevron size={13} />
+                <span className="crumbs-current">
+                  {nav.find((item) => item.id === view)?.label ??
+                    (view === "new" ? "New campaign" : view)}
+                </span>
+              </>
+            )}
+          </span>
           <span className="spacer" />
           <button
             type="button"
@@ -394,15 +513,10 @@ function Dashboard({ session }) {
             <span className="kbd">⌘K</span>
           </button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
-          <button
-            type="button"
-            className="btn"
-            data-variant="primary"
-            onClick={() => setView("new")}
-          >
+          <Link className="btn" data-variant="brand" to="/campaigns/new">
             <Icons.plus size={15} />
             New campaign
-          </button>
+          </Link>
         </div>
 
         <div className="content">
@@ -421,17 +535,43 @@ function Dashboard({ session }) {
 
           {/* A render error is caught per screen. One bad field name used to blank the
               whole dashboard: no message, no nav, and nothing an operator could report. */}
-          <ErrorBoundary resetKey={view} label={view}>
-            {view === "new" ? (
+          <ErrorBoundary resetKey={path} label={view}>
+            {view === "overview" ? (
+              <Overview onError={handle} mayAdminister={mayAdminister} />
+            ) : view === "new" ? (
               <NewCampaign
                 onError={handle}
                 onToast={toast}
-                onCreated={() => {
-                  setView("campaign");
+                onCreated={(created) => {
                   refreshCampaigns();
+                  navigate(created?.id ? `/campaigns/${created.id}` : "/");
                 }}
-                onCancel={() => setView("review")}
+                onCancel={() => navigate("/")}
               />
+            ) : !matched?.route.scoped ? (
+              /* A screen that needs no campaign is rendered before the campaign gate below,
+                 or Signals, Operations, Team and Platform would all be unreachable in a
+                 workspace with no campaign yet -- which is every workspace on its first day. */
+              view === "signals" ? (
+                <Signals
+                  mayAdminister={mayAdminister}
+                  onError={handle}
+                  onToast={toast}
+                />
+              ) : view === "jobhunt" ? (
+                <JobHunt
+                  campaign={campaign}
+                  mayAdminister={mayAdminister}
+                  onError={handle}
+                  onToast={toast}
+                />
+              ) : view === "operations" ? (
+                <Operations onError={handle} onToast={toast} />
+              ) : view === "admin" ? (
+                <Admin onError={handle} onToast={toast} />
+              ) : view === "platform" ? (
+                <Platform onError={handle} />
+              ) : null
             ) : !campaign && !campaignsLoaded ? (
               <>
                 <div
@@ -448,14 +588,14 @@ function Dashboard({ session }) {
                   other screen is scoped to one. Nothing can be imported,
                   researched or sent until one exists.
                 </p>
-                <button
-                  type="button"
+                <Link
                   className="btn"
-                  data-variant="primary"
-                  onClick={() => setView("new")}
+                  data-variant="brand"
+                  data-size="lg"
+                  to="/campaigns/new"
                 >
                   Create a campaign
-                </button>
+                </Link>
               </>
             ) : view === "review" ? (
               <ReviewQueue
@@ -470,6 +610,11 @@ function Dashboard({ session }) {
             ) : view === "leads" ? (
               <Leads
                 campaignId={campaign.id}
+                /* A lead is a URL now: `/leads/:leadId` opens the drawer on load, so a lead can
+                   be linked to, bookmarked and reopened by the back button. The drawer itself
+                   stays -- replacing the list was the thing that made comparing two leads mean
+                   navigating twice and losing the scroll position both times. */
+                openLeadId={matched?.params.leadId ?? null}
                 onError={handle}
                 onToast={toast}
               />
@@ -488,16 +633,10 @@ function Dashboard({ session }) {
                 onChanged={(removed) => {
                   if (removed) {
                     setCampaignId(null);
-                    setView("review");
+                    navigate("/");
                   }
                   refreshCampaigns();
                 }}
-              />
-            ) : view === "signals" ? (
-              <Signals
-                mayAdminister={mayAdminister}
-                onError={handle}
-                onToast={toast}
               />
             ) : view === "sending" ? (
               <Sending
@@ -506,19 +645,6 @@ function Dashboard({ session }) {
                 onError={handle}
                 onToast={toast}
               />
-            ) : view === "jobhunt" ? (
-              <JobHunt
-                campaign={campaign}
-                mayAdminister={mayAdminister}
-                onError={handle}
-                onToast={toast}
-              />
-            ) : view === "platform" ? (
-              <Platform onError={handle} />
-            ) : view === "operations" ? (
-              <Operations onError={handle} onToast={toast} />
-            ) : view === "admin" ? (
-              <Admin onError={handle} onToast={toast} />
             ) : view === "settings" ? (
               <Settings
                 campaign={campaign}
@@ -1064,7 +1190,7 @@ function Evidence({ item }) {
 
 /* ------------------------------------------------------------------- leads */
 
-function Leads({ campaignId, onError, onToast }) {
+function Leads({ campaignId, openLeadId = null, onError, onToast }) {
   const [page, setPage] = useState({ leads: [], next_cursor: null });
   const [filters, setFilters] = useState({
     email: "",
@@ -1080,7 +1206,11 @@ function Leads({ campaignId, onError, onToast }) {
   });
   const [cursor, setCursor] = useState(null);
   const [trail, setTrail] = useState([]);
-  const [openLead, setOpenLead] = useState(null);
+  /* **The URL is the source of truth for which lead is open.** `/leads/:id` opens the drawer
+     on load, so a lead is a link somebody can send and the browser's back button closes it.
+     Clicking a row navigates rather than setting state, which is what keeps the two in step --
+     two sources for one fact is the defect this project has recorded a dozen times. */
+  const openLead = openLeadId;
   const [reload, setReload] = useState(0);
 
   // Typing does not fetch. A request per keystroke is a request per keystroke against a table
@@ -1221,7 +1351,7 @@ function Leads({ campaignId, onError, onToast }) {
               {page.leads.map((lead) => (
                 <tr
                   key={lead.id}
-                  onClick={() => setOpenLead(lead.id)}
+                  onClick={() => navigate(`/leads/${lead.id}`)}
                   style={{ cursor: "pointer" }}
                 >
                   <td className="mono">{lead.email}</td>
@@ -1283,7 +1413,7 @@ function Leads({ campaignId, onError, onToast }) {
       {openLead ? (
         <LeadDetail
           leadId={openLead}
-          onClose={() => setOpenLead(null)}
+          onClose={() => navigate("/leads")}
           onError={onError}
           onToast={onToast}
           onChanged={() => setReload((n) => n + 1)}
@@ -3012,7 +3142,7 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
             }
           : undefined;
 
-      await postJson("/campaigns", {
+      const created = await postJson("/campaigns", {
         json: {
           name: form.name,
           kind: form.kind,
@@ -3075,7 +3205,10 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
       onToast(
         "Campaign created. It starts as a draft and sends nothing until you say so.",
       );
-      onCreated();
+      // The created campaign, so the caller can navigate to it. It used to return nothing and
+      // the caller switched to a "campaign" view that then showed whichever campaign happened
+      // to be selected -- a redirect to the wrong row.
+      onCreated(created ?? null);
     } catch (err) {
       // The API returns which persona field is wrong; showing "invalid" alone would be useless.
       const detail = err?.detail;

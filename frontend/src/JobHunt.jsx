@@ -30,6 +30,7 @@ import {
   saveAs,
   uploadFile,
 } from "./api";
+import { useLoad } from "./useLoad";
 import { Drawer, Empty, Icons, SkeletonList } from "./ui";
 
 const TABS = [
@@ -55,24 +56,6 @@ function Field({ label, hint, children }) {
 
 // Every panel loads the same way: ask, and treat an error as *loaded* rather than leaving a
 // skeleton spinning above a real problem. That bug shipped once already.
-function useLoad(path, onError, deps = []) {
-  const [data, setData] = useState(null);
-  const [failed, setFailed] = useState(false);
-
-  const load = useCallback(() => {
-    setFailed(false);
-    getJson(path)
-      .then(setData)
-      .catch((err) => {
-        setFailed(true);
-        onError(err);
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path, onError, ...deps]);
-
-  useEffect(load, [load]);
-  return { data, failed, reload: load };
-}
 
 function Loading({ failed, data, what }) {
   if (failed) return <p className="muted">Could not load {what}.</p>;
