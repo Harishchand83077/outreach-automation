@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { deleteJson, getJson, postJson, putJson } from "./api";
 import { useLoad } from "./useLoad";
-import { Empty, Icons, SkeletonList } from "./ui";
+import { Empty, Icons, PageHeader, SkeletonList } from "./ui";
 
 const TABS = [
   { id: "pool", label: "Sending pool" },
@@ -619,12 +619,11 @@ export default function Sending({ campaign, onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <h1 className="page-title">Sending</h1>
-      <p className="page-note">
+      <PageHeader title={<>Sending</>}>
         Which addresses this campaign sends from, whether their domains meet the
         bulk-sender rules, where a booked meeting comes in from, and which
         search provider pays for research.
-      </p>
+      </PageHeader>
 
       <div className="tabs" role="tablist">
         {TABS.map((item) => (

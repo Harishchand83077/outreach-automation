@@ -50,6 +50,7 @@ import {
   Drawer,
   Empty,
   Icons,
+  PageHeader,
   SkeletonList,
   ThemeToggle,
   usePaletteShortcut,
@@ -262,8 +263,7 @@ function Dashboard({ session }) {
   if (error && !me) {
     return (
       <Centered>
-        <h1 className="page-title">Cannot load the dashboard</h1>
-        <p className="page-note">{error}</p>
+        <PageHeader title={<>Cannot load the dashboard</>}>{error}</PageHeader>
         <button type="button" onClick={() => signOut()} className="btn">
           Sign out
         </button>
@@ -582,12 +582,11 @@ function Dashboard({ session }) {
               </>
             ) : !campaign ? (
               <>
-                <h1 className="page-title">No campaign yet</h1>
-                <p className="page-note">
+                <PageHeader title={<>No campaign yet</>}>
                   A campaign carries the sender persona and the goal, and every
                   other screen is scoped to one. Nothing can be imported,
                   researched or sent until one exists.
-                </p>
+                </PageHeader>
                 <Link
                   className="btn"
                   data-variant="brand"
@@ -891,12 +890,11 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
 
   return (
     <>
-      <h1 className="page-title">Review queue</h1>
-      <p className="page-note">
+      <PageHeader title={<>Review queue</>}>
         Nothing is sent without a decision here. Approving makes a lead
         eligible; the send loop re-checks the suppression list, the window and
         today&apos;s cap before anything leaves.
-      </p>
+      </PageHeader>
 
       <div className="queue-head">
         <span className="badge" data-tone={page.total > 0 ? "warn" : "good"}>
@@ -1243,13 +1241,12 @@ function Leads({ campaignId, openLeadId = null, onError, onToast }) {
 
   return (
     <>
-      <h1 className="page-title">Leads</h1>
-      <p className="page-note">
+      <PageHeader title={<>Leads</>}>
         Email is unique, so it is a search box. Name, company and state are
         filters, and they combine — all of them have to match. Bodies are not
         searched: a search box over drafts and replies would be an export of
         everything anybody ever wrote.
-      </p>
+      </PageHeader>
 
       <form
         className="filters"
@@ -1810,12 +1807,11 @@ function Import({ campaignId, onError, onToast }) {
 
   return (
     <>
-      <h1 className="page-title">Import leads</h1>
-      <p className="page-note">
+      <PageHeader title={<>Import leads</>}>
         The preview writes nothing. Committing re-reads the file and re-checks
         every row against the suppression list, so anyone who opted out between
         the two is still excluded.
-      </p>
+      </PageHeader>
 
       <div className="card">
         {/* The drop target is a label wrapping the real input, so clicking it opens the picker
@@ -2493,11 +2489,10 @@ function CampaignScreen({
 
   return (
     <>
-      <h1 className="page-title">{campaign.name}</h1>
-      <p className="page-note">
+      <PageHeader title={<>{campaign.name}</>}>
         What this campaign is, who it comes from, and whether it is allowed to
         send.
-      </p>
+      </PageHeader>
 
       {/* Every reason an approved draft would sit still, computed by the API from the same
           models the send loop validates with. These used to be two hand-written banners here
@@ -3221,13 +3216,12 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
 
   return (
     <>
-      <h1 className="page-title">New campaign</h1>
-      <p className="page-note">
+      <PageHeader title={<>New campaign</>}>
         A campaign carries the sender persona, the goal and how its emails get
         written, so one tool serves more than one job. The persona is the list
         of claims a draft may make about us — it is validated now rather than at
         drafting time, because a malformed one quietly produces weaker drafts.
-      </p>
+      </PageHeader>
 
       <form className="card" onSubmit={submit}>
         <Field
@@ -4093,13 +4087,12 @@ function Settings({ campaign, onError, onToast, onChanged }) {
 
   return (
     <>
-      <h1 className="page-title">Settings</h1>
-      <p className="page-note">
+      <PageHeader title={<>Settings</>}>
         Sending rules are per campaign, so choosing a different one in the bar
         above changes what is edited here. Only an owner or admin can open this
         screen, and the API checks the role as well — a hidden button is not a
         permission.
-      </p>
+      </PageHeader>
 
       <h2 className="section-title">Sending</h2>
       <p className="muted">

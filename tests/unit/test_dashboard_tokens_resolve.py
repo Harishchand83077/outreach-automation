@@ -178,3 +178,25 @@ def test_the_unset_theme_is_not_a_mixture_of_both() -> None:
         "visitor on a light system sees the dark value for them mixed with light surfaces:\n  "
         + "\n  ".join(missing)
     )
+
+
+def test_no_class_is_styled_by_two_stylesheets() -> None:
+    """One owner per class, which is `chrome.css`'s whole reason for existing as a third file.
+
+    **Written after breaking it**: `.page-title` was defined in `app.css` and again in
+    `chrome.css`, so which rule won depended on import order -- a cascade somebody has to hold
+    in their head, and the thing that file's own header says it does not do. Two files styling
+    one class is not always wrong, but it is never something to discover.
+    """
+    def classes(name: str) -> set[str]:
+        css = _read(name)
+        # Top-level class selectors only: a line that starts a rule with `.name`. Nested and
+        # compound selectors (`.card h3`, `.badge[data-tone]`) are deliberately not counted,
+        # because extending another file's class with a qualifier is the normal way to do it.
+        return set(re.findall(r"^\.([a-z][a-z0-9-]*)\s*\{", css, re.MULTILINE))
+
+    shared = sorted(classes("app.css") & classes("chrome.css"))
+    assert shared == [], (
+        "defined at the top level of both app.css and chrome.css, so which one wins depends on "
+        f"import order: {shared}"
+    )

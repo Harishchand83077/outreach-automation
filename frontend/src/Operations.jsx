@@ -19,7 +19,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { getJson, postJson } from "./api";
 import { useLoad } from "./useLoad";
-import { Empty, Icons, SkeletonList } from "./ui";
+import { Empty, Icons, PageHeader, SkeletonList } from "./ui";
 
 function Loading({ failed, data, what }) {
   if (failed) return <p className="muted">Could not load {what}.</p>;
@@ -65,13 +65,12 @@ export default function Operations({ onError, onToast }) {
 
   return (
     <>
-      <h1 className="page-title">Operations</h1>
-      <p className="page-note">
+      <PageHeader title={<>Operations</>}>
         Whether the worker is alive, what it has complained about, and what it
         gave up on. Point an external monitor at <code>/ready</code> rather than
         at this screen — <code>/health</code> answers from the API&apos;s own
         memory and cannot see another process.
-      </p>
+      </PageHeader>
 
       <section className="card">
         <h2>Worker</h2>

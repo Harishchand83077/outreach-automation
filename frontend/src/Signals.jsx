@@ -13,7 +13,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { deleteJson, getJson, postJson } from "./api";
 import { useLoad } from "./useLoad";
-import { Drawer, Empty, Icons, SkeletonList } from "./ui";
+import { Drawer, Empty, Icons, PageHeader, SkeletonList } from "./ui";
 
 function Field({ label, hint, children }) {
   return (
@@ -81,13 +81,12 @@ export default function Signals({ onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <h1 className="page-title">Signals</h1>
-      <p className="page-note">
+      <PageHeader title={<>Signals</>}>
         Companies you watch, and what has happened at them. A new job posting is
         a reason to write to a company today —{" "}
         <strong>nothing here drafts or sends anything</strong>, and no signal
         ever creates a lead.
-      </p>
+      </PageHeader>
 
       <section className="card">
         <h2>
