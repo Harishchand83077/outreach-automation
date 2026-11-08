@@ -65,7 +65,7 @@ export default function Operations({ onError, onToast }) {
 
   return (
     <>
-      <PageHeader title={<>Operations</>}>
+      <PageHeader icon={Icons.pulse} eyebrow="Controls" title={<>Operations</>}>
         Whether the worker is alive, what it has complained about, and what it
         gave up on. Point an external monitor at <code>/ready</code> rather than
         at this screen — <code>/health</code> answers from the API&apos;s own

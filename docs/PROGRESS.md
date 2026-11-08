@@ -3410,6 +3410,31 @@ rail, the overview and the landing page.
 
 1,399 unit tests, 5 of them the new token guard, ruff and mypy strict clean, no migration.
 
+**Every screen now says which section it is in, and two surfaces stopped reading as unfinished
+(slice S17.2).** The second half of the UI work, after ADR-057's frame.
+
+**Twelve screens each rendered their own header** -- an `<h1 className="page-title">` and usually
+a `<p className="page-note">` -- and they had drifted: some had the paragraph, some did not, none
+said which section you were in, and the actions sat wherever each screen happened to put them.
+**That is the difference between a set of screens and a product**: not any one of them being
+wrong, but no two agreeing on where the title goes. They share `PageHeader` now, each with the
+eyebrow naming its section and the same icon the rail uses for it -- which matters because
+several titles are one word and one of them is whatever the operator called their campaign.
+
+**And a self-inflicted one, fixed with a guard.** `.page-title` ended up defined in **both**
+`app.css` and `chrome.css` -- the exact ambiguity `chrome.css`'s own header says that file exists
+to avoid -- so which rule won depended on import order. `test_dashboard_tokens_resolve.py` now
+fails if any class is defined at the top level of both files.
+
+**Two small things that were quietly costing the most.** The empty-state icon was grey on grey,
+which reads as a hole in the page rather than a place where something will appear -- and on a
+first-run workspace an empty state is most of what somebody sees. And the review queue's progress
+bar now carries the brand gradient: it is the bar a reviewer watches fill while working through a
+queue, it is a progress indicator rather than a status, so it has no semantic colour to lose.
+
+Verified in a browser, both themes. Six tests in the token guard, all four dashboard guards pass,
+no migration.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

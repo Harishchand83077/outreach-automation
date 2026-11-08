@@ -890,7 +890,11 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
 
   return (
     <>
-      <PageHeader title={<>Review queue</>}>
+      <PageHeader
+        icon={Icons.review}
+        eyebrow="Workspace"
+        title={<>Review queue</>}
+      >
         Nothing is sent without a decision here. Approving makes a lead
         eligible; the send loop re-checks the suppression list, the window and
         today&apos;s cap before anything leaves.
@@ -1241,7 +1245,7 @@ function Leads({ campaignId, openLeadId = null, onError, onToast }) {
 
   return (
     <>
-      <PageHeader title={<>Leads</>}>
+      <PageHeader icon={Icons.leads} eyebrow="Workspace" title={<>Leads</>}>
         Email is unique, so it is a search box. Name, company and state are
         filters, and they combine — all of them have to match. Bodies are not
         searched: a search box over drafts and replies would be an export of
@@ -1807,7 +1811,11 @@ function Import({ campaignId, onError, onToast }) {
 
   return (
     <>
-      <PageHeader title={<>Import leads</>}>
+      <PageHeader
+        icon={Icons.import}
+        eyebrow="Workspace"
+        title={<>Import leads</>}
+      >
         The preview writes nothing. Committing re-reads the file and re-checks
         every row against the suppression list, so anyone who opted out between
         the two is still excluded.
@@ -2489,7 +2497,11 @@ function CampaignScreen({
 
   return (
     <>
-      <PageHeader title={<>{campaign.name}</>}>
+      <PageHeader
+        icon={Icons.campaign}
+        eyebrow="Outreach"
+        title={<>{campaign.name}</>}
+      >
         What this campaign is, who it comes from, and whether it is allowed to
         send.
       </PageHeader>
@@ -3216,7 +3228,11 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
 
   return (
     <>
-      <PageHeader title={<>New campaign</>}>
+      <PageHeader
+        icon={Icons.plus}
+        eyebrow="Outreach"
+        title={<>New campaign</>}
+      >
         A campaign carries the sender persona, the goal and how its emails get
         written, so one tool serves more than one job. The persona is the list
         of claims a draft may make about us — it is validated now rather than at
@@ -4087,7 +4103,11 @@ function Settings({ campaign, onError, onToast, onChanged }) {
 
   return (
     <>
-      <PageHeader title={<>Settings</>}>
+      <PageHeader
+        icon={Icons.settings}
+        eyebrow="Controls"
+        title={<>Settings</>}
+      >
         Sending rules are per campaign, so choosing a different one in the bar
         above changes what is edited here. Only an owner or admin can open this
         screen, and the API checks the role as well — a hidden button is not a

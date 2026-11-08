@@ -81,7 +81,7 @@ export default function Signals({ onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <PageHeader title={<>Signals</>}>
+      <PageHeader icon={Icons.signal} eyebrow="Outreach" title={<>Signals</>}>
         Companies you watch, and what has happened at them. A new job posting is
         a reason to write to a company today —{" "}
         <strong>nothing here drafts or sends anything</strong>, and no signal
