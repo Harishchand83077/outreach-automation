@@ -43,11 +43,13 @@ from app.db import attachments as attachment_store
 from app.db import outbox
 from app.db.models import (
     MAX_MAILBOX_WEIGHT,
+    MIN_EXPLORATION_SHARE,
     MIN_MAILBOX_WEIGHT,
     Campaign,
     CampaignMailbox,
     Draft,
     Event,
+    Experiment,
     Lead,
     Mailbox,
     MailCredential,
@@ -61,11 +63,17 @@ from app.domain.attachment import MAX_BYTES, AttachmentRejected
 from app.domain.attachment import check as check_attachment
 from app.domain.campaign import CampaignSettings
 from app.domain.campaign_schedule import schedule_note, scheduled_status
+from app.domain.experiment import (
+    EXPLORATION_SHARE,
+    ExperimentSpec,
+    effective_share,
+)
 from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
 from app.services.brief import build as brief_build
 from app.services.brief import phrase as brief_phrase
+from app.services.experiments import store as experiments
 from app.services.llm.router import build_router
 from app.services.llm.usage import DbUsageStore
 from app.services.mail.connection import unavailable_reason
@@ -1789,3 +1797,182 @@ async def phrase_brief(
     llm = build_router(settings, DbUsageStore(session, user.org_id))
     reworded, refusals = await brief_phrase.phrase(llm, built)
     return {**brief_build.as_dict(reworded), "refusals": refusals}
+
+
+# ------------------------------------------------------------------ experiments (F13, ADR-053)
+
+
+@router.get("/campaigns/{campaign_id}/experiment")
+async def get_experiment(
+    campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """The active experiment on a campaign, with each arm's *effective* share.
+
+    Effective rather than the weight an operator typed, because the two are not the same number
+    once the exploration floor is applied, and being surprised by that is how somebody concludes
+    the allocator is broken.
+    """
+    campaign = await _campaign_or_404(session, user, campaign_id)
+    experiment = await experiments.active_for(session, user.ctx, campaign_id=campaign.id)
+    if experiment is None:
+        return {
+            "experiment": None,
+            "exploration_floor": MIN_EXPLORATION_SHARE,
+            "note": (
+                "No experiment is running, so every message goes out with no arm recorded. "
+                "That is the ordinary state: an experiment is worth starting when there is a "
+                "question you would change the email over."
+            ),
+        }
+
+    arms = experiments.arms_of(experiment)
+    return {
+        "experiment": {
+            "id": str(experiment.id),
+            "name": experiment.name,
+            "exploration_share": experiment.exploration_share,
+            "created_at": experiment.created_at.isoformat(),
+            "arms": [
+                {
+                    **arm.model_dump(),
+                    "effective_share": round(
+                        effective_share(
+                            arms, arm.variant, exploration_share=experiment.exploration_share
+                        ),
+                        4,
+                    ),
+                }
+                for arm in arms
+            ],
+        },
+        "exploration_floor": MIN_EXPLORATION_SHARE,
+        "note": (
+            "A lead is put in an arm when its first draft is written, and stays there for every "
+            "follow-up and reply. Changing the arms does not move a lead that already has one."
+        ),
+    }
+
+
+@router.put("/campaigns/{campaign_id}/experiment")
+async def start_experiment(
+    campaign_id: uuid.UUID,
+    payload: dict[str, Any],
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Start or replace the experiment on a campaign. `admin`, because it changes what is sent.
+
+    Replacing stops the previous one rather than editing it: the arms are what the labels on
+    already-sent messages *mean*, so editing them in place would retroactively change the
+    description of emails that have gone out.
+    """
+    campaign = await _campaign_or_404(session, user, campaign_id)
+    try:
+        spec = ExperimentSpec.model_validate(payload.get("experiment") or payload)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"errors": _field_errors(exc, fallback="experiment")},
+        ) from exc
+
+    # **`or` would swallow an explicit zero**, which is the one value that must be refused:
+    # `0 or EXPLORATION_SHARE` is the default, so asking for no exploration at all would be
+    # silently granted the floor and the request would look honoured. The identical defect as
+    # `daily_cap or 100` turning an explicit 0 into 100, recorded in Phase 8 and caught here by
+    # the test for the refusal rather than by somebody noticing an arm was never starved.
+    raw_share = payload.get("exploration_share")
+    share = EXPLORATION_SHARE if raw_share is None else float(raw_share)
+    if share < MIN_EXPLORATION_SHARE or share > 1:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"The exploration share must be between {MIN_EXPLORATION_SHARE} and 1. It is the "
+                "share of sends that ignores the weights, and a weighted allocator with nothing "
+                "held back can drive an arm to zero."
+            ),
+        )
+
+    previous = await experiments.active_for(session, user.ctx, campaign_id=campaign.id)
+    if previous is not None:
+        previous.active = False
+
+    record = Experiment(
+        org_id=user.org_id,
+        campaign_id=campaign.id,
+        name=spec.name,
+        arms=[arm.model_dump() for arm in spec.arms],
+        exploration_share=share,
+        active=True,
+    )
+    session.add(record)
+    await session.commit()
+
+    return {
+        "id": str(record.id),
+        "stopped": str(previous.id) if previous is not None else None,
+        "note": (
+            "Running. Leads drafted from now on are allocated; leads that already have an arm "
+            "keep it, including the ones in the experiment you just replaced."
+        ),
+    }
+
+
+@router.delete("/campaigns/{campaign_id}/experiment")
+async def stop_experiment(
+    campaign_id: uuid.UUID,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    session: SessionDep,
+) -> dict[str, Any]:
+    """Stop allocating. **The row and every assignment stay.**
+
+    `active = false` rather than a delete, because `leads.variant` and `messages.variant` keep
+    their labels and a funnel built next month has to know what those labels meant. Deleting the
+    arms would leave a column of letters nobody can interpret.
+    """
+    campaign = await _campaign_or_404(session, user, campaign_id)
+    experiment = await experiments.active_for(session, user.ctx, campaign_id=campaign.id)
+    if experiment is None:
+        return {"note": "No experiment was running."}
+
+    experiment.active = False
+    experiment.stopped_at = datetime.now(UTC)
+    await session.commit()
+    return {
+        "note": (
+            "Stopped. New leads are drafted with no arm; the leads already allocated keep "
+            "theirs, and the funnel still reads."
+        )
+    }
+
+
+@router.get("/campaigns/{campaign_id}/funnel")
+async def get_funnel(
+    campaign_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    by: str = "variant",
+) -> dict[str, Any]:
+    """Outcomes per arm, per weekday, per hour or per warm-up day.
+
+    Counted from `messages` and `lead_outcomes`, never from a counter: a counter incremented at
+    send time drifts, and a crash between the send and the increment leaves it wrong for ever
+    with nothing to notice. Leads still inside their wait window are **pending**, never a
+    failure -- ADR-026's whole design rests on that, and a rate that counted them would make
+    every arm look worse the sooner somebody looked.
+    """
+    await _campaign_or_404(session, user, campaign_id)
+    try:
+        return await experiments.funnel(session, user.ctx, campaign_id=campaign_id, by=by)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+async def _campaign_or_404(
+    session: AsyncSession, user: CurrentUser, campaign_id: uuid.UUID
+) -> Campaign:
+    campaign = await session.get(Campaign, campaign_id)
+    if campaign is None or campaign.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found.")
+    return campaign

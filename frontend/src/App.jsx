@@ -1875,6 +1875,227 @@ const CHECK_LABELS = {
   test_message: "Test email",
 };
 
+/* ------------------------------------------------------- the experiment (F13, ADR-053)
+
+   Two things on one panel, because they are one question: which arms are running, and what has
+   come back from each.
+
+   **"Pending" is a column, not a rounding error.** Most cold email gets no reply, and a lead
+   still inside its wait window has not produced a result yet. Counting those as failures would
+   make every arm look worse the sooner somebody looked, which is the one way a funnel actively
+   misleads. So rates are over settled leads and the screen says so.
+
+   The **effective** share is shown rather than the weight the operator typed, because the
+   exploration floor means the two are different numbers and being surprised by that is how
+   somebody concludes the allocator is broken. */
+
+function ExperimentPanel({ campaignId, mayAdminister, onError, onToast }) {
+  const [state, setState] = useState(null);
+  const [funnel, setFunnel] = useState(null);
+  const [by, setBy] = useState("variant");
+  const [busy, setBusy] = useState(false);
+  const [name, setName] = useState("");
+  const [arms, setArms] = useState("a\nb");
+
+  const load = useCallback(() => {
+    getJson(`/campaigns/${campaignId}/experiment`)
+      .then(setState)
+      .catch(onError);
+    getJson(`/campaigns/${campaignId}/funnel?by=${by}`)
+      .then(setFunnel)
+      .catch(onError);
+  }, [campaignId, by, onError]);
+
+  useEffect(load, [load]);
+
+  const start = (event) => {
+    event.preventDefault();
+    const parsed = arms
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [variant, ...rest] = line.split("|");
+        return {
+          variant: variant.trim(),
+          weight: 1,
+          instruction: rest.join("|").trim(),
+        };
+      });
+    setBusy(true);
+    putJson(`/campaigns/${campaignId}/experiment`, {
+      json: { experiment: { name, arms: parsed } },
+    })
+      .then((body) => {
+        onToast(body.note, "success");
+        setName("");
+        load();
+      })
+      .catch(onError)
+      .finally(() => setBusy(false));
+  };
+
+  const stop = () => {
+    setBusy(true);
+    deleteJson(`/campaigns/${campaignId}/experiment`)
+      .then((body) => {
+        onToast(body.note, "success");
+        load();
+      })
+      .catch(onError)
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <>
+      <h2 className="section-title">Experiment</h2>
+      {!state ? (
+        <SkeletonList count={1} rows={3} />
+      ) : state.experiment ? (
+        <div className="card">
+          <strong>{state.experiment.name}</strong>
+          <p className="hint">{state.note}</p>
+          <ul className="list">
+            {state.experiment.arms.map((arm) => (
+              <li key={arm.variant} className="list-row">
+                <div>
+                  <strong>Arm {arm.variant}</strong>{" "}
+                  <span className="badge">
+                    {Math.round(arm.effective_share * 100)}% of sends
+                  </span>
+                  <p className="hint">
+                    {arm.instruction ||
+                      "No style instruction: this arm is the control."}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="hint">
+            {Math.round(state.experiment.exploration_share * 100)}% of
+            assignments ignore the weights entirely. That floor is deliberate: a
+            weighted allocator with nothing held back can drive an arm to zero,
+            and that is exactly when it stops producing the result that would
+            change your mind.
+          </p>
+          {mayAdminister ? (
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn"
+                disabled={busy}
+                onClick={stop}
+              >
+                Stop allocating
+              </button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div className="card">
+          <p className="muted">{state.note}</p>
+          {mayAdminister ? (
+            <form onSubmit={start}>
+              <div className="field">
+                <label className="form-label">What are you testing?</label>
+                <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label className="form-label">Arms</label>
+                <textarea
+                  rows={4}
+                  value={arms}
+                  onChange={(event) => setArms(event.target.value)}
+                />
+                <p className="hint">
+                  One per line, as <code>label | how to write this one</code>.
+                  The instruction is a style request and cannot widen what may
+                  be said: the draft still goes through the same claim check, so
+                  an arm asking for a statistic the research does not support
+                  fails validation instead of sending one.
+                </p>
+              </div>
+              <button
+                type="submit"
+                className="btn"
+                data-variant="primary"
+                disabled={busy || !name.trim()}
+              >
+                Start the experiment
+              </button>
+            </form>
+          ) : null}
+        </div>
+      )}
+
+      <h2 className="section-title">Funnel</h2>
+      <div className="btn-row">
+        {(
+          funnel?.dimensions || ["variant", "weekday", "hour", "warmup_day"]
+        ).map((name_) => (
+          <button
+            key={name_}
+            type="button"
+            className="btn"
+            data-variant={by === name_ ? "primary" : undefined}
+            onClick={() => setBy(name_)}
+          >
+            by {name_.replace("_", " ")}
+          </button>
+        ))}
+      </div>
+      {!funnel ? (
+        <SkeletonList count={1} rows={3} />
+      ) : funnel.buckets.length === 0 ? (
+        <p className="muted">
+          Nothing has been sent yet, so there is nothing to compare.
+        </p>
+      ) : (
+        <>
+          <div className="table-wrap" style={{ marginTop: 12 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>{by.replace("_", " ")}</th>
+                  <th>Sent</th>
+                  <th>Settled</th>
+                  <th>Pending</th>
+                  <th>No reply</th>
+                  <th>Encouraging</th>
+                  <th>Rate</th>
+                </tr>
+              </thead>
+              <tbody>
+                {funnel.buckets.map((bucket) => (
+                  <tr key={bucket.key}>
+                    <td>{bucket.label}</td>
+                    <td>{bucket.sent}</td>
+                    <td className="muted">{bucket.settled}</td>
+                    {/* Shown as its own column rather than folded into a denominator: a
+                        pending lead is one we have not finished watching. */}
+                    <td className="muted">{bucket.pending}</td>
+                    <td className="muted">{bucket.censored}</td>
+                    <td>{bucket.encouraging}</td>
+                    <td>
+                      {bucket.encouraging_rate === null
+                        ? "-"
+                        : `${Math.round(bucket.encouraging_rate * 100)}%`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="hint">{funnel.note}</p>
+        </>
+      )}
+    </>
+  );
+}
+
 function CampaignScreen({
   campaign,
   mayAdminister,
@@ -2211,6 +2432,13 @@ function CampaignScreen({
           <ActivityChart series={activity?.series} loading={!activity} />
         </>
       ) : null}
+
+      <ExperimentPanel
+        campaignId={campaign.id}
+        mayAdminister={mayAdminister}
+        onError={onError}
+        onToast={onToast}
+      />
 
       <h2 className="section-title">Outcomes</h2>
       <dl className="stat-grid">

@@ -119,12 +119,19 @@ def build_draft_prompt(
     their_subject: str | None = None,
     their_reply: str | None = None,
     reply_label: str | None = None,
+    arm_instruction: str | None = None,
 ) -> str:
     """Assemble the drafting prompt.
 
     This task carries the lead's name, so the router restricts it to `allow_pii=true`
     providers. Rejection feedback is appended verbatim, because a regeneration that is told
     "the body is 142 words, the limit is 120" can fix it, while one told "too long" guesses.
+
+    `arm_instruction` is the one thing an A/B arm may vary (F13, ADR-053). It is a request about
+    *how* to write, and it **cannot widen what may be said**: the draft it produces goes through
+    the same `validate_draft` and the same claim check as every other draft, so an arm asking
+    for a statistic the evidence does not support fails validation rather than sending one. That
+    is hard rule 6 holding whatever an operator types into an experiment form.
     """
     greeting_name = (lead_name or "").split()[0] if lead_name else ""
 
@@ -211,6 +218,16 @@ def build_draft_prompt(
             "listed in the evidence above. Anything that is not a proof point or a hook may "
             "not be stated at all.",
             f"Set the subject to exactly: {reply_subject(their_subject)}",
+        ]
+
+    if arm_instruction:
+        sections += [
+            "",
+            # Placed before the rejection feedback deliberately: a reviewer's specific objection
+            # about this text is the more recent and more concrete instruction, and it must be
+            # the last thing a model reads.
+            "HOW TO WRITE THIS ONE (a style request, not permission to say anything new):",
+            arm_instruction.strip(),
         ]
 
     if feedback:

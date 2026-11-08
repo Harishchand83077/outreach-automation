@@ -3991,3 +3991,113 @@ the one thing a brief is for.
 - **A confidence score per line.** ADR-051 rejected it for edges for the same reason: a line
   either has a source or does not.
 - **Phrasing on load.** A read that spends is the pattern this project refuses everywhere else.
+
+## ADR-053 — An arm is stored on the lead, and every arm has a floor under it
+
+**Date:** 2026-11-07
+**Status:** Accepted
+**Relates to:** F13, slice S15.4; supersedes the assignment half of ADR-026
+
+### Context
+
+`messages.variant` and `messages.warmup_day` have existed since ADR-026 and **nothing has ever
+written either of them**. `experiments` has existed just as long with no producer at all, so it
+holds no rows. The export script reads all three and has therefore been exporting NULLs. That is
+this project's signature shape once more — a correct table, a correct reader, and nothing in
+between — and it is the twelfth instance recorded here.
+
+### Decision
+
+**The arm is stored on the lead (`leads.variant`), written once when its first draft is written,
+and never recomputed.**
+
+**ADR-026 specified stickiness as a deterministic hash of (lead, experiment), and building it
+showed that cannot work.** A hash has to be taken modulo the number of arms, so adding a third
+arm to a running experiment moves most leads already in flight from one arm to the other —
+silently, retroactively, and after their first email has gone out. Every message already sent
+would then be attributed to an arm its draft did not come from, and the funnel would look fine.
+One stored fact beats a derivation that can change under rows that already exist. There is an
+integration test named after exactly that scenario.
+
+**Assignment happens at drafting time**, because that is the only moment the arm can still
+affect the email. Deciding it at send time would record a label on a draft the arm had no hand
+in. It is idempotent per lead, so a regeneration, a follow-up and a reply all get the same
+answer — an A first email followed by a B follow-up measures neither, and the recipient is the
+one person who can tell. The same reasoning as the sticky sending mailbox (ADR-044).
+
+**Allocation is random, not round-robin.** Round-robin looks fairer and correlates the arm with
+arrival order: a sheet sorted by company size, or an import done in two halves on two days, puts
+systematically different people in each arm, and the difference then shows up in the results as
+though the *email* caused it. The rule is in `app/domain/experiment.py` with an injected
+`Random`, so the distribution is asserted with a seed rather than hoped for.
+
+**A fixed exploration share is always held back, and it has a floor in the database.** Weights
+exist so an operator can send most of the volume through the arm they believe in. A weighted
+allocator with nothing held back can drive an arm to zero — and that is exactly when it stops
+producing the data that would show the belief was wrong. So `EXPLORATION_SHARE` of assignments
+ignore the weights and pick uniformly, which floors every arm at `share / len(arms)`, and
+`ck_experiments_exploration_floor` refuses a row below 0.1. A floor, not a correction: nothing
+here learns from outcomes, and F16 is the slice that would.
+
+**At most one active experiment per campaign**, by a partial unique index rather than by the
+route remembering. Two would both allocate, the second assignment would overwrite the first, and
+every message would carry whichever ran last.
+
+**An arm may vary exactly one thing: a style instruction handed to the drafter.** It cannot
+widen what may be said — the draft goes through the same `validate_draft` and the same claim
+check as every other draft, so an arm asking for a statistic the evidence does not support fails
+validation rather than sending one. That is hard rule 6 holding whatever an operator types into
+a form. The instruction is placed **before** the rejection feedback in the prompt, because a
+reviewer's objection about this specific text is more recent and more concrete and must be the
+last thing a model reads.
+
+**Stopping is `active = false`, never a delete.** The arms are what the labels on already-sent
+messages *mean*; deleting them would leave a column of letters nobody can interpret. Replacing
+an experiment stops the previous one for the same reason rather than editing its arms in place,
+which would retroactively change the description of emails that have gone out. `stopped_at` is
+recorded because messages sent afterwards carry no arm, and without the date that looks like an
+allocator that quietly broke.
+
+**The funnel counts from `messages` and `lead_outcomes`, and a lead still inside its wait window
+is `pending`.** ADR-026's whole design rests on that distinction: counting silence-so-far as a
+negative would make every arm look worse the sooner somebody looked, which is the one way a
+funnel actively misleads. `censored` is the leads watched to the end of their window, which is an
+absence rather than a rejection, and rates are over settled leads only. Counted rather than kept
+in a counter, because a counter incremented at send time drifts and a crash between the send and
+the increment leaves it wrong for ever with nothing to notice — the mailbox-health rollup's
+choice, for the same reason.
+
+**The outcome vocabulary is read from `Outcome`, never restated.** A bucket reports each
+outcome's own value plus `encouraging`, which is `Outcome.is_encouraging`. Writing those strings
+out is this project's most repeated defect: `direction == "outbound"` against a column holding
+`'out'`, `outcome != "ok"` where success is `"success"`, `reason="one-click unsubscribe"` against
+a four-value constraint.
+
+### Consequences
+
+- `messages.variant` and `messages.warmup_day` now have a producer, so the ADR-026 export stops
+  writing NULLs into its two most useful dimensions. `warmup_day_number` had been written for
+  that column and had no caller.
+- Every lead in the live database has `variant` NULL, which means "no experiment was running",
+  which is a perfectly sendable lead. Treating NULL as "not yet eligible" would have stopped an
+  in-flight campaign at deploy — the care ADR-044 took with `leads.mailbox_id`.
+- The *effective* share is what the screen reports, not the weight an operator typed. The two
+  differ once the floor applies, and being surprised by that is how somebody concludes the
+  allocator is broken.
+- Nothing here decides a winner. With one reply in thirty a difference worth acting on needs
+  roughly a thousand sends per arm (`DATASET_DESIGN.md`), so the screen reports and does not
+  recommend. F16 is where a recommendation would belong, and it is gated on that volume.
+
+### Rejected
+
+- **A deterministic hash for stickiness.** Adding an arm re-labels leads already in flight.
+- **A per-experiment exploration share with no floor.** The operator who sets it to zero is the
+  operator most sure of their preferred arm.
+- **Round-robin allocation.** Correlates the arm with arrival order, which is exactly the
+  confound an A/B test exists to remove.
+- **Deleting a stopped experiment.** The arms are what the stored labels mean.
+- **Letting an arm vary the persona, the cap or the window.** Those change who is emailed and
+  how much, so a difference in results would not be a difference in the email. An arm varies
+  wording and nothing else.
+- **Declaring a winner on the screen.** At this volume it would be noise with a confidence
+  interval nobody reads.
