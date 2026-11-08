@@ -743,3 +743,102 @@ async def sender_requirements(
         ),
         "one_click_configured": configured,
     }
+
+
+# ------------------------------------------------------- learning from edits (F16, ADR-059)
+
+
+@router.get("/admin/lessons")
+async def list_lessons(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """What reviewers keep changing, waiting for a decision. Reads only.
+
+    Free and non-networked: counting edits is arithmetic over drafts this workspace already
+    has, and no model is involved at any point on this path.
+    """
+    from app.db.models import DraftLesson
+    from app.services import learning
+
+    proposed = await learning.waiting(session, user.ctx)
+    approved = (
+        await session.scalars(
+            select(DraftLesson).where(
+                DraftLesson.org_id == user.org_id, DraftLesson.state == "approved"
+            )
+        )
+    ).all()
+
+    return {
+        "proposed": [_lesson(row) for row in proposed],
+        "approved": [_lesson(row) for row in approved],
+        "note": (
+            "Counted from drafts a reviewer edited rather than rejected. Nothing here changes "
+            "what gets written until you approve it, and an approved line is advice about how "
+            "to write -- every draft still has to resolve every claim it makes to evidence."
+        ),
+    }
+
+
+@router.post("/admin/lessons/recompute")
+async def recompute_lessons(
+    user: Annotated[CurrentUser, Depends(require_role("admin"))], session: SessionDep
+) -> dict[str, Any]:
+    """Look again at the edits. A press, because the answer only changes when drafts do."""
+    from app.services import learning
+
+    found = await learning.propose(session, user.ctx)
+    await session.commit()
+    return {
+        "proposed": [_lesson(row) for row in found],
+        "note": (
+            f"{len(found)} waiting. A pattern has to appear on at least three separate drafts "
+            "before it is proposed: once is a Tuesday."
+        ),
+    }
+
+
+@router.post("/admin/lessons/{lesson_id}")
+async def decide_lesson(
+    lesson_id: uuid.UUID,
+    user: Annotated[CurrentUser, Depends(require_role("admin"))],
+    session: SessionDep,
+    approve: Annotated[bool, Body(embed=True)],
+) -> dict[str, Any]:
+    """Approve a lesson into the drafting prompt, or dismiss it for good.
+
+    **A dismissed lesson is never proposed again.** Somebody looked and said no, and asking
+    every week would train them to stop reading.
+    """
+    from app.services import learning
+
+    row = await learning.decide(
+        session,
+        user.ctx,
+        lesson_id=lesson_id,
+        approve=approve,
+        decided_by=user.email or user.user_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No such lesson.")
+    await session.commit()
+    return {
+        "state": row.state,
+        "note": (
+            "Approved. New drafts are written with this in mind; it cannot let a draft assert "
+            "anything new, because every claim still has to resolve to evidence."
+            if approve
+            else "Dismissed, and it will not be proposed again."
+        ),
+    }
+
+
+def _lesson(row: Any) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "detail": row.detail,
+        "instruction": row.instruction,
+        "occurrences": row.occurrences,
+        # The drafts it was counted from, because a pattern without its evidence is an
+        # assertion -- and this one is about to become an instruction to a model.
+        "evidence": list(row.evidence or []),
+        "state": row.state,
+    }

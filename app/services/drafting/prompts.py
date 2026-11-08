@@ -120,6 +120,7 @@ def build_draft_prompt(
     their_reply: str | None = None,
     reply_label: str | None = None,
     arm_instruction: str | None = None,
+    lessons: list[str] | None = None,
 ) -> str:
     """Assemble the drafting prompt.
 
@@ -218,6 +219,17 @@ def build_draft_prompt(
             "listed in the evidence above. Anything that is not a proof point or a hook may "
             "not be stated at all.",
             f"Set the subject to exactly: {reply_subject(their_subject)}",
+        ]
+
+    if lessons:
+        sections += [
+            "",
+            # **Advice about how to write, never about what is true** (F16, ADR-059). These
+            # lines were approved by a person after being counted from drafts reviewers
+            # actually edited; the draft they produce still goes through the same claim check,
+            # so nothing here can widen what may be asserted.
+            "WHAT REVIEWERS HERE KEEP CHANGING (style, not facts):",
+            *[f"  - {line}" for line in lessons],
         ]
 
     if arm_instruction:

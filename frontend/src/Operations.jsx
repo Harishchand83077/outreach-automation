@@ -31,6 +31,8 @@ export default function Operations({ onError, onToast }) {
   const worker = useLoad("/admin/worker", onError);
   const alerts = useLoad("/admin/alerts", onError);
   const dead = useLoad("/admin/dead-jobs", onError);
+  const lessons = useLoad("/admin/lessons", onError);
+  const [busy, setBusy] = useState(false);
   const usage = useLoad("/admin/usage", onError);
 
   const unacked = (alerts.data?.alerts || []).filter((row) => !row.acked_at);
@@ -174,7 +176,103 @@ export default function Operations({ onError, onToast }) {
       </section>
 
       <section className="card">
-        <h2>Dead jobs</h2>
+        <h2>What reviewers keep changing</h2>
+        <p className="hint">{lessons.data?.note || ""}</p>
+        <Loading {...lessons} what="the lessons" />
+        {lessons.data ? (
+          lessons.data.proposed.length === 0 ? (
+            <Empty icon={Icons.sparkle} title="Nothing to decide">
+              A pattern has to appear on at least three separate drafts before
+              it is proposed. Once is a Tuesday.
+            </Empty>
+          ) : (
+            <ul className="list">
+              {lessons.data.proposed.map((row) => (
+                <li key={row.id} className="list-row">
+                  <div>
+                    <strong>{row.detail}</strong>{" "}
+                    <span className="pill" data-tone="brand">
+                      {row.occurrences} drafts
+                    </span>
+                    {/* The line it would add to the prompt, shown before it is approved rather
+                        than after: approving a summary of a change is not the same as
+                        approving the instruction the change becomes. */}
+                    <p className="hint">Would add: “{row.instruction}”</p>
+                  </div>
+                  <div className="btn-row">
+                    <button
+                      type="button"
+                      className="btn"
+                      data-variant="brand"
+                      disabled={busy}
+                      onClick={() => {
+                        setBusy(true);
+                        postJson(`/admin/lessons/${row.id}`, {
+                          json: { approve: true },
+                        })
+                          .then((body) => {
+                            onToast(body.note, "success");
+                            lessons.reload();
+                          })
+                          .catch(onError)
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      Approve
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => {
+                        setBusy(true);
+                        postJson(`/admin/lessons/${row.id}`, {
+                          json: { approve: false },
+                        })
+                          .then((body) => {
+                            onToast(body.note);
+                            lessons.reload();
+                          })
+                          .catch(onError)
+                          .finally(() => setBusy(false));
+                      }}
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : null}
+        <div className="btn-row">
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              postJson("/admin/lessons/recompute")
+                .then((body) => {
+                  onToast(body.note);
+                  lessons.reload();
+                })
+                .catch(onError)
+                .finally(() => setBusy(false));
+            }}
+          >
+            Look again at recent edits
+          </button>
+        </div>
+        {lessons.data?.approved?.length ? (
+          <p className="hint" style={{ marginTop: 12 }}>
+            <strong>{lessons.data.approved.length} in use.</strong> These are
+            advice about how to write; every draft still has to resolve every
+            claim it makes to evidence.
+          </p>
+        ) : null}
+
+        <h2 style={{ marginTop: 28 }}>Dead jobs</h2>
         <p className="hint">
           A job that used up its attempts. Requeueing resets them, because those
           retries were spent on a different version of the code — which is the

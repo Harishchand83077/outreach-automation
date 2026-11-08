@@ -173,9 +173,11 @@ a consent screen, mandatory S256 PKCE, a required and checked `resource`, exact 
 matching, and rotating refresh tokens whose reuse revokes the chain. An access token is a row in
 `api_tokens`, so the catalogue, the scopes and the membership check are untouched. Clients are
 registered by hand and belong to a workspace.
-S16.4 **F16 learning from edit diffs** — describe, then compare, then summarise recurring edits for
-a person to review before anything enters a prompt. Needs ~1,050 sends per arm (the doc's
-calculation), so not before real volume.
+S16.4 **Done** (ADR-059): describe (arithmetic, never a model -- a hallucinated observation
+would become a standing instruction), compare (per draft, three drafts minimum), summarise for a
+person. Nothing reaches a prompt until somebody approves it, and a dismissed lesson is never
+proposed again. The ~1,050 figure is the A/B significance number and a different question; this
+needs three edits, not statistical power.
 
 ---
 
