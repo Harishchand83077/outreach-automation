@@ -188,6 +188,7 @@ def test_no_class_is_styled_by_two_stylesheets() -> None:
     in their head, and the thing that file's own header says it does not do. Two files styling
     one class is not always wrong, but it is never something to discover.
     """
+
     def classes(name: str) -> set[str]:
         css = _read(name)
         # Top-level class selectors only: a line that starts a rule with `.name`. Nested and
