@@ -1241,6 +1241,25 @@ class WatchlistEntry(Base):
     campaign_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.campaigns.id", ondelete="SET NULL")
     )
+    #: A careers page to watch by its hash, for a company with no ATS feed (F22, ADR-054).
+    #: **On this row rather than in a table of its own**, because `signals.intake.record` takes
+    #: a watchlist entry: it is what carries the pause, the domain and the lead match, and a
+    #: second table would have needed its own copy of all three and produced two answers to
+    #: "which companies do we watch".
+    careers_url: Mapped[str | None] = mapped_column(String(2000))
+    #: SHA-256 of that page's visible text. **The hash and never the text**: storing the page
+    #: would make this a crawler with a cache -- somebody else's copy of their own site, in our
+    #: database, for every company any workspace watches -- and `PRIVACY.md` could no longer say
+    #: we keep no page text. NULL until the first successful fetch, which is why the first fetch
+    #: never reports a change: different from nothing is not a change.
+    page_hash: Mapped[str | None] = mapped_column(String(64))
+    page_length: Mapped[int | None] = mapped_column(Integer)
+    page_polled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    page_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Our own sentence about why this page is not being read -- set when the site's `robots.txt`
+    #: asks us not to. Stored rather than the row being deleted, so the screen says why nothing
+    #: arrives instead of showing a watch that silently never updates. Never a response body.
+    page_refused_reason: Mapped[str | None] = mapped_column(String(300))
     #: Stop producing signals without forgetting the company or its history.
     paused: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     #: When a signal was last recorded here, so a screen can tell "nothing has happened" from
@@ -1256,6 +1275,15 @@ class WatchlistEntry(Base):
         ),
         Index("ix_watchlist_org", "org_id"),
         Index("ix_watchlist_board", "org_id", "ats_source", "ats_slug"),
+        # **Declared here as well as in the migration**, which is the whole point: without the
+        # index in the model's metadata, autogenerate reads it as drift and writes a migration
+        # that DROPS it -- and this repository has had that happen once already (ADR-032).
+        # `tests/integration/test_migrations.py` is what caught it this time, in CI.
+        Index(
+            "ix_watchlist_page_due",
+            "page_polled_at",
+            postgresql_where=text("careers_url IS NOT NULL"),
+        ),
     )
 
 

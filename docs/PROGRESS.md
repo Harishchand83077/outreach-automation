@@ -3167,6 +3167,67 @@ this file already records from Phase 8.
 14 unit tests and 20 integration, ruff and mypy strict clean, migration applied and reversed
 against the development database.
 
+**The daily poll can now say a role was filled, and a company with no ATS can be watched at all
+(F22, ADR-054, slice S15.5). Phase 15 is complete.**
+
+**`job_posts.status` has said `open | archived` since the first migration and had never once
+held the second value.** The poll only ever added, so a posting that left a board sat there for
+ever and "did they fill that role?" had no answer. `close_missing` archives the open postings of
+one board that the current poll did not return.
+
+**The safety argument is entirely about where that is called from.** `fetch_board` raises on any
+failure long before, so the diff is never reached with an accidentally empty set -- which would
+archive a company's entire board on one bad afternoon and report it as every role being filled.
+The job-post intake has already paid for the neighbouring version of this: an unknown source with
+a plausible payload returned zero postings, indistinguishable from an empty board. A *genuinely*
+empty board is still an empty board, because a company that closed its last role is a real event
+and refusing to believe it would be second-guessing the only evidence we have. Archived rather
+than deleted, because `applications` may point at a posting somebody applied to. And a relisted
+role **reopens** rather than becoming a second posting, since the id is the board's own.
+
+**A careers page can be watched by its hash, and may only ever say that it changed.** Most
+companies this product cares about are on no ATS, so the poll had nothing to read for them. Fetch
+once a day, hash the visible text, record a signal when it moves.
+
+**It produces a signal and deliberately no graph edge**, which is ADR-051 earning its keep one
+slice later. "The text of this page is different today" is evidence that something happened and
+no evidence of what, so there is nothing to put in the provenance columns beyond a URL -- and an
+edge saying a company is hiring because their careers page changed is exactly the unsupported
+claim that table refuses to hold.
+
+**Scripts and styles are stripped before hashing**, because a build id or an analytics nonce
+changes on every deploy and hashing it would report a change every single day -- the same as
+reporting nothing, except somebody would act on the first few. **The hash and never the text**:
+storing the page would make this a crawler with a cache, somebody else's copy of their own site
+in our database for every company any workspace watches, and `PRIVACY.md` could no longer say we
+keep no page text. **The first fetch never reports a change**, because different from nothing is
+not a change.
+
+**`robots.txt` is the permission model, and a disallowed page is not requested at all** -- the
+test asserts the absence of the request rather than the presence of the refusal. A refusal is
+stored as a sentence on the row, so the screen says why nothing arrives instead of showing a
+watch that silently never updates; and it is a *different class* from a timeout, because
+collapsing the two is how a site that said no gets asked again every day and how one bad
+afternoon permanently stops a watch.
+
+**Which sources we may poll is now a recorded human judgement rather than a guess.**
+`watchlist.POLLABLE` was "every source except `pasted`" -- a guess about permission dressed as a
+fact, which would have admitted any source added later on nobody's authority. `terms.py` holds
+one entry per source saying what was read and when, **`UNKNOWN` is a refusal** (the opposite of
+the deliverability report, and deliberately: there a person decides, here the next step is a
+daily automated fetch for ever), and the check is made at the door *and* in the poll handler,
+because a row written by hand would otherwise be polled for ever. The basis for each source is
+shown on the screen, where the operator making that promise can read it.
+
+**And the page watch ended up on the watchlist row rather than in a table of its own**, found
+while wiring the producer: `signals.intake.record` takes a `WatchlistEntry`, because that is what
+carries the pause, the domain and the lead match. A second table would have needed its own copy
+of all three and produced two answers to "which companies do we watch" -- the signature defect,
+in the slice whose own ADR is about not holding one fact twice.
+
+18 unit tests and 6 integration, ruff and mypy strict clean, migration applied and reversed
+against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

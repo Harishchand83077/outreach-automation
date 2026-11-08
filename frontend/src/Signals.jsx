@@ -9,10 +9,10 @@
 // exception. Acting on one means opening the lead it matched, or looking a contact up on your
 // own provider key, which is a separate and explicit spend.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from "react";
 
-import { deleteJson, getJson, postJson } from './api'
-import { Drawer, Empty, Icons, SkeletonList } from './ui'
+import { deleteJson, getJson, postJson } from "./api";
+import { Drawer, Empty, Icons, SkeletonList } from "./ui";
 
 function Field({ label, hint, children }) {
   return (
@@ -21,134 +21,151 @@ function Field({ label, hint, children }) {
       {children}
       {hint ? <p className="hint">{hint}</p> : null}
     </div>
-  )
+  );
 }
 
 function useLoad(path, onError) {
-  const [data, setData] = useState(null)
-  const [failed, setFailed] = useState(false)
+  const [data, setData] = useState(null);
+  const [failed, setFailed] = useState(false);
 
   const load = useCallback(() => {
-    setFailed(false)
+    setFailed(false);
     getJson(path)
       .then(setData)
       .catch((err) => {
-        setFailed(true)
-        onError(err)
-      })
-  }, [path, onError])
+        setFailed(true);
+        onError(err);
+      });
+  }, [path, onError]);
 
-  useEffect(load, [load])
-  return { data, failed, reload: load }
+  useEffect(load, [load]);
+  return { data, failed, reload: load };
 }
 
 function Loading({ failed, data, what }) {
-  if (failed) return <p className="muted">Could not load {what}.</p>
-  if (!data) return <SkeletonList count={2} rows={2} />
-  return null
+  if (failed) return <p className="muted">Could not load {what}.</p>;
+  if (!data) return <SkeletonList count={2} rows={2} />;
+  return null;
 }
 
 export default function Signals({ onError, onToast, mayAdminister }) {
-  const watchlist = useLoad('/watchlist', onError)
-  const signals = useLoad('/signals?state=new', onError)
+  const watchlist = useLoad("/watchlist", onError);
+  const signals = useLoad("/signals?state=new", onError);
   // What we know about one company, fetched on a click rather than per row: the panel is for
   // reading one company carefully, and loading it for every watch would be a query each to
   // answer a question nobody asked yet.
-  const [known, setKnown] = useState(null)
-  const [domain, setDomain] = useState('')
-  const [label, setLabel] = useState('')
-  const [source, setSource] = useState('')
-  const [slug, setSlug] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [known, setKnown] = useState(null);
+  const [domain, setDomain] = useState("");
+  const [label, setLabel] = useState("");
+  const [source, setSource] = useState("");
+  const [slug, setSlug] = useState("");
+  const [careers, setCareers] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const sources = watchlist.data?.sources || []
+  const sources = watchlist.data?.sources || [];
 
   const watch = (event) => {
-    event.preventDefault()
-    setBusy(true)
-    postJson('/watchlist', {
+    event.preventDefault();
+    setBusy(true);
+    postJson("/watchlist", {
       json: {
         domain,
         label: label || null,
         ats_source: source || null,
         ats_slug: slug || null,
+        careers_url: careers || null,
       },
     })
       .then((body) => {
-        setDomain('')
-        setLabel('')
-        setSlug('')
-        onToast(body.note)
-        watchlist.reload()
+        setDomain("");
+        setLabel("");
+        setSlug("");
+        setCareers("");
+        onToast(body.note);
+        watchlist.reload();
       })
       .catch(onError)
-      .finally(() => setBusy(false))
-  }
+      .finally(() => setBusy(false));
+  };
 
   const move = (id, state) =>
     postJson(`/signals/${id}/state`, { json: { state } })
       .then(() => {
-        onToast(state === 'acted' ? 'Marked as acted on.' : 'Dismissed.')
-        signals.reload()
+        onToast(state === "acted" ? "Marked as acted on." : "Dismissed.");
+        signals.reload();
       })
-      .catch(onError)
+      .catch(onError);
 
   return (
     <>
       <h1 className="page-title">Signals</h1>
       <p className="page-note">
-        Companies you watch, and what has happened at them. A new job posting is a reason to write
-        to a company today — <strong>nothing here drafts or sends anything</strong>, and no signal
+        Companies you watch, and what has happened at them. A new job posting is
+        a reason to write to a company today —{" "}
+        <strong>nothing here drafts or sends anything</strong>, and no signal
         ever creates a lead.
       </p>
 
       <section className="card">
         <h2>
-          What has happened{' '}
+          What has happened{" "}
           {signals.data?.without_a_lead ? (
-            <span className="badge">{signals.data.without_a_lead} with nobody to write to</span>
+            <span className="badge">
+              {signals.data.without_a_lead} with nobody to write to
+            </span>
           ) : null}
         </h2>
         <Loading {...signals} what="your signals" />
         {signals.data ? (
           signals.data.signals.length === 0 ? (
             <Empty icon={Icons.inbox} title="Nothing yet">
-              Watch a company below. Its board is read once a day, and new roles appear here.
+              Watch a company below. Its board is read once a day, and new roles
+              appear here.
             </Empty>
           ) : (
             <ul className="list">
               {signals.data.signals.map((row) => (
                 <li key={row.id} className="list-row">
                   <div>
-                    <strong>{row.title}</strong> <span className="badge">{row.kind}</span>
+                    <strong>{row.title}</strong>{" "}
+                    <span className="badge">{row.kind}</span>
                     <span className="badge">{row.source}</span>
                     <div className="hint">
                       {row.domain}
                       {row.observed_at
                         ? ` — posted ${new Date(row.observed_at).toLocaleDateString()}`
-                        : ''}
+                        : ""}
                     </div>
                     {/* The distinction the screen exists to make: a company worth writing to
                         and somebody to write to are two different things. */}
                     <div className="hint">
                       {row.lead_name
                         ? `You already have a lead here: ${row.lead_name}`
-                        : 'No lead at this company yet — look a contact up on the Job hunt screen, which spends one of your own credits.'}
+                        : "No lead at this company yet — look a contact up on the Job hunt screen, which spends one of your own credits."}
                     </div>
                   </div>
                   <div className="btn-row">
                     {row.url ? (
-                      <a className="btn" href={row.url} target="_blank" rel="noreferrer">
+                      <a
+                        className="btn"
+                        href={row.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
                         Open
                       </a>
                     ) : null}
-                    <button type="button" className="btn" onClick={() => move(row.id, 'acted')}>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => move(row.id, "acted")}
+                    >
                       Acted on
                     </button>
                     <button
                       type="button"
                       className="btn"
-                      onClick={() => move(row.id, 'dismissed')}
+                      onClick={() => move(row.id, "dismissed")}
                     >
                       Dismiss
                     </button>
@@ -169,8 +186,8 @@ export default function Signals({ onError, onToast, mayAdminister }) {
           <p className="hint">{known.note}</p>
           {known.statements.length === 0 ? (
             <p className="muted">
-              Nothing recorded yet. A line appears here when a page we can point at says
-              something about them.
+              Nothing recorded yet. A line appears here when a page we can point
+              at says something about them.
             </p>
           ) : (
             <ul className="list">
@@ -181,17 +198,21 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                     <p className="hint">
                       {one.observed_at
                         ? `Seen ${new Date(one.observed_at).toLocaleDateString()} — `
-                        : ''}
+                        : ""}
                       {/* The source is shown with the line, never beside the set: a line whose
                           source you cannot open is a line you cannot repeat to a stranger. */}
                       {one.source_url ? (
-                        <a href={one.source_url} target="_blank" rel="noreferrer">
+                        <a
+                          href={one.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
                           source
                         </a>
                       ) : one.from_a_message ? (
-                        'from a message they sent you'
+                        "from a message they sent you"
                       ) : (
-                        'no source'
+                        "no source"
                       )}
                     </p>
                   </div>
@@ -204,12 +225,31 @@ export default function Signals({ onError, onToast, mayAdminister }) {
 
       <section className="card">
         <h2>Watched companies</h2>
-        <p className="hint">{watchlist.data?.note || ''}</p>
+        <p className="hint">{watchlist.data?.note || ""}</p>
+        <p className="hint">{watchlist.data?.page_note || ""}</p>
+        {/* Why each board may be polled, in the words of whoever read its terms. On the screen
+            because hard rule 8 is a promise to the provider, and the operator watching a board
+            is the person making it. */}
+        {watchlist.data?.source_terms ? (
+          <details className="evidence">
+            <summary>Which boards we poll, and on what basis</summary>
+            <div className="evidence-body">
+              {Object.entries(watchlist.data.source_terms).map(
+                ([name, basis]) => (
+                  <p key={name} className="hint">
+                    <strong>{name}</strong> &mdash; {basis}
+                  </p>
+                ),
+              )}
+            </div>
+          </details>
+        ) : null}
         <Loading {...watchlist} what="your watchlist" />
         {watchlist.data ? (
           watchlist.data.watchlist.length === 0 ? (
             <Empty icon={Icons.inbox} title="No companies watched">
-              Add one below with its careers board, and its new roles arrive by themselves.
+              Add one below with its careers board, and its new roles arrive by
+              themselves.
             </Empty>
           ) : (
             <ul className="list">
@@ -222,25 +262,48 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                       <span className="badge">
                         {row.ats_source}/{row.ats_slug}
                       </span>
+                    ) : row.careers_url ? (
+                      <span className="badge">careers page</span>
                     ) : (
                       <span className="badge">no board</span>
                     )}
                     <div className="hint">
                       {row.domain}
-                      {' — '}
+                      {" — "}
                       {row.last_signal_at
                         ? `last signal ${new Date(row.last_signal_at).toLocaleDateString()}`
-                        : row.ats_source
-                          ? 'nothing has arrived yet'
-                          : 'no board given, so nothing will arrive'}
+                        : row.ats_source || row.careers_url
+                          ? "nothing has arrived yet"
+                          : "no board or careers page given, so nothing will arrive"}
                     </div>
+                    {/* **Said rather than left to be inferred from silence.** A page we are
+                        not allowed to fetch looks exactly like a page that never changes, and
+                        the operator is the only one who can do anything about it -- by
+                        watching the company's board instead, or pasting a posting. */}
+                    {row.page_refused_reason ? (
+                      <div className="hint">
+                        <strong>This careers page is not being read.</strong>{" "}
+                        {row.page_refused_reason}
+                      </div>
+                    ) : row.careers_url ? (
+                      <div className="hint">
+                        {row.careers_url} &mdash;{" "}
+                        {row.page_changed_at
+                          ? `last changed ${new Date(row.page_changed_at).toLocaleDateString()}`
+                          : row.page_polled_at
+                            ? "read, and unchanged so far"
+                            : "not read yet"}
+                      </div>
+                    ) : null}
                   </div>
                   <div className="btn-row">
                     <button
                       type="button"
                       className="btn"
                       onClick={() =>
-                        getJson(`/graph?domain=${encodeURIComponent(row.domain)}`)
+                        getJson(
+                          `/graph?domain=${encodeURIComponent(row.domain)}`,
+                        )
                           .then(setKnown)
                           .catch(onError)
                       }
@@ -252,15 +315,19 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                         type="button"
                         className="btn"
                         onClick={() =>
-                          postJson(`/watchlist/${row.id}/pause`, { json: { paused: !row.paused } })
+                          postJson(`/watchlist/${row.id}/pause`, {
+                            json: { paused: !row.paused },
+                          })
                             .then(() => {
-                              onToast(row.paused ? 'Watching again.' : 'Paused.')
-                              watchlist.reload()
+                              onToast(
+                                row.paused ? "Watching again." : "Paused.",
+                              );
+                              watchlist.reload();
                             })
                             .catch(onError)
                         }
                       >
-                        {row.paused ? 'Resume' : 'Pause'}
+                        {row.paused ? "Resume" : "Pause"}
                       </button>
                     ) : null}
                     {mayAdminister ? (
@@ -270,8 +337,8 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                         onClick={() =>
                           deleteJson(`/watchlist/${row.id}`)
                             .then((body) => {
-                              onToast(body.note)
-                              watchlist.reload()
+                              onToast(body.note);
+                              watchlist.reload();
                             })
                             .catch(onError)
                         }
@@ -298,14 +365,23 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                 placeholder="acme.example"
               />
             </Field>
-            <Field label="Name" hint="Optional. A domain is true and a poor label.">
-              <input value={label} onChange={(event) => setLabel(event.target.value)} />
+            <Field
+              label="Name"
+              hint="Optional. A domain is true and a poor label."
+            >
+              <input
+                value={label}
+                onChange={(event) => setLabel(event.target.value)}
+              />
             </Field>
             <Field
               label="Careers board"
               hint="Without one, nothing produces signals for this company yet."
             >
-              <select value={source} onChange={(event) => setSource(event.target.value)}>
+              <select
+                value={source}
+                onChange={(event) => setSource(event.target.value)}
+              >
                 <option value="">No board</option>
                 {sources.map((name) => (
                   <option key={name} value={name}>
@@ -319,9 +395,22 @@ export default function Signals({ onError, onToast, mayAdminister }) {
                 label="Slug on that board"
                 hint="The company's own name in the board URL — jobs.lever.co/acme is `acme`."
               >
-                <input value={slug} onChange={(event) => setSlug(event.target.value)} />
+                <input
+                  value={slug}
+                  onChange={(event) => setSlug(event.target.value)}
+                />
               </Field>
             ) : null}
+            <Field
+              label="Careers page"
+              hint="For a company with no board. We fetch it once a day and keep only a hash of its text, so we can tell you it changed and never what changed. If the site's robots.txt asks us not to, we do not."
+            >
+              <input
+                value={careers}
+                onChange={(event) => setCareers(event.target.value)}
+                placeholder="https://acme.example/careers"
+              />
+            </Field>
             <button
               type="submit"
               className="btn"
@@ -334,5 +423,5 @@ export default function Signals({ onError, onToast, mayAdminister }) {
         ) : null}
       </section>
     </>
-  )
+  );
 }

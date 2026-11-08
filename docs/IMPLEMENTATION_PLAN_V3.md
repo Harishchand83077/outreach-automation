@@ -149,8 +149,11 @@ that has a floor in the database, stored on the lead rather than hashed (a hash 
 in flight the moment an arm is added) and recorded on the message; funnel by variant, weekday,
 hour and warm-up day, with pending and censored as their own columns. `messages.variant` and
 `messages.warmup_day` had no producer at all until this slice.
-S15.5 **F22** daily poll with `external_id` diff and a page-hash fallback; per-source terms checked
-before a company joins the poll.
+S15.5 **F22** (ADR-054) daily poll with an `external_id` diff -- computed only from a poll that
+parsed, because a failed one would archive a whole board and report it as every role being filled
+-- and a careers-page hash fallback that may say a page changed and never what changed, which is
+why it writes a signal and no graph edge. Per-source terms are a recorded human judgement in
+`terms.py`, checked at the door and again in the handler; `UNKNOWN` is a refusal.
 
 ### P16 — connector and learning loop (F14 remainder, F16, F24)
 

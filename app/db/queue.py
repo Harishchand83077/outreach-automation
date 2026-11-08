@@ -43,6 +43,10 @@ class JobKind:
     #: Poll one public ATS board (F5). Its dedupe key is built from the board slug, which
     #: two workspaces can share -- which is why ADR-032 had to scope dedupe by org first.
     POLL_ATS_FEED = "poll_ats_feed"
+    #: Fetch one careers page and compare its hash (F22). Its own kind rather than a branch
+    #: inside the feed poll, because the two fail differently: a board answers JSON we parse,
+    #: and a page answers HTML we only hash, so a broken page must not look like a broken board.
+    POLL_CAREERS_PAGE = "poll_careers_page"
     #: Ask a model which confirmed facts belong in a resume for one posting (F20). Its own kind
     #: so a backlog of resumes cannot starve drafting, which is what actually sends email.
     TAILOR_RESUME = "tailor_resume"
