@@ -157,8 +157,11 @@ why it writes a signal and no graph edge. Per-source terms are a recorded human 
 
 ### P16 — connector and learning loop (F14 remainder, F16, F24)
 
-S16.1 New MCP **read** tools for the new tables (`list_job_posts`, `get_fit_score`,
-`get_entity_edges`, `list_signals`), same untrusted wrapper, same scope filtering.
+S16.1 **Done** (ADR-055): `list_job_posts`, `get_fit_score`, `get_entity_edges`,
+`list_signals`, same untrusted wrapper and scope filtering. Writing the fit-score tool found that
+`fit.score_fit` had **no caller at all**, so the slice also ships the press that produces one --
+computing calls a model and is a `POST`, reading is free, and there is deliberately no tool an
+agent could call to spend somebody's quota.
 S16.2 **F24 tick-box scopes (ADR-037)** — read, profile (minus excluded fields), research notes as
 proposals, propose drafts. Each scope is a CHECK migration plus a test that the served tool list
 matches the granted scopes. Half of the machinery exists already: `tools/list` is scope-filtered

@@ -2524,3 +2524,45 @@ class BookingEvent(Base):
         ),
         Index("ix_booking_events_org_received", "org_id", "received_at"),
     )
+
+
+class FitScoreRow(Base):
+    """One posting's fit score against the candidate's confirmed facts (F6, ADR-055).
+
+    **Stored so that reading one is free.** Computing a score calls a model to extract the
+    posting's requirements, so it happens on an explicit press; the screen and the MCP read tool
+    then read this row and cannot disagree about what the score is. A read path that called a
+    model would spend somebody's token budget on a page refresh, which is the pattern `GET
+    /mailboxes` and the contact lookup both refuse.
+
+    **One row per posting**, by a unique key. A second score for one posting is the same
+    question asked again, and two rows would let the screen and the tool show different answers
+    depending on which they read first.
+
+    `matched` holds the requirement, the fact id and the words that made it a match, because the
+    score is rules over an extraction and a number with nothing under it invites whoever reads
+    it to repeat it as a judgement.
+    """
+
+    __tablename__ = "fit_scores"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    job_post_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="CASCADE"), nullable=False
+    )
+    score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    #: `[{"requirement": ..., "fact_id": "pp2", "shared": [...]}]`.
+    matched: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    missing: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    #: What the extractor read out of the posting, kept so a wrong score can be traced to a
+    #: wrong requirement list rather than to the comparison.
+    requirements: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    computed_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_post_id", name="uq_fit_scores_org_post"),
+        CheckConstraint("score >= 0 AND score <= 1", name="ck_fit_scores_range"),
+    )

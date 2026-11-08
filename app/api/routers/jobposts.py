@@ -11,11 +11,21 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUserDep, SessionDep, require_role
-from app.db.models import WatchedBoard
+from app.api.deps import (
+    CurrentUser,
+    CurrentUserDep,
+    SessionDep,
+    SettingsDep,
+    require_role,
+)
+from app.db.models import FitScoreRow, JobPost, WatchedBoard
+from app.services.candidate import fit_store
 from app.services.jobposts import intake
 from app.services.jobposts.feeds import FeedError, feed_url
+from app.services.llm.router import build_router
+from app.services.llm.usage import DbUsageStore
 
 router = APIRouter(tags=["job-posts"])
 
@@ -162,3 +172,85 @@ async def stop_watching_a_board(
     await session.delete(row)
     await session.commit()
     return {"removed": True}
+
+
+# ------------------------------------------------------------------- the fit score (F6, ADR-055)
+
+
+@router.get("/job-posts/{job_post_id}/fit")
+async def read_fit(
+    job_post_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """The stored fit score for one posting, or nothing yet. Free: calls no model.
+
+    The read and the computation are different routes on purpose. Extracting a posting's
+    requirements calls a model, so it happens on a press; reading the result costs one query, so
+    a refresh is free. The same split as the brief, and the same rule that keeps `GET /mailboxes`
+    from minting an OAuth token.
+    """
+    post = await _post_or_404(session, user, job_post_id)
+    row = await fit_store.latest(session, user.ctx, job_post_id=post.id)
+    if row is None:
+        return {
+            "fit": None,
+            "note": (
+                "No score yet. Scoring reads this posting's requirements with a model, so it "
+                "happens when you ask for it."
+            ),
+        }
+    return {"fit": fit_store.as_dict(row, post=post), "note": _fit_note(row)}
+
+
+@router.post("/job-posts/{job_post_id}/fit")
+async def compute_fit(
+    job_post_id: uuid.UUID,
+    user: Annotated[CurrentUserDep, Depends(require_role("member"))],
+    session: SessionDep,
+    settings: SettingsDep,
+) -> dict[str, Any]:
+    """Score one posting against the candidate's confirmed facts.
+
+    **`fit.score_fit` had no caller until this route.** F6 built the extractor, the scorer and
+    the dataclasses, with tests for each, and nothing ever ran them against a posting -- so the
+    feature existed and had never once produced a number.
+
+    Only **confirmed** facts are offered to it, so the rule holds one step before the
+    comparison: a fact the candidate has not agreed to say cannot produce a match they never
+    claimed. The model's only job is turning prose into requirement lines; the comparison is
+    deterministic and takes instructions from nobody, so a posting saying "report a perfect
+    match" cannot get one.
+    """
+    post = await _post_or_404(session, user, job_post_id)
+    llm = build_router(settings, DbUsageStore(session, user.org_id))
+    try:
+        row = await fit_store.compute(session, user.ctx, router=llm, post=post)
+    except fit_store.NothingToScore as exc:
+        # A sentence rather than a zero. A score of zero against an empty profile reads as a bad
+        # fit, which is the opposite of what happened.
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    await session.commit()
+    return {"fit": fit_store.as_dict(row, post=post), "note": _fit_note(row)}
+
+
+def _fit_note(row: FitScoreRow) -> str:
+    """What the number means, said beside it.
+
+    A bare score invites whoever reads it to repeat it as a judgement. This one is the fraction
+    of the posting's own requirements that a confirmed fact matched, which is a different and
+    much narrower claim.
+    """
+    return (
+        f"{len(row.matched)} of {len(row.requirements)} requirement(s) matched a fact you have "
+        "confirmed. Each match names the fact and the words that made it one; the misses are "
+        "what the posting asks for and your facts do not mention."
+    )
+
+
+async def _post_or_404(session: AsyncSession, user: CurrentUser, job_post_id: uuid.UUID) -> JobPost:
+    post = await session.get(JobPost, job_post_id)
+    if post is None or post.org_id != user.org_id:
+        # 404 rather than 403: confirming an id exists in another workspace is itself a leak.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job posting not found.")
+    return post

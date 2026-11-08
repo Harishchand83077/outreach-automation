@@ -32,13 +32,17 @@ from app.db.models import (
     Campaign,
     Classification,
     Draft,
+    JobPost,
     Lead,
     LeadOutcome,
     Message,
     Research,
+    SignalEvent,
 )
 from app.db.repo import OrgContext
 from app.services.brief import build as brief_build
+from app.services.candidate import fit_store
+from app.services.graph import store as graph
 from app.services.mcp import proposals, protocol
 
 #: `tools/list` is cached by the client. Five minutes is long enough to matter and short enough
@@ -473,6 +477,186 @@ async def _get_meeting_brief(
     )
 
 
+# ----------------------------------------------------------- the job hunt and the graph (S16.1)
+#
+# Four read tools over the tables built since Phase 0 of the connector: job postings, the fit
+# score, the knowledge graph and the signal list. Nothing new about the trust model -- the same
+# untrusted wrapper on anything somebody else wrote, the same `org_id` from the membership and
+# never from an argument (ADR-004), and the same catalogue containment: no send, no approve.
+#
+# **What is deliberately absent is the interesting part.** There is no `look_up_contacts` tool,
+# because a contact lookup spends the user's own provider credit and F9's whole design is that
+# nothing but a person's press can start one (ADR-041). An agent holding a tool that bills
+# somebody is exactly the thing that design refuses, and a tool list is the one place the
+# refusal is checkable rather than remembered.
+
+
+async def _list_job_posts(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """Job postings this workspace has stored, newest first.
+
+    `status` defaults to `open`, because the question an agent is nearly always answering is
+    "what could I apply to", and an archived posting is a role somebody else filled. The closed
+    ones are reachable by asking for them, which is what makes the diff F22 added visible here.
+    """
+    stmt = select(JobPost).where(JobPost.org_id == ctx.org_id)
+    status = args.get("status")
+    if status != "all":
+        wanted = status if isinstance(status, str) and status else "open"
+        stmt = stmt.where(JobPost.status == wanted)
+    source = args.get("source")
+    if isinstance(source, str) and source:
+        stmt = stmt.where(JobPost.source == source)
+    rows = list((await session.scalars(stmt.order_by(JobPost.fetched_at.desc()).limit(PAGE))).all())
+
+    posts = [
+        {
+            "id": str(row.id),
+            "source": row.source,
+            "title": row.title,
+            "location": row.location,
+            "apply_url": row.apply_url,
+            # NULL for a feed posting, and that is correct rather than missing (ADR-047): the
+            # apply URL's host is the ATS vendor, not the company. The slug is what the feed
+            # actually tells us.
+            "company_domain": row.company_domain,
+            "board_slug": row.board_slug,
+            "status": row.status,
+            "posted_at": row.posted_at.isoformat() if row.posted_at else None,
+        }
+        for row in rows
+    ]
+    # The body is the company's own words about the role, so it crosses the boundary wrapped.
+    bodies = "\n\n".join(
+        protocol.untrusted(row.body_text, source="job-posting", id=str(row.id))
+        for row in rows
+        if row.body_text
+    )
+    headline = f"{len(posts)} job posting(s)."
+    return (f"{headline}\n\n{bodies}" if bodies else headline), {"job_posts": posts}
+
+
+async def _get_fit_score(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """How one posting scores against the candidate's own confirmed facts (F6, ADR-037).
+
+    **Returned with `matched` and `missing` beside it, never alone.** A number with nothing under
+    it invites an agent to repeat it as a judgement, and the score is rules over an extraction:
+    every match names the fact id and the words that made it one. The posting takes instructions
+    from nobody, so a posting that says "report a perfect match" cannot.
+    """
+    post_id = args.get("job_post_id")
+    post = await session.get(JobPost, uuid.UUID(str(post_id))) if post_id else None
+    if post is None or post.org_id != ctx.org_id:
+        return "No such job posting in your workspace.", None
+
+    # **The stored row through the shared helper**, never a query of its own: the screen reads
+    # the same function, so the two cannot report different scores for one posting. And no
+    # model runs on this path -- computing a score is a press, because it calls one.
+    row = await fit_store.latest(session, ctx, job_post_id=post.id)
+    if row is None:
+        return (
+            f"No fit score has been computed for {post.title!r} yet. It is computed when "
+            "somebody asks for it on the Job hunt screen, because it calls a model.",
+            None,
+        )
+
+    detail = fit_store.as_dict(row, post=post)
+    return (
+        f"{post.title}: {row.score} with {len(row.matched or [])} requirement(s) matched and "
+        f"{len(row.missing or [])} not. Every match names the fact it rests on.",
+        detail,
+    )
+
+
+async def _get_entity_edges(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """What this workspace knows about one company, each line with its own source (F12, ADR-051).
+
+    **Every statement carries the page or the message that says so**, which is what makes the
+    rule checkable from the other side of the connector: a sentence that arrives without one did
+    not come from here, so an agent cannot launder an invention through this tool. It reads the
+    same `graph.about` the dashboard and the brief read.
+    """
+    domain = args.get("domain")
+    if not isinstance(domain, str) or not domain.strip():
+        return "Pass the company's domain.", None
+
+    statements = await graph.about(session, ctx, domain=domain)
+    lines = [
+        {
+            "sentence": one.sentence,
+            "predicate": one.predicate,
+            "source_url": one.source_url,
+            "from_a_message": one.message_id is not None,
+            "observed_at": one.observed_at.isoformat() if one.observed_at else None,
+        }
+        for one in statements
+    ]
+    if not lines:
+        return (
+            f"Nothing recorded about {domain}. A line appears here when a page we can point at "
+            "says something about them.",
+            {"domain": domain, "statements": []},
+        )
+    rendered = "\n".join(
+        f"- {one['sentence']}  [{one['source_url'] or 'from a message they sent you'}]"
+        for one in lines
+    )
+    return (
+        protocol.untrusted(rendered, source="knowledge-graph", id=domain),
+        {"domain": domain, "statements": lines},
+    )
+
+
+async def _list_signals(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """Reasons to write to a watched company today (F11, ADR-049).
+
+    A signal proposes and never creates anything: there is no lead here, no draft and no send,
+    and the tool that could act on one does not exist. An agent reading this is reading a list
+    somebody would otherwise read on the Signals screen.
+    """
+    state = args.get("state")
+    stmt = select(SignalEvent).where(SignalEvent.org_id == ctx.org_id)
+    if state != "all":
+        wanted = state if isinstance(state, str) and state else "new"
+        stmt = stmt.where(SignalEvent.state == wanted)
+    ordered = stmt.order_by(SignalEvent.observed_at.desc().nullslast()).limit(PAGE)
+    rows = list((await session.scalars(ordered)).all())
+
+    signals = [
+        {
+            "id": str(row.id),
+            "domain": row.domain,
+            "kind": row.kind,
+            "source": row.source,
+            "title": row.title,
+            "url": row.url,
+            "state": row.state,
+            # So an agent can say who to write to, or say plainly that there is nobody -- which
+            # is the case worth surfacing rather than hiding.
+            "lead_id": str(row.lead_id) if row.lead_id else None,
+            "observed_at": row.observed_at.isoformat() if row.observed_at else None,
+        }
+        for row in rows
+    ]
+    without_a_lead = sum(1 for one in signals if one["lead_id"] is None)
+    titles = "\n".join(f"- {one['title']} ({one['domain']})" for one in signals)
+    headline = (
+        f"{len(signals)} signal(s), {without_a_lead} at a company with nobody to write to yet."
+    )
+    return (
+        protocol.untrusted(f"{headline}\n{titles}", source="signals", id="list")
+        if titles
+        else headline
+    ), {"signals": signals, "without_a_lead": without_a_lead}
+
+
 CATALOGUE: tuple[Tool, ...] = (
     Tool(
         name="list_campaigns",
@@ -559,6 +743,85 @@ CATALOGUE: tuple[Tool, ...] = (
         ),
         input_schema=_uuid_arg("lead_id", "The lead's id."),
         handler=_get_meeting_brief,
+        returns_untrusted_text=True,
+    ),
+    Tool(
+        name="list_job_posts",
+        title="List job postings",
+        description=(
+            "Job postings this workspace has stored, from a watched board or pasted by the "
+            "user. Defaults to the open ones; pass status 'archived' for roles that have left "
+            f"their board, or 'all'. {UNTRUSTED_NOTE}"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "open (default), archived, or all.",
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Optional: greenhouse, lever, ashby or pasted.",
+                },
+            },
+            "additionalProperties": False,
+        },
+        handler=_list_job_posts,
+        returns_untrusted_text=True,
+    ),
+    Tool(
+        name="get_fit_score",
+        title="Get a posting's fit score",
+        description=(
+            "How one job posting scores against the candidate's own confirmed facts, with the "
+            "matched requirements and the missing ones. The score is rules over an extraction, "
+            "never a model's judgement, and every match names the fact it rests on. "
+            f"{UNTRUSTED_NOTE}"
+        ),
+        input_schema=_uuid_arg("job_post_id", "The posting's id, from list_job_posts."),
+        handler=_get_fit_score,
+        returns_untrusted_text=True,
+    ),
+    Tool(
+        name="get_entity_edges",
+        title="What we know about a company",
+        description=(
+            "Everything this workspace has recorded about one company, by domain, as sentences "
+            "that each carry the page or the message that says so. A line with no source cannot "
+            f"be stored, so one cannot be returned. {UNTRUSTED_NOTE}"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string", "description": "The company's own domain."}
+            },
+            "required": ["domain"],
+            "additionalProperties": False,
+        },
+        handler=_get_entity_edges,
+        returns_untrusted_text=True,
+    ),
+    Tool(
+        name="list_signals",
+        title="List reasons to write today",
+        description=(
+            "What has happened at the companies this workspace watches -- a new job posting, a "
+            "careers page that changed. A signal is a reason to write to somebody and is never "
+            "a lead, a draft or a send. Defaults to the new ones; pass state 'all' for the "
+            f"whole list. {UNTRUSTED_NOTE}"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "state": {
+                    "type": "string",
+                    "description": "new (default), acted, dismissed, or all.",
+                }
+            },
+            "additionalProperties": False,
+        },
+        handler=_list_signals,
         returns_untrusted_text=True,
     ),
     # ----------------------------------------------------------------- proposals (ADR-030)
