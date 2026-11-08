@@ -1993,6 +1993,16 @@ class ApiToken(Base):
     #: is answering "is this still in use?" before revoking it, which needs the day not the second.
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The OAuth client this was issued to, or NULL for one an owner minted by hand (F14,
+    #: ADR-058). **An OAuth access token is a row in this table like any other**, which is the
+    #: whole design: the tool catalogue, the scope gate and the membership re-resolution are
+    #: untouched, and OAuth becomes a different way to *obtain* a credential rather than a
+    #: second kind of credential with its own rules to keep in step.
+    client_id: Mapped[str | None] = mapped_column(String(64))
+    #: RFC 8707: which API this token was minted for. NULL for a hand-minted token, which is
+    #: only ever presented here. Checked at `/mcp`, so a token this same server minted for a
+    #: different resource is refused.
+    resource: Mapped[str | None] = mapped_column(String(2000))
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
@@ -2593,3 +2603,132 @@ class FitScoreRow(Base):
         UniqueConstraint("org_id", "job_post_id", name="uq_fit_scores_org_post"),
         CheckConstraint("score >= 0 AND score <= 1", name="ck_fit_scores_range"),
     )
+
+
+class OAuthClient(Base):
+    """A client that may ask a person for access (F14, ADR-058).
+
+    **Registered by hand, because Dynamic Client Registration is deprecated** in the 2026-07-28
+    MCP revision and was always the wrong shape here: DCR lets anything that can reach the
+    endpoint become a client, and the thing it would then ask for is somebody's whole workspace.
+    A workspace has one or two clients and its owner adds them.
+
+    **A client belongs to a workspace, and that was not the first design.** It began with no
+    `org_id` -- a client is Claude's connector, which felt like a property of the deployment --
+    and a test failure showed what that costs in a multi-tenant product: any owner could
+    register a client with a plausible name and their own redirect URI, and *another*
+    workspace's user would then see it on a consent screen saying "allow this". A consent screen
+    is a phishing surface, and the name on it has to come from somebody the person being asked
+    is already trusting. So each workspace chooses which applications may ask it for anything,
+    which is also how every OAuth-consuming product does per-tenant app allowlists -- and it
+    keeps this table ordinary under ADR-004 instead of a third exception to it.
+
+    **No client secret.** These are public clients -- a desktop application cannot keep one, and
+    a secret it cannot keep is a secret in a log pretending to be security. PKCE is what proves
+    the caller exchanging a code is the one that asked for it, and OAuth 2.1 requires it of every
+    client anyway, so a secret would add a thing to leak and nothing else.
+    """
+
+    __tablename__ = "oauth_clients"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The public identifier, in the authorize URL. Not a secret, and not a uuid, because a
+    #: person reads it on a consent screen and has to recognise it. Unique **per workspace**:
+    #: two workspaces may each register the same application, and neither can see the other's.
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Shown on the consent screen. **The one string a person uses to decide**, so it is the
+    #: owner's own words rather than anything the client sends -- a name supplied at authorize
+    #: time is a name an attacker chooses.
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    #: Exact-match targets. Every loosening of redirect matching is a published attack, so a
+    #: client with several registers all of them.
+    redirect_uris: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    created_by: Mapped[str | None] = mapped_column(String(320))
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "client_id", name="uq_oauth_clients_org_client"),
+        CheckConstraint("cardinality(redirect_uris) > 0", name="ck_oauth_clients_redirects"),
+    )
+
+
+class OAuthCode(Base):
+    """An authorization code, between the consent and the exchange (F14, ADR-058).
+
+    Lives about a minute and is used once. **Only the hash is stored**, as for every other
+    credential here: a code read out of this table would be a code somebody could redeem, and
+    the row exists to be compared against, not to be read.
+
+    `used_at` rather than a delete, so a *replay* is distinguishable from an unknown code in the
+    logs -- the same reason the suppression list keeps a tombstone. What goes back to the client
+    is `invalid_grant` either way, because telling a caller which one it was tells somebody
+    guessing which half of their guess was right.
+    """
+
+    __tablename__ = "oauth_codes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    #: Supabase's `sub`, as everywhere else. The membership is resolved at exchange time and
+    #: again on every call, so a code outliving a membership grants nothing.
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    redirect_uri: Mapped[str] = mapped_column(String(2000), nullable=False)
+    #: RFC 8707. Checked again at exchange, because the token carries it and a token's audience
+    #: must be the one the person consented to.
+    resource: Mapped[str] = mapped_column(String(2000), nullable=False)
+    code_challenge: Mapped[str] = mapped_column(String(128), nullable=False)
+    code_challenge_method: Mapped[str] = mapped_column(String(10), nullable=False, default="S256")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        # S256 only, in the database as well as in the validator. `plain` protects against
+        # nothing, and a row written by hand must not be able to ask for it.
+        CheckConstraint("code_challenge_method = 'S256'", name="ck_oauth_codes_method"),
+        Index("ix_oauth_codes_expiry", "expires_at"),
+    )
+
+
+class OAuthRefreshToken(Base):
+    """A refresh token, rotated on every use (F14, ADR-058).
+
+    **Rotation is the point.** A refresh token lives ninety days, which is long enough that a
+    copy of one is worth having; rotating means the copy stops working the moment the real
+    client refreshes, and `replaced_by_id` makes a *reuse* visible -- somebody presenting a
+    token that was already exchanged is either a stale client or a stolen token, and the safe
+    response to both is to revoke the whole chain.
+    """
+
+    __tablename__ = "oauth_refresh_tokens"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    resource: Mapped[str] = mapped_column(String(2000), nullable=False)
+    #: The access token this refresh token currently stands behind, so revoking the refresh
+    #: token takes the access token with it rather than leaving it live for its last hour.
+    access_token_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.api_tokens.id", ondelete="SET NULL")
+    )
+    #: Set when this token is rotated. A presented token with this set is a reuse.
+    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (Index("ix_oauth_refresh_user", "org_id", "user_id"),)

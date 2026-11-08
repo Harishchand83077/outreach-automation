@@ -168,8 +168,11 @@ token per scope and asserts the served list is exactly that scope's tools. The p
 returns the answer bank's *questions* and never its answers; a note lands as a graph edge, so its
 source is required by `ck_edges_provenance` rather than by the handler. Fixing this found that the
 constraint in `models.py` had been two migrations stale.
-S16.3 **MCP Phase 2** (our own OAuth 2.1 server). Still gated: do it when pasting tokens becomes
-the complaint, not before.
+S16.3 **Done** (ADR-058): an OAuth 2.1 authorization server -- RFC 9728 and RFC 8414 discovery,
+a consent screen, mandatory S256 PKCE, a required and checked `resource`, exact redirect
+matching, and rotating refresh tokens whose reuse revokes the chain. An access token is a row in
+`api_tokens`, so the catalogue, the scopes and the membership check are untouched. Clients are
+registered by hand and belong to a workspace.
 S16.4 **F16 learning from edit diffs** — describe, then compare, then summarise recurring edits for
 a person to review before anything enters a prompt. Needs ~1,050 sends per arm (the doc's
 calculation), so not before real volume.

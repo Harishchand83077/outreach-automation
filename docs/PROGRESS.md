@@ -3435,6 +3435,55 @@ queue, it is a progress indicator rather than a status, so it has no semantic co
 Verified in a browser, both themes. Six tests in the token guard, all four dashboard guards pass,
 no migration.
 
+**Connecting your own Claude no longer means pasting a token (F14, ADR-058, slice S16.3).** An
+OAuth 2.1 authorization server of our own: discovery, a consent screen, PKCE, rotating refresh
+tokens, and per-workspace clients.
+
+**ADR-027 gated this on "when pasting tokens becomes the complaint, not before", and ADR-028
+established why we cannot delegate it**: Supabase accepts the RFC 8707 `resource` parameter and
+**ignores** it, issuing `aud: "authenticated"` whatever was asked for, so a token obtained for
+any other service would be accepted here. That is the confused-deputy problem resource
+indicators exist to prevent, and it left exactly two options: our own server, or no OAuth.
+
+**An access token is a row in `api_tokens`, which is the decision everything rests on.** The tool
+catalogue, the scope gate, the untrusted-text wrapper and the re-resolution of the membership on
+every call are untouched -- OAuth is a different way to *obtain* the same credential rather than
+a second kind of credential with parallel rules. A separate token table would be a second set of
+rules to keep in step, and the first drift would be a credential outliving the membership behind
+it. Two columns say which client holds it and which resource it is for.
+
+**The refusals are the feature**, and they are in a pure module with an injected clock so each is
+a test that needs no database: PKCE with S256 and `plain` refused in the validator *and* in a
+check constraint; `resource` required, checked at authorize, again at exchange, stored on the
+token and checked at `/mcp`; exact redirect matching; a single-use, sixty-second code; and a
+refresh token that rotates, where **reusing one revokes the whole chain** -- a presented
+already-exchanged token is a stale client or a stolen copy, and the safe answer to both is the
+same.
+
+**A test failure found a real multi-tenancy defect in my own design.** `oauth_clients` began with
+**no `org_id`** -- a client is Claude's connector, which felt deployment-wide. What that costs is
+that any owner could register a client with a plausible name and their own redirect URI, and
+*another* workspace's user would be shown a consent screen saying "allow this". **A consent
+screen is a phishing surface**, and the name on it has to come from somebody the person being
+asked already trusts. Clients belong to a workspace now, which also keeps the table ordinary
+under ADR-004 instead of a third exception to it.
+
+**And an ordering bug the reuse test caught.** The route turns an `OAuthError` into a response
+and rolls back -- right for every other refusal, since a refused request should leave nothing
+behind. This one is the exception: **the refusal is itself a write**, and rolling it back
+un-revoked the chain, so a stolen token kept working and the detection achieved nothing. The same
+shape as the proposal that committed before its audit row (ADR-030): the ordering was the defect.
+
+**The consent screen says only what our own rows say** -- the client's name read back by
+`client_id`, the scopes described in the words the Settings tick-boxes already use. A screen
+rendering a name the caller supplied is a phishing page with our domain in the address bar. It is
+deliberately outside the shell: no rail, no campaign picker, nothing to click but Allow and
+Cancel, because everything else is a thing that could be mistaken for the decision.
+
+A hand-minted token keeps working unchanged, and a test says so -- that is the migration's real
+risk. 24 unit tests and 35 integration, ruff and mypy strict clean, migration applied and
+reversed against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

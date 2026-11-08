@@ -40,6 +40,7 @@ from app.api.routers import (
     jobposts,
     mcp,
     me,
+    oauth,
     operations,
     platform,
     referrals,
@@ -218,8 +219,12 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(connect.router, prefix="/api/v1")
     application.include_router(team.router, prefix="/api/v1")
     application.include_router(platform.router, prefix="/api/v1")
+    application.include_router(oauth.router, prefix="/api/v1")
     # Mounted at the root, not under /api/v1: this URL is typed into a person's MCP client,
     # and `https://api.arkvane.in/mcp` is the address docs/MCP_PLAN.md promises.
+    # Discovery and the token endpoint live at the root: RFC 9728 and RFC 8414 fix the paths
+    # exactly, and a client will not look for them under a prefix (ADR-058).
+    application.include_router(oauth.discovery)
     application.include_router(mcp.router)
     # Also at the root, and for a sharper reason: this URL goes into a `List-Unsubscribe` header
     # that receiving mail servers POST to automatically (ADR-033). It is unauthenticated by

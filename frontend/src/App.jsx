@@ -41,6 +41,7 @@ import {
 } from "./api";
 import { signOut } from "./supabase";
 import { Mark, PRODUCT } from "./Brand";
+import Consent from "./Consent";
 import Landing from "./Landing";
 import Overview from "./Overview";
 import { Link, RouterProvider, navigate, useMatch, useRoute } from "./router";
@@ -97,14 +98,48 @@ export default function App() {
   const session = useSession();
 
   if (session === undefined) return <Centered>Checking your session…</Centered>;
+
+  /* **The consent screen is outside the shell**, and outside the route table with it. A person
+     arrives here by redirect from an application asking for access, and every other thing on
+     the page -- a rail, a campaign picker, a review queue -- is a thing that could be mistaken
+     for the decision. Signed out, they get the front door first and land back here afterwards,
+     because the URL does not change while they sign in. */
+  const consenting = window.location.pathname === "/oauth/authorize";
   // **The first screen anybody is ever shown.** It used to be the sign-in form alone on a grey
   // page, which is a login screen; this is a front door. The form itself is unchanged -- still a
   // magic link, still no password field anywhere in the bundle.
   if (!session) return <Landing />;
+  if (consenting) return <ConsentPage />;
   return (
     <RouterProvider>
       <Dashboard session={session} />
     </RouterProvider>
+  );
+}
+
+/** The consent screen with the one error rule the rest of the app uses.
+ *
+ * An expired session here is not a red box: it is a reason to go back to the front door, from
+ * which the person returns to this same URL and the application that sent them is none the
+ * wiser. */
+function ConsentPage() {
+  const [error, setError] = useState(null);
+  const handle = (err) => {
+    if (err instanceof NotAuthenticated) {
+      signOut();
+      return;
+    }
+    setError(err?.message || "Something went wrong.");
+  };
+  return (
+    <>
+      {error ? (
+        <div className="banner" data-tone="bad" role="alert">
+          <span>{error}</span>
+        </div>
+      ) : null}
+      <Consent onError={handle} />
+    </>
   );
 }
 
