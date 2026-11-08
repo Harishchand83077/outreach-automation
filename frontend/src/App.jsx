@@ -4208,6 +4208,11 @@ function McpTokens({ onError, onToast }) {
   // Off unless somebody ticks it, which is the same decision as the send mode defaulting to
   // disabled: the narrow setting is the one you get without choosing.
   const [mayPropose, setMayPropose] = useState(false);
+  // One box each, and each off unless ticked (F24, ADR-056). Separate rather than a single
+  // "full access", because the question somebody can actually answer is "may this read my own
+  // career facts?" and not "do I trust it".
+  const [mayReadProfile, setMayReadProfile] = useState(false);
+  const [mayWriteNotes, setMayWriteNotes] = useState(false);
   // The minted secret, held in memory only and shown once. Never put in localStorage: a
   // credential that outlives the page it was shown on is one nobody remembers is there.
   const [minted, setMinted] = useState(null);
@@ -4223,7 +4228,12 @@ function McpTokens({ onError, onToast }) {
     setBusy(true);
     try {
       const created = await postJson("/mcp-tokens", {
-        json: { name, may_propose: mayPropose },
+        json: {
+          name,
+          may_propose: mayPropose,
+          may_read_profile: mayReadProfile,
+          may_write_notes: mayWriteNotes,
+        },
       });
       setMinted(created);
       onToast(
@@ -4315,16 +4325,56 @@ function McpTokens({ onError, onToast }) {
             Let it <strong>propose drafts</strong> into the review queue
           </span>
         </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={mayReadProfile}
+            onChange={(event) => setMayReadProfile(event.target.checked)}
+          />
+          <span>
+            Let it read your <strong>confirmed career facts</strong>
+          </span>
+        </label>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={mayWriteNotes}
+            onChange={(event) => setMayWriteNotes(event.target.checked)}
+          />
+          <span>
+            Let it <strong>record notes about companies</strong>, each with its
+            source
+          </span>
+        </label>
         <button type="submit" className="btn" disabled={busy || !name.trim()}>
           {busy ? "Creating\u2026" : "Create token"}
         </button>
       </form>
       <p className="muted">
-        Leave that unticked and the token can only read. Ticked, your Claude can
-        write a draft or a reply for one of your leads &mdash; it goes through
-        the same grounding checks as ours, lands in the review queue as{" "}
-        <em>pending review</em>, and still needs a person to approve it before
-        anything is sent.
+        Leave them all unticked and the token can only read this workspace's own
+        work &mdash; campaigns, leads, replies, postings, signals. Each box adds
+        exactly one thing and nothing else.
+      </p>
+      <p className="muted">
+        <strong>Propose drafts:</strong> your Claude can write a draft or a
+        reply for one of your leads. It goes through the same grounding checks
+        as ours, lands in the review queue as <em>pending review</em>, and still
+        needs a person to approve it before anything is sent.
+      </p>
+      <p className="muted">
+        <strong>Career facts:</strong> the facts you have confirmed about your
+        own work, by id, so anything it writes can cite them. It never includes
+        the answers in your answer bank &mdash; your expected pay, notice period
+        and work authorisation are given to a form you are filling in, and are
+        not ours to pass on to a model. It can see which of those questions you
+        have answered, and not what you answered.
+      </p>
+      <p className="muted">
+        <strong>Company notes:</strong> it can record one line about a company
+        <em> with the URL of the page that says it</em>. A note with no source
+        is refused by the database, not by a rule somebody could relax. A note
+        is not a research finding: nothing this system writes may cite it until
+        you have read it.
       </p>
 
       {data?.tokens?.length ? (

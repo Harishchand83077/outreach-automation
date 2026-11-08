@@ -3273,6 +3273,82 @@ applied and reversed against the development database. The MCP tests reuse
 2026-07-28 revision mirrors body fields into headers and the server compares the two, so a second
 implementation would be one more thing to keep honest.
 
+**A connector token can now be given the part of the workspace it needs and no more (F24,
+ADR-056, slice S16.2). Phase 16's buildable half is complete.** Four scopes, one vocabulary, and
+tick boxes that each add exactly one thing.
+
+**The first finding is a drift this slice had to fix before it could add anything.**
+`ck_api_tokens_scopes` in `models.py` has said `scopes <@ ARRAY['mcp:read']` since the table was
+created, while two migrations widened the live constraint to three values -- so **the model had
+been stale for two slices.** A model that disagrees with the database is exactly what makes
+autogenerate write a migration dropping something it cannot see, which has already happened once
+here with an index. The vocabulary now lives once, in `models.API_TOKEN_SCOPES`, and the
+constraint is generated from it; `protocol.SCOPES` and `api_tokens.ALL_SCOPES` both read it.
+
+**The split is by what the holder may see, not by how much we trust them**, which is what makes a
+tick box answerable at all. `mcp:read` is the workspace's own work. `mcp:profile` is the
+*person's* confirmed facts -- a separate scope because it is a different kind of data, and the
+holder of a token minted to help with outreach is often not the person those facts are about.
+`mcp:notes` may record one note about a company. `mcp:propose` is unchanged.
+
+**`required_scope` is still derived and a tool may only narrow it**, so a tool added later is
+gated whether or not anybody gates it -- there is no permissive default to forget, and a test
+asserts that an undeclared tool still gets the strict answer.
+
+**The answer bank returns its questions and never its answers, and that exclusion is the whole
+tool.** `answer_bank` holds expected pay, notice period and work authorisation: answers somebody
+gives to a form *they* are filling in, on a page they opened. A model drafting a cover letter has
+no use for the number and every opportunity to put it somewhere it should not be. Knowing which
+questions are already handled is the useful half, and the screen says exactly this.
+
+**A note is a graph edge, so the source is required by the database rather than by the handler.**
+`ck_edges_provenance` refuses a row with no `source_url`, so a note an agent cannot point at
+cannot be stored -- and this is the one path in the system where the thing offering a claim is a
+model, which is where ADR-051 earns the most. It is deliberately **not** a research finding: a
+hook in `domain_research` was verified against text we fetched and may be cited by the drafter,
+while an edge is not in the evidence corpus at all, so a draft still cannot cite it.
+
+**The acceptance test tests the mechanism rather than restating the data.** For each scope, mint a
+token with only that scope and assert `tools/list` returns exactly the tools whose scope it is. A
+hand-written map of names to scopes would be a second copy of the catalogue, and the first time
+the two disagreed the test would be describing the wrong one. Both directions are closed: every
+tool's scope is grantable, and every grantable scope has a tool -- a scope with no tool is a tick
+box that does nothing, which is worse than no tick box, because somebody ticks it and believes
+they granted something.
+
+**Two of this project's own guards had to be restated, and one fired correctly on my code.**
+`test_a_tool_that_writes_requires_the_propose_scope` asserted the exact derivation, which was a
+proxy for the rule rather than the rule -- the same correction as "every tool is read-only", which
+was a proxy for "nothing can send or approve" and had to break the moment anything wrote. **That
+is the eighth test here found to be encoding something other than the rule it was named for.**
+`test_the_scopes_are_read_and_propose_and_nothing_else` pinned the list, so it would fail whenever
+a scope was added for a good reason while saying nothing about what matters; it now asserts no
+scope names a send, an approval, a mode or an allowlist. And
+`test_nothing_in_the_package_names_an_approved_status` fired on my own `"approved"` dict key,
+which that guard reserves -- the field is `ready_to_use` now, because **renaming it was cheaper
+than weakening the guard** and the guard owns the word.
+
+**And CI found a third pinned list, which is the ninth instance.**
+`test_the_scope_set_is_three_and_no_more` in the extension gateway's tests asserted the exact
+tuple of three scopes -- a proxy that fails whenever a scope is added for a good reason while
+saying nothing about the property that matters: that the extension's door is one scope, that it
+is not an `mcp:` one, and that no scope exists which could open both. It asserts that now. Worth
+recording that **two of the three were found by CI rather than by me**, because the integration
+suite is unusable locally in bulk (DEV-1) and both lived there.
+
+**The drift test earned its keep in the same run.** `ix_watchlist_page_due` was declared in
+S15.5's migration and not in `models.py`, so `test_there_is_no_drift` failed with
+`remove_index` -- which is the exact trap ADR-032 records, where autogenerate reads an
+undeclared index as drift and writes a migration that DROPS it. It has happened once in this
+repository already. Worth noting what that test does **not** catch: autogenerate does not
+compare check constraints, which is why the `ck_api_tokens_scopes` staleness above survived two
+slices with the drift test green the whole time.
+
+30 integration tests and 25 structural, ruff and mypy strict clean, migration applied and reversed
+against the development database. The downgrade revokes a token carrying one of the new scopes
+rather than stripping it, as ADR-030's did: a credential whose permissions change under it while
+it keeps working is worse than one that stops.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

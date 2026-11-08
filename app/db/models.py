@@ -1923,6 +1923,28 @@ class PlatformOperator(Base):
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
 
+#: Every scope a credential may carry, and the only list of them. `ck_api_tokens_scopes` is built
+#: from this tuple, so a scope that is not here cannot be written by hand -- including in `psql`.
+#:
+#: **The split is by what the holder may see, not by how much we trust them** (F24, ADR-056):
+#:
+#: - `mcp:read` -- the workspace's own work: campaigns, leads, replies, postings, signals, graph.
+#: - `mcp:profile` -- the *person's* own facts. Separate because it is a different kind of data:
+#:   a token minted to help with outreach has no business reading somebody's confirmed career
+#:   facts, and the holder of one is often not the person those facts are about.
+#: - `mcp:notes` -- may propose a note about a company, which lands as a graph edge and therefore
+#:   cannot be stored without a source (ADR-051). A write, bounded by a check constraint.
+#: - `mcp:propose` -- may propose a draft into the review queue (ADR-030).
+#: - `ext:suggest` -- the browser extension's door, and never alongside an MCP scope (ADR-039).
+API_TOKEN_SCOPES: tuple[str, ...] = (
+    "mcp:read",
+    "mcp:profile",
+    "mcp:notes",
+    "mcp:propose",
+    "ext:suggest",
+)
+
+
 class ApiToken(Base):
     """A credential for the MCP endpoint, and for nothing else (ADR-028).
 
@@ -1975,10 +1997,15 @@ class ApiToken(Base):
 
     __table_args__ = (
         # The database refuses a scope the code has never heard of, as `ck_orgs_send_mode` does
-        # for send modes. It is what makes a *write* scope unexpressible by hand: there is no
-        # `mcp:propose` today, and inventing one in SQL would not make a tool appear, but it
-        # would make the catalogue's story false.
-        CheckConstraint("scopes <@ ARRAY['mcp:read']::text[]", name="ck_api_tokens_scopes"),
+        # for send modes. **Built from `API_TOKEN_SCOPES` rather than written out**, because
+        # this literal had said `ARRAY['mcp:read']` here while two migrations widened the live
+        # constraint to three values -- a model that disagrees with the database is what makes
+        # autogenerate write a migration dropping what it cannot see, which has already
+        # happened once in this repository with an index.
+        CheckConstraint(
+            "scopes <@ ARRAY[" + ", ".join(f"'{name}'" for name in API_TOKEN_SCOPES) + "]::text[]",
+            name="ck_api_tokens_scopes",
+        ),
         CheckConstraint("cardinality(scopes) > 0", name="ck_api_tokens_scopes_not_empty"),
         Index("ix_api_tokens_org", "org_id"),
         # The verification query: one row by hash, on every call.

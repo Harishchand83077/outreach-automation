@@ -31,6 +31,7 @@ from app.db.models import Invitation, Mailbox, MailCredential, Member
 from app.db.state import record_event
 from app.services import api_tokens
 from app.services.mail.expiry import grant_status
+from app.services.mcp import protocol
 
 router = APIRouter(tags=["team"], dependencies=[Depends(require_role("admin"))])
 
@@ -434,6 +435,8 @@ async def create_mcp_token(
     name: Annotated[str, Body(embed=True)] = "My Claude",
     ttl_days: Annotated[int | None, Body(embed=True)] = api_tokens.DEFAULT_TTL_DAYS,
     may_propose: Annotated[bool, Body(embed=True)] = False,
+    may_read_profile: Annotated[bool, Body(embed=True)] = False,
+    may_write_notes: Annotated[bool, Body(embed=True)] = False,
     for_extension: Annotated[bool, Body(embed=True)] = False,
 ) -> dict[str, Any]:
     """Mint a token and return it **once**.
@@ -489,6 +492,14 @@ async def create_mcp_token(
         }
 
     scopes = [api_tokens.READ_SCOPE]
+    # **Each one off unless it was ticked** (F24, ADR-056). Separate boxes rather than a single
+    # "full access", because the question a person can actually answer is "may this read my own
+    # career facts?" and not "do I trust it". A token minted to help with outreach has no
+    # business reading somebody's confirmed facts, and the holder is often not that person.
+    if may_read_profile:
+        scopes.append(protocol.PROFILE_SCOPE)
+    if may_write_notes:
+        scopes.append(protocol.NOTES_SCOPE)
     if may_propose:
         # Additive rather than instead of: an agent that could write but not read would be able
         # to propose an email about a lead it could not look up, which is not a useful tool.

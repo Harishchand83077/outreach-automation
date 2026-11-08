@@ -4298,3 +4298,115 @@ for the same reason.
 - **Scoring against unconfirmed facts.** ADR-037 exists because the person asked about a claim in
   an interview is the person who has to have agreed to it.
 - **Appending each score as a new row.** Two answers to one question.
+
+## ADR-056 — Four scopes, one vocabulary, and an answer that is not ours to pass on
+
+**Date:** 2026-11-07
+**Status:** Accepted
+**Relates to:** F24, slice S16.2; builds on ADR-028, ADR-030, ADR-037, ADR-039, ADR-051
+
+### Context
+
+A connector token was all-or-nothing in one direction: `mcp:read` opened everything readable in
+the workspace, and `mcp:propose` added the write. ADR-030 built half the machinery for finer
+scopes — `tools/list` is scope-filtered and `required_scope` is derived — and F24 is the other
+half.
+
+Writing it found that **`ck_api_tokens_scopes` in `models.py` had said
+`scopes <@ ARRAY['mcp:read']` since the table was created, while two migrations widened the live
+constraint to three values.** The model had been stale for two slices. A model that disagrees with
+the database is exactly what makes `alembic revision --autogenerate` write a migration dropping
+something it cannot see, which has already happened once in this repository with an index.
+
+### Decision
+
+**One vocabulary, in `models.API_TOKEN_SCOPES`, and the check constraint is generated from it.**
+The cure adopted after `reason="one-click unsubscribe"` made every opt-out a 500: a literal that
+has to match a database constraint is read from the thing that defines it. `protocol.SCOPES` and
+`api_tokens.ALL_SCOPES` both read that tuple now, so the constraint, the minting route and each
+tool's gate cannot disagree.
+
+**The split is by what the holder may see, not by how much we trust them.** That is what makes a
+tick box answerable:
+
+- `mcp:read` — the workspace's own work: campaigns, leads, replies, postings, signals, the graph.
+- `mcp:profile` — the **person's** own confirmed facts. A separate scope because it is a different
+  kind of data: a token minted to help with outreach has no business reading somebody's career
+  facts, and the holder of one is often not the person those facts are about.
+- `mcp:notes` — may record one note about a company. The narrowest write available.
+- `mcp:propose` — may propose a draft into the review queue (ADR-030, unchanged).
+
+**`required_scope` is still derived, and a tool may only narrow it.** A tool that declares nothing
+gets the strict answer from whether it writes, so there is no permissive default to forget and a
+tool added later is gated whether or not anybody gates it. What F24 adds is that a tool may ask
+for something *narrower* than the derivation would give it.
+
+**The answer bank returns its questions and never its answers, and the exclusion is the tool.**
+`answer_bank` holds expected pay, notice period and work authorisation: answers somebody gives to
+a form **they** are filling in, on a page they opened, through the extension. A model drafting a
+cover letter has no use for the number and every opportunity to put it somewhere it should not be.
+So the question is returned, the value is not, and the sentence on the screen says so. Knowing
+which questions are already handled is the useful half.
+
+**Only confirmed facts are returned, with no option to ask for the proposals.** A proposed fact is
+one nobody has agreed to say yet, and the person asked about a claim in an interview is the person
+who has to have agreed to it (ADR-037). An argument that could request the unconfirmed ones would
+route around the only check that rule has.
+
+**A note is a graph edge, so the source is required by the database.** `propose_company_note`
+writes an edge with `predicate = "mentioned"`, which `ck_edges_provenance` refuses without a
+`source_url` — so a note an agent cannot point at cannot be stored, by the constraint rather than
+by the handler being careful. This is the one path in the system where the thing offering a claim
+is a model, which is where ADR-051 earns the most.
+
+**A note is not a research finding.** A hook in `domain_research` was verified against text we
+fetched ourselves and may be cited by the drafter. An edge is not in the evidence corpus, so a
+draft still cannot cite it, and a brief that quotes it shows the agent's URL beside the line.
+
+**The test is the acceptance criterion, and it tests the mechanism.** For each scope, mint a token
+carrying only that scope and assert `tools/list` returns exactly the tools whose `required_scope`
+is in it. A hand-written map of names to scopes would be a second copy of the catalogue, and the
+first time the two disagreed the test would be describing the wrong one. Two further tests close
+the loop in both directions: every tool's scope is one the deployment can grant, and every
+grantable scope has at least one tool — a scope with no tool is a tick box that does nothing,
+which is worse than no tick box, because somebody ticks it and believes they granted something.
+
+### Two guards had to be restated, and the restatement is the point
+
+- `test_a_tool_that_writes_requires_the_propose_scope` asserted the exact derivation, which was a
+  proxy for the rule rather than the rule. What matters is that a write is never reachable with a
+  read-only credential. It now asserts that, plus that an undeclared tool still gets the strict
+  derivation. The same correction as "every tool is read-only", which was a proxy for "nothing can
+  send or approve" and had to break the moment anything wrote. **That is the eighth test in this
+  project found to be encoding something other than the rule it was named for.**
+- `test_the_scopes_are_read_and_propose_and_nothing_else` pinned the list, so it would fail
+  whenever a scope was added for a good reason and said nothing about the thing that matters. It
+  now asserts that no scope names a send, an approval, a mode or an allowlist.
+
+And a third guard fired correctly on my own code: `list_answer_questions` used `"approved"` as a
+dict key, which `test_nothing_in_the_package_names_an_approved_status` reserves so that nothing in
+this package can compare a draft's status to it. The field is `ready_to_use`. **Renaming the field
+was cheaper than weakening the guard**, and the guard owns the word.
+
+### Consequences
+
+- Twelve tools across four scopes. A token minted with no boxes ticked reads the workspace's work
+  and nothing else, which is what every existing token already has.
+- The downgrade **revokes** a token carrying one of the two new scopes rather than stripping it,
+  as ADR-030's did: a credential whose permissions change under it while it keeps working is worse
+  than one that stops.
+- `mcp:send` is still unexpressible, in the database as well as in the code, because the permitted
+  set is an allowlist of five and there is no tool such a scope could authorise.
+
+### Rejected
+
+- **A single "full access" box.** The question a person can answer is "may this read my career
+  facts?", not "do I trust it".
+- **Returning the answers under the profile scope, or behind a fifth scope.** An answer goes to a
+  form the person is filling in. There is no version of a model needing their salary number.
+- **A `confidence` or `trusted` flag on a note.** ADR-051 rejected it for edges: a claim either
+  has a source or does not.
+- **Letting a note into `domain_research.hooks`.** A hook was verified against text we fetched;
+  this was not, and putting it there would make it citable by the drafter.
+- **Keeping the old scope guards and adding exceptions.** A guard with an exception list is a
+  guard somebody edits instead of thinking.

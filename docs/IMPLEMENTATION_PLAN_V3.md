@@ -162,10 +162,12 @@ S16.1 **Done** (ADR-055): `list_job_posts`, `get_fit_score`, `get_entity_edges`,
 `fit.score_fit` had **no caller at all**, so the slice also ships the press that produces one --
 computing calls a model and is a `POST`, reading is free, and there is deliberately no tool an
 agent could call to spend somebody's quota.
-S16.2 **F24 tick-box scopes (ADR-037)** — read, profile (minus excluded fields), research notes as
-proposals, propose drafts. Each scope is a CHECK migration plus a test that the served tool list
-matches the granted scopes. Half of the machinery exists already: `tools/list` is scope-filtered
-and `required_scope` is derived, from ADR-030.
+S16.2 **Done** (ADR-056): four scopes -- read, profile, notes, propose -- with one vocabulary in
+`models.API_TOKEN_SCOPES` that the CHECK constraint is generated from, and a test that mints a
+token per scope and asserts the served list is exactly that scope's tools. The profile scope
+returns the answer bank's *questions* and never its answers; a note lands as a graph edge, so its
+source is required by `ck_edges_provenance` rather than by the handler. Fixing this found that the
+constraint in `models.py` had been two migrations stale.
 S16.3 **MCP Phase 2** (our own OAuth 2.1 server). Still gated: do it when pasting tokens becomes
 the complaint, not before.
 S16.4 **F16 learning from edit diffs** — describe, then compare, then summarise recurring edits for
