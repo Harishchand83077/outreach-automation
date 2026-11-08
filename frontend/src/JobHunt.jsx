@@ -1237,7 +1237,11 @@ export default function JobHunt({ campaign, onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <PageHeader title={<>Job hunt</>}>
+      <PageHeader
+        icon={Icons.briefcase}
+        eyebrow="Job hunt"
+        title={<>Job hunt</>}
+      >
         The candidate half of this system: postings, the facts you are willing
         to claim, a tailored resume built only from those facts, your own
         network, and hiring contacts on your own provider key.{" "}

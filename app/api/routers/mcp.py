@@ -29,8 +29,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Header, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from app.api.deps import SessionDep
-from app.core.settings import config
+from app.api.deps import SessionDep, SettingsDep
 from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.services import api_tokens
@@ -56,12 +55,15 @@ def _bearer(authorization: str | None) -> str | None:
     return token.strip()
 
 
-def _unauthorised() -> JSONResponse:
+def _unauthorised(settings: Any = None) -> JSONResponse:
     """One sentence for every kind of refusal.
 
-    Unknown, revoked, expired and no-longer-a-member are all just *no* from outside, and the
-    difference is useful only to somebody guessing. `WWW-Authenticate` is what tells a client to
-    go and get a new credential rather than treat this as permanent.
+    Unknown, revoked, expired, no-longer-a-member and minted-for-something-else are all just
+    *no* from outside, and the difference is useful only to somebody guessing.
+
+    **`WWW-Authenticate` carries `resource_metadata`** (RFC 9728), which is how a client that
+    has never been here discovers who can authorise it. Without that parameter the only way in
+    is a token pasted by hand, which is the thing ADR-058 exists to stop being the answer.
     """
     return JSONResponse(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -76,7 +78,33 @@ def _unauthorised() -> JSONResponse:
                 ),
             },
         },
-        headers={"WWW-Authenticate": 'Bearer realm="outreach-mcp"'},
+        headers={"WWW-Authenticate": _challenge(settings)},
+    )
+
+
+def _audience_ok(bearer: api_tokens.TokenBearer, settings: Any) -> bool:
+    """Whether this token was minted for this API (RFC 8707).
+
+    A token with no `resource` was minted by hand in the dashboard and is only ever presented
+    here, so it passes -- that is the credential this endpoint has always taken. A token *with*
+    one must name this server: it came from the authorization server, which records the
+    resource the person consented to, and a token for a different audience is one another
+    service's client obtained.
+    """
+    if bearer.resource is None:
+        return True
+    issuer = (getattr(settings, "PUBLIC_API_URL", "") or "").rstrip("/")
+    return bool(issuer) and bearer.resource.rstrip("/") == issuer
+
+
+def _challenge(settings: Any) -> str:
+    issuer = (getattr(settings, "PUBLIC_API_URL", "") or "").rstrip("/")
+    if not issuer:
+        # Nothing to point at. A client falls back to a pasted token, which still works.
+        return 'Bearer realm="outreach-mcp"'
+    return (
+        'Bearer realm="outreach-mcp", '
+        f'resource_metadata="{issuer}/.well-known/oauth-protected-resource"'
     )
 
 
@@ -96,6 +124,7 @@ async def legacy_transport_methods() -> Response:
 async def mcp_endpoint(
     request: Request,
     session: SessionDep,
+    settings: SettingsDep,
     authorization: Annotated[str | None, Header()] = None,
 ) -> Response:
     """The MCP endpoint. Every JSON-RPC message is its own POST."""
@@ -103,7 +132,7 @@ async def mcp_endpoint(
     #    to prevent DNS rebinding. An absent one is allowed: Anthropic connects from its own
     #    infrastructure, not a browser, so the only caller we have sends none.
     origin = request.headers.get("origin")
-    allowed = tuple(config.allowed_origins())
+    allowed = tuple(settings.allowed_origins())
     if not protocol.origin_is_allowed(origin, allowed):
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -118,8 +147,15 @@ async def mcp_endpoint(
     #    endpoint as a JSON parser or learn anything from the shape of a validation error.
     presented = _bearer(authorization)
     if presented is None:
-        return _unauthorised()
+        return _unauthorised(settings)
     bearer = await api_tokens.verify_token(session, presented)
+    if bearer is not None and not _audience_ok(bearer, settings):
+        # **The reason this deployment runs its own authorization server.** A token that names
+        # a different resource was minted for somebody else's API, and accepting it is the
+        # confused-deputy problem RFC 8707 exists to prevent -- which is precisely what
+        # Supabase's implementation does not prevent (ADR-028).
+        await session.rollback()
+        return _unauthorised(settings)
     if bearer is None or not any(scope in protocol.SCOPES for scope in bearer.scopes):
         # A token carrying no scope this endpoint recognises is refused at the door rather than
         # per tool. Which scopes it does carry decides which tools it is shown and may call.
@@ -131,7 +167,7 @@ async def mcp_endpoint(
         # deadlocked the test suite's own cleanup. Every path out of this route now ends with
         # the transaction resolved.
         await session.rollback()
-        return _unauthorised()
+        return _unauthorised(settings)
     # `verify_token` may have touched `last_used_at`; it is the only write this endpoint makes
     # and it must land whatever the call goes on to do.
     await session.commit()

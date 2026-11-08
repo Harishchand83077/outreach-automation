@@ -741,7 +741,10 @@ tbody tr:hover {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  /* The brand, and the one gradient inside a content area: this is the bar a reviewer
+     watches fill while working through a queue, and it is a progress indicator rather than a
+     status, so it carries no semantic colour to lose. */
+  background: var(--grad-brand);
   transition: width var(--slow) var(--ease-out);
 }
 
@@ -829,8 +832,11 @@ tbody tr:hover {
   height: 44px;
   margin-bottom: var(--space-1);
   border-radius: var(--radius-full);
-  background: var(--surface-2);
-  color: var(--text-faint);
+  /* Brand-tinted rather than grey-on-grey (S17.2). An empty state is a place where something
+     *will* appear, and the all-grey version read as a hole in the page -- which on a first-run
+     workspace is most of what somebody sees. */
+  background: var(--brand-soft);
+  color: var(--brand-text);
 }
 
 .empty strong {

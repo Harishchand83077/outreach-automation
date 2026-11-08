@@ -4541,3 +4541,101 @@ than before, and run against the bug to watch it name `--grad-hero`.
 - **Inventing a product name.** The deployment's own domain already had one.
 - **Writing marketing claims the code does not support.** The whole product is about not doing
   that.
+
+## ADR-058 — An OAuth 2.1 server of our own, and an access token that is an ordinary credential
+
+**Date:** 2026-11-09
+**Status:** Accepted
+**Relates to:** F14, slice S16.3; completes ADR-027's Phase 2; builds on ADR-028, ADR-030, ADR-056
+
+### Context
+
+Connecting your own Claude has meant minting a token in Settings and pasting it into a client.
+That works and it is the thing people complain about, which is the gate ADR-027 set for building
+this: *"do it when pasting tokens becomes the complaint, not before."*
+
+ADR-028 established why we cannot delegate: **Supabase accepts the RFC 8707 `resource` parameter
+and ignores it**, issuing `aud: "authenticated"` whatever was requested (supabase/auth#2610). A
+token whose audience is a constant cannot be shown to have been minted *for* this endpoint, and
+accepting one means accepting a credential obtained for something else — the confused-deputy
+problem resource indicators exist to prevent. So the choice was our own authorization server or
+no OAuth at all.
+
+### Decision
+
+**An access token is a row in `api_tokens`**, with two new columns saying which client holds it
+and which resource it is for. This is the decision everything else rests on. The tool catalogue,
+the scope gate, the untrusted-text wrapper and — most importantly — the re-resolution of the
+membership on every single call are *untouched*. OAuth is a different way to **obtain** the same
+credential, not a second kind of credential with its own parallel rules. A separate token table
+would be a second set of rules to keep in step, and the first time they drifted the difference
+would be a credential outliving the membership behind it.
+
+**PKCE with S256, and `plain` is refused outright** — in the validator and in a check constraint,
+so a row written by hand cannot ask for it. A challenge equal to its verifier protects against
+nothing and exists in the spec for clients that could not hash, which is no client we will see.
+
+**The `resource` parameter is required, checked at authorize, checked again at exchange, stored
+on the token, and checked at `/mcp`.** A missing one is refused rather than defaulted: defaulting
+it means a client that never asked for an audience gets one anyway, and its token becomes
+indistinguishable from one that did — which is precisely Supabase's behaviour.
+
+**Redirect URIs match exactly.** Not a prefix, not a host, not "ignoring the query". Every
+loosening of this rule is a published attack, because the redirect is where the code goes.
+
+**A refresh token rotates, and reusing one revokes the whole chain.** Somebody presenting an
+already-exchanged token is a stale client or a stolen copy; the safe answer to both is the same.
+Letting the real client carry on means a stolen token works for ninety days and nothing notices.
+
+**Clients are registered by hand and belong to a workspace**, and the second half of that was not
+the first design. Dynamic Client Registration is deprecated in the 2026-07-28 revision and was
+always wrong here — it lets anything that can reach the server become a client, and what a client
+asks for is somebody's whole workspace. The table began with **no `org_id`**, because a client is
+Claude's connector and that felt deployment-wide. A test failure showed the cost: any owner could
+register a client with a plausible name and their own redirect URI, and *another* workspace's
+user would be shown a consent screen saying "allow this". **A consent screen is a phishing
+surface**, and the name on it must come from somebody the person being asked already trusts. So
+each workspace chooses which applications may ask it for anything — which is how every
+OAuth-consuming product does per-tenant app allowlists, and keeps this table ordinary under
+ADR-004 rather than a third exception to it.
+
+**The consent screen says only what our own rows say.** The client's name is read back by
+`client_id`; the scopes are described in the same words the tick-boxes in Settings use. A screen
+that renders a name the caller supplied is a phishing page with our domain in the address bar.
+Every parameter is validated *before* it draws, so a request that could never succeed is refused
+on the screen rather than after somebody presses Allow.
+
+**Issuing a code is a POST and never a GET.** The browser arrives at the dashboard's
+`/oauth/authorize` page by redirect, and that page writes nothing. A GET that issued a code would
+mean any page that could make a browser follow a link could obtain one.
+
+**The 401 at `/mcp` carries `resource_metadata`** (RFC 9728). Without it the only way in is a
+pasted token, which is the thing this slice exists to stop being the answer.
+
+**Errors are coarse on purpose.** Unknown, expired, replayed, wrong client, wrong redirect and
+wrong verifier are six mistakes and one answer, `invalid_grant`, because distinguishing them
+tells somebody guessing which half of their guess was right.
+
+### Consequences
+
+- A hand-minted token keeps working, unchanged: its `resource` is NULL, it is only ever presented
+  here, and it is the credential this endpoint has always taken. A test asserts it.
+- `PUBLIC_API_URL` becomes required for OAuth. Without it the server refuses with a 500 and says
+  why rather than guessing an audience — a guessed audience is no audience.
+- `mint_secret` was promoted from `_mint`, because an access token generated a second way would
+  be a second thing to keep right: the same prefix, the same entropy, the same hash.
+- The downgrade revokes every OAuth-issued token rather than leaving them with the audience
+  column removed. A token whose audience can no longer be checked would be accepted here on the
+  strength of being a row, which is the thing the check exists to prevent.
+
+### Rejected
+
+- **Supabase as the authorization server.** It ignores `resource`; see above and ADR-028.
+- **Dynamic Client Registration.** Deprecated, and it would let anything ask your people for
+  their workspace.
+- **A client secret.** These are public clients; a secret a desktop application cannot keep is a
+  secret in a log pretending to be security, and PKCE is what actually proves the exchange.
+- **A separate OAuth token table.** Two sets of rules to keep in step with the membership check.
+- **Deployment-wide clients.** One workspace's owner could name a consent screen shown to
+  another's user.
+- **`client_credentials`.** Every token here acts for a person and must resolve to a membership.

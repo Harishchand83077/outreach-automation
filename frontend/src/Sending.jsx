@@ -619,7 +619,7 @@ export default function Sending({ campaign, onError, onToast, mayAdminister }) {
 
   return (
     <>
-      <PageHeader title={<>Sending</>}>
+      <PageHeader icon={Icons.send} eyebrow="Outreach" title={<>Sending</>}>
         Which addresses this campaign sends from, whether their domains meet the
         bulk-sender rules, where a booked meeting comes in from, and which
         search provider pays for research.

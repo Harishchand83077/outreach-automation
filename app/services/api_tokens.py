@@ -72,7 +72,14 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def _mint() -> tuple[str, str, str]:
+def mint_secret() -> tuple[str, str, str]:
+    """`(secret, prefix, hash)` for a new credential.
+
+    Public because the OAuth server mints access tokens as rows in this same table (ADR-058),
+    and an access token that was generated a second way would be a second thing to keep right:
+    the same prefix, the same entropy, the same hash. Named rather than reached into, which is
+    this project's rule the moment something has two callers.
+    """
     secret = f"{PREFIX}{secrets.token_urlsafe(ENTROPY_BYTES)}"
     return secret, secret[: len(PREFIX) + 8], hash_token(secret)
 
@@ -106,6 +113,11 @@ class TokenBearer:
     org_id: uuid.UUID
     role: str
     scopes: tuple[str, ...]
+    #: RFC 8707: which API this token was minted for, or None for one minted by hand in the
+    #: dashboard (ADR-058). A hand-minted token has no audience because it is only ever
+    #: presented here; an OAuth-issued one names the resource the person consented to, and
+    #: `/mcp` refuses one naming anything else.
+    resource: str | None = None
 
     def may_read(self) -> bool:
         return READ_SCOPE in self.scopes
@@ -153,7 +165,7 @@ async def create_token(
             f"unknown scope(s): {', '.join(sorted(unknown))}. "
             f"This deployment has {', '.join(ALL_SCOPES)} and nothing else."
         )
-    secret, prefix, digest = _mint()
+    secret, prefix, digest = mint_secret()
     expires_at = moment + timedelta(days=ttl_days) if ttl_days else None
 
     row = ApiToken(
@@ -223,6 +235,7 @@ async def verify_token(
         org_id=member.org_id,
         role=member.role,
         scopes=tuple(row.scopes),
+        resource=row.resource,
     )
 
 

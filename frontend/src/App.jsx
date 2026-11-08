@@ -41,6 +41,7 @@ import {
 } from "./api";
 import { signOut } from "./supabase";
 import { Mark, PRODUCT } from "./Brand";
+import Consent from "./Consent";
 import Landing from "./Landing";
 import Overview from "./Overview";
 import { Link, RouterProvider, navigate, useMatch, useRoute } from "./router";
@@ -97,14 +98,48 @@ export default function App() {
   const session = useSession();
 
   if (session === undefined) return <Centered>Checking your session…</Centered>;
+
+  /* **The consent screen is outside the shell**, and outside the route table with it. A person
+     arrives here by redirect from an application asking for access, and every other thing on
+     the page -- a rail, a campaign picker, a review queue -- is a thing that could be mistaken
+     for the decision. Signed out, they get the front door first and land back here afterwards,
+     because the URL does not change while they sign in. */
+  const consenting = window.location.pathname === "/oauth/authorize";
   // **The first screen anybody is ever shown.** It used to be the sign-in form alone on a grey
   // page, which is a login screen; this is a front door. The form itself is unchanged -- still a
   // magic link, still no password field anywhere in the bundle.
   if (!session) return <Landing />;
+  if (consenting) return <ConsentPage />;
   return (
     <RouterProvider>
       <Dashboard session={session} />
     </RouterProvider>
+  );
+}
+
+/** The consent screen with the one error rule the rest of the app uses.
+ *
+ * An expired session here is not a red box: it is a reason to go back to the front door, from
+ * which the person returns to this same URL and the application that sent them is none the
+ * wiser. */
+function ConsentPage() {
+  const [error, setError] = useState(null);
+  const handle = (err) => {
+    if (err instanceof NotAuthenticated) {
+      signOut();
+      return;
+    }
+    setError(err?.message || "Something went wrong.");
+  };
+  return (
+    <>
+      {error ? (
+        <div className="banner" data-tone="bad" role="alert">
+          <span>{error}</span>
+        </div>
+      ) : null}
+      <Consent onError={handle} />
+    </>
   );
 }
 
@@ -890,7 +925,11 @@ function ReviewQueue({ campaignId, onError, onToast, onChanged }) {
 
   return (
     <>
-      <PageHeader title={<>Review queue</>}>
+      <PageHeader
+        icon={Icons.review}
+        eyebrow="Workspace"
+        title={<>Review queue</>}
+      >
         Nothing is sent without a decision here. Approving makes a lead
         eligible; the send loop re-checks the suppression list, the window and
         today&apos;s cap before anything leaves.
@@ -1241,7 +1280,7 @@ function Leads({ campaignId, openLeadId = null, onError, onToast }) {
 
   return (
     <>
-      <PageHeader title={<>Leads</>}>
+      <PageHeader icon={Icons.leads} eyebrow="Workspace" title={<>Leads</>}>
         Email is unique, so it is a search box. Name, company and state are
         filters, and they combine — all of them have to match. Bodies are not
         searched: a search box over drafts and replies would be an export of
@@ -1807,7 +1846,11 @@ function Import({ campaignId, onError, onToast }) {
 
   return (
     <>
-      <PageHeader title={<>Import leads</>}>
+      <PageHeader
+        icon={Icons.import}
+        eyebrow="Workspace"
+        title={<>Import leads</>}
+      >
         The preview writes nothing. Committing re-reads the file and re-checks
         every row against the suppression list, so anyone who opted out between
         the two is still excluded.
@@ -2489,7 +2532,11 @@ function CampaignScreen({
 
   return (
     <>
-      <PageHeader title={<>{campaign.name}</>}>
+      <PageHeader
+        icon={Icons.campaign}
+        eyebrow="Outreach"
+        title={<>{campaign.name}</>}
+      >
         What this campaign is, who it comes from, and whether it is allowed to
         send.
       </PageHeader>
@@ -3216,7 +3263,11 @@ function NewCampaign({ onError, onToast, onCreated, onCancel }) {
 
   return (
     <>
-      <PageHeader title={<>New campaign</>}>
+      <PageHeader
+        icon={Icons.plus}
+        eyebrow="Outreach"
+        title={<>New campaign</>}
+      >
         A campaign carries the sender persona, the goal and how its emails get
         written, so one tool serves more than one job. The persona is the list
         of claims a draft may make about us — it is validated now rather than at
@@ -4087,7 +4138,11 @@ function Settings({ campaign, onError, onToast, onChanged }) {
 
   return (
     <>
-      <PageHeader title={<>Settings</>}>
+      <PageHeader
+        icon={Icons.settings}
+        eyebrow="Controls"
+        title={<>Settings</>}
+      >
         Sending rules are per campaign, so choosing a different one in the bar
         above changes what is edited here. Only an owner or admin can open this
         screen, and the API checks the role as well — a hidden button is not a
