@@ -15,42 +15,25 @@
 //   * **No "resume everything" button.** ADR-034's automatic pause may only ever restrict;
 //     resuming is a person's decision, taken per mailbox, where they can see why it stopped.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from "react";
 
-import { getJson, postJson } from './api'
-import { Empty, Icons, SkeletonList } from './ui'
-
-function useLoad(path, onError) {
-  const [data, setData] = useState(null)
-  const [failed, setFailed] = useState(false)
-
-  const load = useCallback(() => {
-    setFailed(false)
-    getJson(path)
-      .then(setData)
-      .catch((err) => {
-        setFailed(true)
-        onError(err)
-      })
-  }, [path, onError])
-
-  useEffect(load, [load])
-  return { data, failed, reload: load }
-}
+import { getJson, postJson } from "./api";
+import { useLoad } from "./useLoad";
+import { Empty, Icons, SkeletonList } from "./ui";
 
 function Loading({ failed, data, what }) {
-  if (failed) return <p className="muted">Could not load {what}.</p>
-  if (!data) return <SkeletonList count={2} rows={2} />
-  return null
+  if (failed) return <p className="muted">Could not load {what}.</p>;
+  if (!data) return <SkeletonList count={2} rows={2} />;
+  return null;
 }
 
 export default function Operations({ onError, onToast }) {
-  const worker = useLoad('/admin/worker', onError)
-  const alerts = useLoad('/admin/alerts', onError)
-  const dead = useLoad('/admin/dead-jobs', onError)
-  const usage = useLoad('/admin/usage', onError)
+  const worker = useLoad("/admin/worker", onError);
+  const alerts = useLoad("/admin/alerts", onError);
+  const dead = useLoad("/admin/dead-jobs", onError);
+  const usage = useLoad("/admin/usage", onError);
 
-  const unacked = (alerts.data?.alerts || []).filter((row) => !row.acked_at)
+  const unacked = (alerts.data?.alerts || []).filter((row) => !row.acked_at);
 
   // **Grouped by kind, because one problem was being shown as fifty.** Found by opening the
   // deployed screen: a single expired Gmail connection had raised `mailbox_grant_expiring`
@@ -60,32 +43,34 @@ export default function Operations({ onError, onToast }) {
   // scroll. A count and the first and latest times say the same thing in one row.
   const grouped = Object.values(
     unacked.reduce((into, row) => {
-      const group = (into[row.kind] ||= { kind: row.kind, rows: [] })
-      group.rows.push(row)
-      return into
-    }, {})
+      const group = (into[row.kind] ||= { kind: row.kind, rows: [] });
+      group.rows.push(row);
+      return into;
+    }, {}),
   )
     .map((group) => {
       const byTime = [...group.rows].sort(
-        (a, b) => new Date(a.created_at) - new Date(b.created_at)
-      )
+        (a, b) => new Date(a.created_at) - new Date(b.created_at),
+      );
       return {
         ...group,
         count: byTime.length,
         first: byTime[0],
         latest: byTime[byTime.length - 1],
-      }
+      };
     })
-    .sort((a, b) => new Date(b.latest.created_at) - new Date(a.latest.created_at))
+    .sort(
+      (a, b) => new Date(b.latest.created_at) - new Date(a.latest.created_at),
+    );
 
   return (
     <>
       <h1 className="page-title">Operations</h1>
       <p className="page-note">
-        Whether the worker is alive, what it has complained about, and what it gave up on. Point
-        an external monitor at <code>/ready</code> rather than at this screen —{' '}
-        <code>/health</code> answers from the API&apos;s own memory and cannot see another
-        process.
+        Whether the worker is alive, what it has complained about, and what it
+        gave up on. Point an external monitor at <code>/ready</code> rather than
+        at this screen — <code>/health</code> answers from the API&apos;s own
+        memory and cannot see another process.
       </p>
 
       <section className="card">
@@ -94,19 +79,24 @@ export default function Operations({ onError, onToast }) {
         {worker.data ? (
           <>
             <p>
-              <span className="badge">{worker.data.running ? 'running' : 'not running'}</span>{' '}
-              {worker.data.worker_id ? <code>{worker.data.worker_id}</code> : null}
+              <span className="badge">
+                {worker.data.running ? "running" : "not running"}
+              </span>{" "}
+              {worker.data.worker_id ? (
+                <code>{worker.data.worker_id}</code>
+              ) : null}
             </p>
             <p className="hint">
               {worker.data.detail ||
                 `Last heartbeat ${worker.data.seen_seconds_ago}s ago, started ${new Date(
-                  worker.data.started_at
+                  worker.data.started_at,
                 ).toLocaleString()}.`}
             </p>
             {worker.data.running ? null : (
               <p className="muted">
-                Nothing is being researched, drafted or sent while this is false, and from
-                outside the symptom is simply that leads stop moving.
+                Nothing is being researched, drafted or sent while this is
+                false, and from outside the symptom is simply that leads stop
+                moving.
               </p>
             )}
           </>
@@ -114,24 +104,31 @@ export default function Operations({ onError, onToast }) {
       </section>
 
       <section className="card">
-        <h2>Alerts {unacked.length ? <span className="badge">{unacked.length} new</span> : null}</h2>
+        <h2>
+          Alerts{" "}
+          {unacked.length ? (
+            <span className="badge">{unacked.length} new</span>
+          ) : null}
+        </h2>
         <p className="hint">
-          One hour&apos;s cool-down per kind, and acknowledging re-arms it. A mailbox id is part of
-          the kind, so the first mailbox paused does not silence every other one.
+          One hour&apos;s cool-down per kind, and acknowledging re-arms it. A
+          mailbox id is part of the kind, so the first mailbox paused does not
+          silence every other one.
         </p>
         <Loading {...alerts} what="the alerts" />
         {alerts.data ? (
           grouped.length === 0 ? (
             <Empty icon={Icons.inbox} title="Nothing has raised an alert">
-              Which is the expected state. The table is the record and the webhook is only the
-              nudge, so an alert is never lost because a push failed.
+              Which is the expected state. The table is the record and the
+              webhook is only the nudge, so an alert is never lost because a
+              push failed.
             </Empty>
           ) : (
             <ul className="list">
               {grouped.map((group) => (
                 <li key={group.kind} className="list-row">
                   <div>
-                    <strong>{group.kind}</strong>{' '}
+                    <strong>{group.kind}</strong>{" "}
                     <span className="badge">{group.latest.severity}</span>
                     <span className="badge">{group.latest.scope}</span>
                     {group.count > 1 ? (
@@ -141,7 +138,7 @@ export default function Operations({ onError, onToast }) {
                     <p className="hint">
                       {group.count > 1
                         ? `First ${new Date(group.first.created_at).toLocaleString()}, latest ${new Date(
-                            group.latest.created_at
+                            group.latest.created_at,
                           ).toLocaleString()}`
                         : new Date(group.latest.created_at).toLocaleString()}
                     </p>
@@ -154,17 +151,21 @@ export default function Operations({ onError, onToast }) {
                       // forty-nine identical ones behind is the problem rather than the fix.
                       Promise.all(
                         group.rows.map((row) =>
-                          postJson(`/admin/alerts/${row.id}/ack`, { json: {} })
-                        )
+                          postJson(`/admin/alerts/${row.id}/ack`, { json: {} }),
+                        ),
                       )
                         .then(() => {
-                          onToast('Acknowledged, and that kind can alert again.')
-                          alerts.reload()
+                          onToast(
+                            "Acknowledged, and that kind can alert again.",
+                          );
+                          alerts.reload();
                         })
                         .catch(onError)
                     }
                   >
-                    {group.count > 1 ? `Acknowledge all ${group.count}` : 'Acknowledge'}
+                    {group.count > 1
+                      ? `Acknowledge all ${group.count}`
+                      : "Acknowledge"}
                   </button>
                 </li>
               ))}
@@ -176,9 +177,9 @@ export default function Operations({ onError, onToast }) {
       <section className="card">
         <h2>Dead jobs</h2>
         <p className="hint">
-          A job that used up its attempts. Requeueing resets them, because those retries were
-          spent on a different version of the code — which is the usual reason a job here is
-          worth another go.
+          A job that used up its attempts. Requeueing resets them, because those
+          retries were spent on a different version of the code — which is the
+          usual reason a job here is worth another go.
         </p>
         <Loading {...dead} what="the dead jobs" />
         {dead.data ? (
@@ -191,9 +192,11 @@ export default function Operations({ onError, onToast }) {
               {dead.data.jobs.map((job) => (
                 <li key={job.id} className="list-row">
                   <div>
-                    <strong>{job.kind}</strong>{' '}
+                    <strong>{job.kind}</strong>{" "}
                     <span className="badge">{job.attempts} attempts</span>
-                    <p className="hint">{job.last_error || 'No error recorded.'}</p>
+                    <p className="hint">
+                      {job.last_error || "No error recorded."}
+                    </p>
                   </div>
                   <button
                     type="button"
@@ -201,8 +204,8 @@ export default function Operations({ onError, onToast }) {
                     onClick={() =>
                       postJson(`/admin/jobs/${job.id}/requeue`, { json: {} })
                         .then(() => {
-                          onToast('Requeued with its attempts reset.')
-                          dead.reload()
+                          onToast("Requeued with its attempts reset.");
+                          dead.reload();
                         })
                         .catch(onError)
                     }
@@ -219,8 +222,9 @@ export default function Operations({ onError, onToast }) {
       <section className="card">
         <h2>Model usage today</h2>
         <p className="hint">
-          Per entry in the chain. The free tiers are the real ceiling on this system, which is why
-          a search or a draft falling back to the next entry is normal rather than a fault.
+          Per entry in the chain. The free tiers are the real ceiling on this
+          system, which is why a search or a draft falling back to the next
+          entry is normal rather than a fault.
         </p>
         <Loading {...usage} what="the model usage" />
         {usage.data ? (
@@ -235,7 +239,8 @@ export default function Operations({ onError, onToast }) {
                   <div>
                     <strong>{row.entry}</strong>
                     <p className="hint">
-                      {row.requests} requests, {row.tokens.toLocaleString()} tokens
+                      {row.requests} requests, {row.tokens.toLocaleString()}{" "}
+                      tokens
                     </p>
                   </div>
                 </li>
@@ -245,5 +250,5 @@ export default function Operations({ onError, onToast }) {
         ) : null}
       </section>
     </>
-  )
+  );
 }

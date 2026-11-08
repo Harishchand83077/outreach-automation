@@ -33,6 +33,109 @@ function Icon({ children, size = 17, ...rest }) {
 }
 
 export const Icons = {
+  // ---- added in S17.1 -------------------------------------------------------------
+  //
+  // **Seven of the nine nav items shared three icons** before this: `campaign` was
+  // Signals *and* Operations, `inbox` was Sending *and* Admin, `leads` was Leads *and*
+  // Job hunt. Two items with one icon is not a small thing on a left rail -- the icon
+  // is the control an eye uses to find a screen, so duplicating it means the rail can
+  // only be read word by word. Same 24x24 grid and 1.6 stroke as the twelve that were
+  // already here, so this is not a second icon vocabulary.
+  // Signals: a broadcast, because a signal is something that arrived rather than something we did.
+  signal: (p) => (
+    <Icon {...p}>
+      <path d="M4.93 19.07a10 10 0 0 1 0-14.14" />
+      <path d="M7.76 16.24a6 6 0 0 1 0-8.48" />
+      <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+      <path d="M16.24 7.76a6 6 0 0 1 0 8.48" />
+      <circle cx="12" cy="12" r="1.5" />
+    </Icon>
+  ),
+  // Operations: a pulse, which is what that screen is -- the worker's heartbeat and what failed.
+  pulse: (p) => (
+    <Icon {...p}>
+      <path d="M3 12h4l2.5-7 4 14L16 12h5" />
+    </Icon>
+  ),
+  // Job hunt: a briefcase. The candidate half of the product, and the one icon here anybody
+  // would guess from the word.
+  briefcase: (p) => (
+    <Icon {...p}>
+      <rect x="2.5" y="7.5" width="19" height="12" rx="2" />
+      <path d="M8.5 7.5V6a2 2 0 0 1 2-2h3a2 2 0 0 1 2 2v1.5" />
+      <path d="M2.5 12.5h19" />
+    </Icon>
+  ),
+  // Admin: people, because that screen is mostly who may do what.
+  people: (p) => (
+    <Icon {...p}>
+      <circle cx="9" cy="8" r="3.2" />
+      <path d="M2.8 20a6.2 6.2 0 0 1 12.4 0" />
+      <path d="M16.5 5.2a3.2 3.2 0 0 1 0 5.9" />
+      <path d="M18 14.4a6.2 6.2 0 0 1 3.2 5.6" />
+    </Icon>
+  ),
+  // Overview: the home of the product, and the only item above the divider.
+  home: (p) => (
+    <Icon {...p}>
+      <path d="M3.5 10.5 12 3.5l8.5 7" />
+      <path d="M5.5 9.5V20h13V9.5" />
+      <path d="M10 20v-5.5h4V20" />
+    </Icon>
+  ),
+  // Sending: an envelope with a wing, so it is distinct from `inbox` at 18px.
+  send: (p) => (
+    <Icon {...p}>
+      <path d="M21.5 3.5 2.5 10.2l6.6 2.7" />
+      <path d="M21.5 3.5 15 20.5l-5.9-7.6" />
+      <path d="M21.5 3.5 9.1 12.9" />
+    </Icon>
+  ),
+  // The graph and the brief: a small constellation. Used for "what we know".
+  graph: (p) => (
+    <Icon {...p}>
+      <circle cx="6" cy="7" r="2.2" />
+      <circle cx="18" cy="6" r="2.2" />
+      <circle cx="12" cy="17.5" r="2.2" />
+      <path d="M7.7 8.6l3.2 6.9" />
+      <path d="M16.4 7.6l-3 7.6" />
+      <path d="M8.2 6.6h7.6" />
+    </Icon>
+  ),
+  // An external link, for a source somebody is about to open in a new tab.
+  external: (p) => (
+    <Icon {...p}>
+      <path d="M14 4h6v6" />
+      <path d="M20 4l-8.5 8.5" />
+      <path d="M18 14v4.5a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2H10" />
+    </Icon>
+  ),
+  // Back, for a page header that is one level down.
+  back: (p) => (
+    <Icon {...p}>
+      <path d="M15 5l-7 7 7 7" />
+    </Icon>
+  ),
+  // A chevron, for a breadcrumb separator and a disclosure.
+  chevron: (p) => (
+    <Icon {...p}>
+      <path d="M9 5l7 7-7 7" />
+    </Icon>
+  ),
+  // Sparkle: anything a model did, so "a model wrote this" is visible rather than implied.
+  sparkle: (p) => (
+    <Icon {...p}>
+      <path d="M12 3.5l1.7 4.8 4.8 1.7-4.8 1.7L12 16.5l-1.7-4.8L5.5 10l4.8-1.7z" />
+      <path d="M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" />
+    </Icon>
+  ),
+  // Shield: the safety surfaces -- the send gate, the suppression list, the go-live gate.
+  shield: (p) => (
+    <Icon {...p}>
+      <path d="M12 3.2l7 2.6v5.6c0 4.3-2.9 7.6-7 9.4-4.1-1.8-7-5.1-7-9.4V5.8z" />
+      <path d="M9 12l2.2 2.2L15.5 10" />
+    </Icon>
+  ),
   review: (p) => (
     <Icon {...p}>
       <path d="M9 11l3 3L22 4" />

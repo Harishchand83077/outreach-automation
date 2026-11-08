@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { deleteJson, getJson, postJson } from "./api";
+import { useLoad } from "./useLoad";
 import { Drawer, Empty, Icons, SkeletonList } from "./ui";
 
 function Field({ label, hint, children }) {
@@ -22,24 +23,6 @@ function Field({ label, hint, children }) {
       {hint ? <p className="hint">{hint}</p> : null}
     </div>
   );
-}
-
-function useLoad(path, onError) {
-  const [data, setData] = useState(null);
-  const [failed, setFailed] = useState(false);
-
-  const load = useCallback(() => {
-    setFailed(false);
-    getJson(path)
-      .then(setData)
-      .catch((err) => {
-        setFailed(true);
-        onError(err);
-      });
-  }, [path, onError]);
-
-  useEffect(load, [load]);
-  return { data, failed, reload: load };
 }
 
 function Loading({ failed, data, what }) {

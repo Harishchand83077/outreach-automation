@@ -4410,3 +4410,134 @@ was cheaper than weakening the guard**, and the guard owns the word.
   this was not, and putting it there would make it citable by the drafter.
 - **Keeping the old scope guards and adding exceptions.** A guard with an exception list is a
   guard somebody edits instead of thinking.
+
+## ADR-057 — Pages with addresses, colour in the chrome, and a front door
+
+**Date:** 2026-11-08
+**Status:** Accepted
+**Relates to:** slice S17.1; builds on ADR-048
+
+### Context
+
+Asked for directly: make the product presentable, with colour and with pages rather than
+buttons. The system behind it is complete and the screens worked; what they looked like was an
+internal tool, and three specific things made them one.
+
+**There were no addresses.** `view` was a `useState`, so every screen in the product was the same
+URL. Nothing could be linked to, bookmarked, opened in a second tab or reached with the back
+button, and a demo could not be resumed where it was left.
+
+**There was no identity.** The mark was the letter `O` in a box, the accent was the same generic
+blue as "this text is a link", and seven of the nine nav items shared three icons.
+
+**The first screen anybody sees was a form on a grey page.**
+
+### Decision
+
+**Real paths, and a router written here.** `/review`, `/leads/:id`, `/campaigns/:id`, `/signals`.
+`frontend/wrangler.jsonc` already sets `not_found_handling: "single-page-application"` — the
+comment in that file says it is "what makes a refresh on /leads/123 work" — so History API
+routing is safe on this deployment, and that configuration predates any router. Without it,
+hash routing would have been the right answer instead.
+
+The router is about a hundred lines and adds no dependency, which is the same bargain this
+project already made for twelve hand-drawn icons: what a router must do here is parse a path,
+match a pattern, push history and re-render, all of which the platform does. What `react-router`
+adds beyond that — nested outlets, loaders, lazy splitting — is not in use on a thirteen-page
+dashboard.
+
+**The nav items are anchors, not buttons.** A real `href` is what makes middle-click, "copy
+link" and the browser's own back button work, and those three are most of what "pages instead of
+buttons" means to somebody using it.
+
+**Colour in the chrome, calm in the content.** The way "add colour" goes wrong in an operational
+tool is colouring the content: a red number here means a bounce and an amber one means a
+deadline, so a decorative colour in the same space steals meaning from a semantic one. The brand
+lives in the rail, the page headers, the funnel, the hero and the mark; a lead's row is
+unchanged. Two brand hues rather than one, because a single accent has to be identity, primary
+action and second chart series at once.
+
+**The brand is deliberately not the semantic accent.** A brand that is the same colour as "this
+is clickable" is not a brand, and that was the old rail's problem: "where I am" and "this is a
+link" were one blue.
+
+**One owner per class.** `index.css` owns tokens, `app.css` owns the shell and the controls that
+existed, `chrome.css` owns what is new. Two files styling `.nav-item` is a cascade somebody has
+to hold in their head, so the brand restyle of the existing rail is an edit to `app.css` rather
+than an override from the new file.
+
+**A front door rather than a login screen.** Every claim on it is checkable against the code and
+each one names where: `approval_mode` defaults to `review_all`; the claim check refuses a draft
+that asserts what no read page supports; `MAX_BOUNCE_RATE = 0.05` over `MIN_SENDS = 20`;
+`daily_cap` defaults to 100 warming up from 20. **A landing page that overstates what the system
+does is the same defect as a draft that invents a statistic, aimed at a different reader** — and
+this is the page the product is pitched from.
+
+**The name comes from the deployment's own domain.** `api.arkvane.in` is this system's API and
+"Arkvane" is already the agency name in the live campaign's persona. It is one constant in
+`Brand.jsx`.
+
+**An overview that answers two questions and not more**: what needs me now, and is this working.
+"Needs you now" shows a row only when its count is non-zero, and shows the all-clear only when
+every request has come back — "nothing needs you" is a claim and needs the same evidence as
+"three things do". The pipeline is a shape rather than seven numbers, because "1 reply" says
+nothing about whether a campaign is working while the step from 38 sent to 6 replied says what
+the problem is.
+
+**One `useLoad`, where there were four.** Each screen had its own copy and they had started to
+differ. The shared one adds `asked` — "we have heard back, including hearing an error" — which
+is the distinction that twice made this dashboard state something false while it waited, and
+which none of the four copies had.
+
+### Three defects, all found by opening the page
+
+The honest note at the end of ADR-048 said those screens had not been rendered in a browser and
+that the structural guards were a substitute for looking rather than a proof. That was right
+again here: the build was green, the frontend suite passed, all four guards passed, and three
+things were broken.
+
+1. **The unset theme was a mixture of both themes.** `:root[data-theme='light']` matches only
+   once somebody has *used* the toggle. Before that, a visitor on a light system picks up the
+   light base tokens from the `prefers-color-scheme` block and whatever `:root` says for
+   everything else — so the new brand tokens, defined on `:root` and on `[data-theme='light']`
+   but not in the media block, rendered a **dark hero gradient under dark navy text**. Invisible,
+   with no error anywhere.
+2. **`align-items: center` on the hero.** A centred grid item taller than its row overflows
+   equally in *both* directions, so on a short window the headline was cut off above the top of
+   the page with no way to scroll up to it.
+3. **`<SignIn embedded />` was passed a prop that did not exist**, so the form brought its own
+   full-height centred panel inside the hero card — two cards and 80vh of whitespace.
+
+### A fourth guard, for a class the other three could not see
+
+**Six `var(--x)` references named tokens that do not exist**, in three files, and `var()` with an
+unknown name and no fallback resolves to nothing: the declaration is dropped and the element
+inherits. The sign-in page's muted paragraphs and the settings tick-boxes had been rendering in
+body colour rather than muted colour. `index.css` states the rule the drift broke — a component
+never uses a raw colour, and a shade it needs belongs in the token file — and the rule *was*
+followed. What drifted was the names, which produces the same symptom and is harder to see.
+
+`tests/unit/test_dashboard_tokens_resolve.py` asserts that every reference resolves, that dark
+and light define the same names, and that **every token with a light value also appears in the
+`prefers-color-scheme` block** — which is the guard for defect 1 above, written after it rather
+than before, and run against the bug to watch it name `--grad-hero`.
+
+### Consequences
+
+- Thirteen addressable pages. A lead is a link: `/leads/:id` opens the drawer on load, and the
+  drawer stays, because replacing the list was what made comparing two leads mean navigating
+  twice and losing the scroll position both times.
+- Campaign-scoped screens keep the top-bar picker rather than nesting under `/campaigns/:id/...`.
+  Moving six screens under a campaign's path changes how every one of them gets its data; stated
+  here because the nesting is the obvious next step, not because it is wrong to want it.
+- The bundle grew about 9 KB gzipped, which is the router, the landing and the overview.
+- Both themes and the router were verified in a browser, not inferred from a green build.
+
+### Rejected
+
+- **`react-router`.** A dependency tree for what the platform already does.
+- **Hash routing.** The host is already configured for real paths.
+- **Colouring the content.** It would cost the semantic colours their meaning.
+- **Inventing a product name.** The deployment's own domain already had one.
+- **Writing marketing claims the code does not support.** The whole product is about not doing
+  that.
