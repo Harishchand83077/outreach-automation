@@ -48,6 +48,7 @@ from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
 from app.domain.state import LeadState
 from app.domain.template import CampaignTemplates
+from app.services import learning
 from app.services.drafting.from_template import draft_from_template
 from app.services.drafting.generator import DraftResult, generate_draft
 from app.services.drafting.prompts import reply_subject
@@ -287,6 +288,10 @@ async def handle_draft_lead(ctx: WorkerContext, session: AsyncSession, job: Job)
             kind="initial",
             reviewer_feedback=reviewer_feedback,
             arm_instruction=arm.instruction if arm else None,
+            # Only the lessons somebody approved (F16, ADR-059). A proposal is an observation
+            # nobody has agreed with, and the difference between the two states is the whole
+            # safety property of that feature.
+            lessons=await learning.instructions(session, ctx_org),
         )
 
     await draft_store.save_draft(session, ctx_org, lead=lead, kind="initial", result=result)

@@ -2732,3 +2732,52 @@ class OAuthRefreshToken(Base):
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (Index("ix_oauth_refresh_user", "org_id", "user_id"),)
+
+
+#: A lesson's life: proposed by counting edits, then approved or dismissed by a person. Nothing
+#: reaches a prompt in any other state, which is the whole safety property of F16.
+LESSON_STATES: tuple[str, ...] = ("proposed", "approved", "dismissed")
+
+
+class DraftLesson(Base):
+    """Something reviewers keep changing, waiting for somebody to decide about it (F16, ADR-059).
+
+    **Nothing here reaches a prompt until a person approves it**, and that is the feature rather
+    than a precaution. This is the only path in the system by which the product's own behaviour
+    changes on the strength of what it observed, and a loop that closed itself would be a system
+    teaching itself from its own output with nobody reading the lesson -- which is how a single
+    bad afternoon of edits becomes a standing instruction.
+
+    `evidence` holds the draft ids the pattern was counted from, because **a pattern without its
+    evidence is an assertion**, and this one is about to become an instruction to a model. A
+    person approving it can open them and check.
+    """
+
+    __tablename__ = "draft_lessons"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: The stable key from `domain.edits`, so recomputing finds the same row rather than
+    #: proposing a duplicate of something already dismissed.
+    kind: Mapped[str] = mapped_column(String(300), nullable=False)
+    #: What a person reads.
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    #: The line this would add to a drafting prompt. Stored rather than derived at use time, so
+    #: what somebody approved is what is used -- a derivation could change under an approval.
+    instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    occurrences: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    evidence: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    state: Mapped[str] = mapped_column(String(20), nullable=False, default="proposed")
+    decided_by: Mapped[str | None] = mapped_column(String(320))
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "kind", name="uq_draft_lessons_org_kind"),
+        CheckConstraint(
+            "state IN (" + ", ".join(f"'{name}'" for name in LESSON_STATES) + ")",
+            name="ck_draft_lessons_state",
+        ),
+    )

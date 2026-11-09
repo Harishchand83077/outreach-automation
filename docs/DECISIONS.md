@@ -4639,3 +4639,94 @@ tells somebody guessing which half of their guess was right.
 - **Deployment-wide clients.** One workspace's owner could name a consent screen shown to
   another's user.
 - **`client_credentials`.** Every token here acts for a person and must resolve to a membership.
+
+## ADR-059 — The system may notice what reviewers change, and may not act on it
+
+**Date:** 2026-11-09
+**Status:** Accepted
+**Relates to:** F16, slice S16.4; uses ADR-026's `drafts.derived_from_id`; same shape as ADR-053
+
+### Context
+
+`drafts` creates a new version on an edit rather than mutating, and `derived_from_id` links a
+human rewrite back to the model draft it came from. ADR-026 added that column precisely because
+version numbers cannot express it — a regeneration after a rejection also makes a new version
+and is a *different event*. So the preference data has been accumulating since Phase 9, and
+nothing has ever read it.
+
+**This is the only feature in the system where the product's own behaviour would change on the
+strength of what it observed**, which is what makes it different from everything else here.
+
+### Decision
+
+**Describe, then compare, then summarise for a person — and stop.** Each step is only safe given
+the one before it.
+
+**The describing is arithmetic, not a model**, and that is the decision this ADR is. A model
+asked "what did the human change?" produces a fluent sentence that is sometimes about a change
+that did not happen. The output of this feature goes *into a drafting prompt*, so a hallucinated
+observation becomes a standing instruction and the system has learned something nobody did.
+Everything `domain/edits.py` reports is computable from the two texts and checkable by reading
+them: a removed sentence, a subject that got shorter, a body that lost more than fifteen per
+cent of its words.
+
+**What it can see is narrower than what a person would notice, and that is the trade.** A short
+list of things that are definitely true beats a long list that is mostly true. It cannot see
+tone, it cannot see that a claim was softened, and it reports only removals rather than changes
+because a changed sentence might be a typo.
+
+**Counted per draft, never per occurrence.** One reviewer deleting the same line three times
+while editing one email is one opinion. Counting it three times would let a single session
+invent a rule for everybody.
+
+**Three separate drafts before anything is proposed.** Once is a Tuesday. This is not a
+significance threshold and is not presented as one — `DATASET_DESIGN.md`'s ~1,050 sends per arm
+is about A/B outcomes, which is a different question. This is "more than once is a pattern".
+
+**Nothing reaches a prompt until a person approves it.** A lesson is `proposed`, and only
+`approved` is read by the drafter. A loop that closed itself would be the system teaching itself
+from its own output with nobody reading the lesson, and one bad afternoon of edits would become
+a rule. The gate is a person rather than a threshold because no threshold distinguishes "our
+reviewers prefer this" from "one reviewer was in a hurry on Thursday".
+
+**A dismissed lesson is never proposed again**, by a unique key on `(org_id, kind)` where the
+kind is stable across recomputations. Somebody looked and said no; asking every week trains them
+to stop reading.
+
+**The screen shows the instruction before it is approved, not after.** Approving a *summary* of
+a change is not the same as approving the *instruction* that summary becomes, and only one of
+those is what actually happens.
+
+**A lesson is advice about how to write and never about what is true.** It travels through the
+same prompt parameter as an A/B arm's instruction (ADR-053) and is held to the same rule: the
+draft it produces goes through the same `validate_draft` and the same claim check, so an
+approved lesson cannot widen what may be asserted. Hard rule 6 is untouched by anything here. A
+test asserts no generated instruction contains the words a factual claim would need.
+
+**The evidence travels with the pattern.** `evidence` holds the draft ids it was counted from,
+because a pattern without its evidence is an assertion — and this one is about to become an
+instruction to a model. Somebody deciding can open them.
+
+### Consequences
+
+- The feature is free and non-networked: counting edits is arithmetic over rows the workspace
+  already has, and no model is involved at any point on this path.
+- A workspace that has never edited a draft sees an empty list, which is the honest answer.
+- `build_draft_prompt` gains one more optional section. The order is lessons, then the arm's
+  instruction, then the reviewer's rejection feedback — most general to most specific, with the
+  objection about *this* text last, because it is the one that must not be overridden.
+- The producer is wired in the same slice as the table, and a test asserts the handler passes
+  the lessons. Five things in this project have been built and never called; a lesson nobody
+  reads would be the sixth.
+
+### Rejected
+
+- **Describing the diff with a model.** A hallucinated observation becomes a standing
+  instruction.
+- **Applying a pattern automatically above some count.** No count distinguishes a preference
+  from a bad afternoon.
+- **Re-proposing dismissed lessons.** It trains people to stop reading the list.
+- **Letting a lesson state a fact.** The claim check exists so a draft asserts only what the
+  evidence supports, and a lesson that could add to the evidence would route around it.
+- **Waiting for ~1,050 sends per arm.** That is the A/B significance number and a different
+  question; this one needs three edits, not statistical power.

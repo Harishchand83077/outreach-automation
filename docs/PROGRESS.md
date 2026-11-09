@@ -3484,6 +3484,53 @@ A hand-minted token keeps working unchanged, and a test says so -- that is the m
 risk. 24 unit tests and 35 integration, ruff and mypy strict clean, migration applied and
 reversed against the development database.
 
+**The system can notice what reviewers keep changing, and still cannot act on it alone (F16,
+ADR-059, slice S16.4). The v3 plan is complete.**
+
+`drafts` has created a new version on every edit since Phase 9, and `derived_from_id` has linked
+each human rewrite to the model draft it came from -- ADR-026 added that column because version
+numbers cannot tell an edit from a regeneration. **The preference data has been accumulating for
+months and nothing had ever read it.**
+
+**The describing is arithmetic and not a model, which is the whole decision.** A model asked
+"what did the human change?" writes a fluent sentence that is sometimes about a change that did
+not happen -- and the output of this feature goes *into a drafting prompt*, so a hallucinated
+observation becomes a standing instruction and the system has learned something nobody did.
+What `domain/edits.py` reports is computable from the two texts and checkable by reading them:
+a removed sentence, a shorter subject, a body that lost more than fifteen per cent of its words.
+It sees less than a person would, and a short list of things that are definitely true beats a
+long list that is mostly true.
+
+**Counted per draft, never per occurrence**: one reviewer deleting the same line three times
+while editing one email is one opinion, and counting it three times would let a single session
+invent a rule for everybody. **Three separate drafts** before anything is proposed -- once is a
+Tuesday. That is not a significance threshold and is not presented as one; the ~1,050 sends per
+arm in `DATASET_DESIGN.md` is about A/B outcomes, which is a different question.
+
+**Nothing reaches a prompt until a person approves it, and that is the feature rather than a
+precaution.** This is the only path by which the product's own behaviour changes on the strength
+of what it observed. A loop that closed itself would be the system teaching itself from its own
+output with nobody reading the lesson. The gate is a person rather than a threshold because no
+threshold distinguishes "our reviewers prefer this" from "one reviewer was in a hurry on
+Thursday". A dismissed lesson is **never proposed again** -- somebody looked and said no, and
+asking every week trains them to stop reading.
+
+**The screen shows the instruction before it is approved, not after**, because approving a
+summary of a change is not the same as approving the instruction that summary becomes.
+
+**A lesson is advice about how to write and never about what is true.** It goes through the same
+prompt parameter as an A/B arm's instruction and is held to the same rule: every draft still
+goes through the same `validate_draft` and the same claim check, so an approved lesson cannot
+widen what may be asserted. A test asserts no generated instruction contains the words a factual
+claim would need.
+
+**And the producer ships with the table**, with a test that the handler actually passes the
+lessons -- five things in this project have now been built and never called, and a lesson nobody
+reads would have been the sixth.
+
+14 unit tests and 11 integration, ruff and mypy strict clean, migration applied and reversed
+against the development database.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

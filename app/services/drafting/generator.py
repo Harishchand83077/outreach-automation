@@ -145,6 +145,7 @@ async def generate_draft(
     reply_label: str | None = None,
     reviewer_feedback: str | None = None,
     arm_instruction: str | None = None,
+    lessons: list[str] | None = None,
 ) -> DraftResult:
     """Produce a validated draft, or return the reasons it could not be produced.
 
@@ -173,6 +174,7 @@ async def generate_draft(
             their_reply=their_reply,
             reply_label=reply_label,
             arm_instruction=arm_instruction,
+            lessons=lessons,
         )
 
         try:
