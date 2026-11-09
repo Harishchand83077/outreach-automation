@@ -21,6 +21,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
 from app.db.models import SEARCH_PROVIDERS
 from app.db.repo import OrgContext
+from app.domain import connections
 from app.services.contacts import keys
 from app.services.research import chain
 from app.services.research.search import SearchBudget, SearchKeyRefused, SearchUnavailable
@@ -79,6 +80,9 @@ async def list_search_keys(
                 "usable": status_.usable,
                 "last_used_at": status_.last_used_at.isoformat() if status_.last_used_at else None,
                 "added_by": status_.added_by,
+                # The same catalogue the contact keys carry (ADR-060): one place says how a
+                # provider is connected and where its key comes from.
+                **connections.describe(status_.provider),
             }
             for status_ in statuses
         ],

@@ -944,18 +944,22 @@ function Network({ onError, onToast }) {
   );
 }
 
-function Contacts({ campaign, onError, onToast, mayAdminister }) {
-  const keys = useLoad("/provider-keys", onError);
-  const candidates = useLoad("/contact-candidates", onError);
-  const [provider, setProvider] = useState("");
+/* ------------------------------------------------------ connecting a provider (ADR-060)
+
+   **The honest version of "connect with one click".** Google works that way because Google
+   offers it to anybody; Apollo offers it only to approved partners; Hunter does not offer it at
+   all. So this card asks the provider how it connects rather than assuming, and a provider that
+   has no redirect says why instead of leaving the question hanging.
+
+   What it fixes today is the part that actually wastes time, which is not the pasting: it is
+   not knowing which page of the provider's site creates the key. Every key provider carries a
+   deep link straight to it. */
+
+function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
   const [apiKey, setApiKey] = useState("");
   const [clientId, setClientId] = useState("");
-  const [domain, setDomain] = useState("");
-  const [lookupWith, setLookupWith] = useState("");
   const [busy, setBusy] = useState(false);
-
-  const providers = keys.data?.providers || [];
-  const usable = providers.filter((row) => row.connected && row.usable);
+  const [open, setOpen] = useState(false);
 
   const save = (event) => {
     event.preventDefault();
@@ -964,18 +968,148 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
     if (clientId) body.client_id = clientId;
     // PUT, so saving again replaces rather than adding: one account per provider per org is
     // hard rule 8 expressed in the write path.
-    putJson(`/provider-keys/${provider || providers[0]?.provider || ""}`, {
-      json: body,
-    })
+    putJson(`/provider-keys/${row.provider}`, { json: body })
       .then(() => {
         setApiKey("");
         setClientId("");
-        onToast("Key saved. It is never shown again.");
-        keys.reload();
+        setOpen(false);
+        onToast(
+          "Saved. It is never shown again — verify it below when you are ready.",
+        );
+        onChanged();
       })
       .catch(onError)
       .finally(() => setBusy(false));
   };
+
+  return (
+    <li className="list-row">
+      <div style={{ minWidth: 0 }}>
+        <strong>{row.label || row.provider}</strong>{" "}
+        {row.connected ? (
+          <span className="pill" data-tone={row.usable ? "success" : "danger"}>
+            <span className="pill-dot" />
+            {row.usable ? "connected" : "not working"}
+          </span>
+        ) : (
+          <span className="pill">not connected</span>
+        )}
+        <p className="hint" style={{ margin: "4px 0 0" }}>
+          {row.purpose}
+          {row.free_tier ? ` ${row.free_tier}` : ""}
+        </p>
+        {open ? (
+          <form onSubmit={save} style={{ marginTop: 12 }}>
+            {/* The deep link first, because the order matches what somebody actually does:
+                go and make a key, then come back and paste it. */}
+            {row.key_page ? (
+              <p className="hint">
+                <a href={row.key_page} target="_blank" rel="noreferrer">
+                  Open {row.label}&apos;s API key page
+                </a>{" "}
+                — make a key there, then paste it here.
+              </p>
+            ) : null}
+            {row.needs_client_id ? (
+              <div className="field">
+                <label className="form-label">Client ID</label>
+                <input
+                  value={clientId}
+                  onChange={(event) => setClientId(event.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+            ) : null}
+            <div className="field">
+              <label className="form-label">
+                {row.needs_client_id ? "Client secret" : "API key"}
+              </label>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(event) => setApiKey(event.target.value)}
+                autoComplete="off"
+              />
+              <p className="hint">
+                Encrypted before it is stored, never shown again, and never
+                returned by any route. Saving does not call {row.label} —
+                verifying does, and that spends one of your credits.
+              </p>
+            </div>
+            <div className="btn-row">
+              <button
+                type="submit"
+                className="btn"
+                data-variant="brand"
+                disabled={busy || !apiKey.trim()}
+              >
+                Save
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setOpen(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : (
+          /* Said rather than left as a silence: "why can I connect Gmail in one click but not
+             this?" is a reasonable question with a real answer. */
+          <details className="evidence" style={{ marginTop: 8 }}>
+            <summary>Why is there no one-click button?</summary>
+            <div className="evidence-body">
+              <p className="hint">{row.oauth_note}</p>
+            </div>
+          </details>
+        )}
+      </div>
+
+      <div className="btn-row">
+        {/* A member reads which providers are connected and cannot change a credential --
+            the gate the previous form had, kept rather than widened by a rewrite. */}
+        {!open && mayAdminister ? (
+          <button
+            type="button"
+            className="btn"
+            data-variant={row.connected ? undefined : "brand"}
+            onClick={() => setOpen(true)}
+          >
+            {row.connected ? "Replace key" : `Connect ${row.label}`}
+          </button>
+        ) : null}
+        {row.connected && mayAdminister ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              postJson(`/provider-keys/${row.provider}/verify`)
+                .then((body) => onToast(body.note || "Checked."))
+                .catch(onError)
+                .finally(() => setBusy(false));
+            }}
+          >
+            Verify
+          </button>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function Contacts({ campaign, onError, onToast, mayAdminister }) {
+  const keys = useLoad("/provider-keys", onError);
+  const candidates = useLoad("/contact-candidates", onError);
+  const [domain, setDomain] = useState("");
+  const [lookupWith, setLookupWith] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const providers = keys.data?.providers || [];
+  const usable = providers.filter((row) => row.connected && row.usable);
+
 
   const lookup = (event) => {
     event.preventDefault();
@@ -996,7 +1130,7 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
   return (
     <>
       <section className="card">
-        <h2>Your provider keys</h2>
+        <h2>Connect a provider</h2>
         <p className="muted">
           A lookup spends <strong>your</strong> credit, so there is no shared
           key by design and nothing but a button press can start one. Saving a
@@ -1008,56 +1142,14 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
           <>
             <ul className="list">
               {providers.map((row) => (
-                <li key={row.provider} className="list-row">
-                  <div>
-                    <strong>{row.provider}</strong>{" "}
-                    <span className="badge">
-                      {row.connected
-                        ? row.usable
-                          ? "connected"
-                          : "needs attention"
-                        : "no key"}
-                    </span>
-                    {row.label ? <div className="hint">{row.label}</div> : null}
-                  </div>
-                  {mayAdminister && row.connected ? (
-                    <div className="btn-row">
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() =>
-                          postJson(`/provider-keys/${row.provider}/verify`, {
-                            json: {},
-                          })
-                            .then((body) =>
-                              onToast(
-                                body.ok
-                                  ? body.note
-                                  : `Not working: ${body.reason}`,
-                              ),
-                            )
-                            .catch(onError)
-                        }
-                      >
-                        Verify
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() =>
-                          deleteJson(`/provider-keys/${row.provider}`)
-                            .then(() => {
-                              onToast("Key revoked.");
-                              keys.reload();
-                            })
-                            .catch(onError)
-                        }
-                      >
-                        Revoke
-                      </button>
-                    </div>
-                  ) : null}
-                </li>
+                <ConnectCard
+                  key={row.provider}
+                  row={row}
+                  onError={onError}
+                  onToast={onToast}
+                  onChanged={keys.reload}
+                  mayAdminister={mayAdminister}
+                />
               ))}
             </ul>
             <p className="hint">
@@ -1066,43 +1158,6 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
               so a loop cannot spend your credits.
             </p>
           </>
-        ) : null}
-
-        {mayAdminister ? (
-          <form onSubmit={save} style={{ marginTop: 14 }}>
-            <Field label="Provider">
-              <select
-                value={provider || providers[0]?.provider || ""}
-                onChange={(event) => setProvider(event.target.value)}
-              >
-                {providers.map((row) => (
-                  <option key={row.provider} value={row.provider}>
-                    {row.provider}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="API key">
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(event) => setApiKey(event.target.value)}
-              />
-            </Field>
-            <Field label="Client id" hint="Snov only.">
-              <input
-                value={clientId}
-                onChange={(event) => setClientId(event.target.value)}
-              />
-            </Field>
-            <button
-              type="submit"
-              className="btn"
-              disabled={busy || !apiKey || !(provider || providers[0])}
-            >
-              Save key
-            </button>
-          </form>
         ) : null}
       </section>
 

@@ -3531,6 +3531,48 @@ reads would have been the sixth.
 14 unit tests and 11 integration, ruff and mypy strict clean, migration applied and reversed
 against the development database.
 
+
+**"Connect with Apollo" is a button where the provider offers one, and a sentence where it does
+not (ADR-060).** Asked for directly: click, get redirected, come back connected.
+
+**Three of the four answers were no, and each for a different reason.** Apollo *does* run an
+authorization-code flow -- but only for approved partners, so the credentials come from their
+developer portal after an application. Hunter has none at all. Snov's is `client_credentials`,
+which has no redirect and no consent screen: you still paste two values, so it is a key wearing
+OAuth's name. Google is the one that works that way, and it already does (ADR-018).
+
+**So the catalogue declares the method and the screen asks it**, rather than the screen assuming
+every provider is the same. Adding Apollo's redirect later is a changed `method` and an adapter
+-- not a second screen and not a parallel concept to keep in step.
+
+**A fake redirect was the tempting version and it is not built.** A button that opens the
+provider's site and then shows a paste field looks like a connection and is a paste. That is
+`List-Unsubscribe-Post` beside a bare mailto (ADR-033) -- announcing a capability that is not
+there -- pointed at a user instead of a mail server, and worse, because somebody would read the
+paste as the flow having failed.
+
+**What is shipped is the part that actually wastes time, which is not the pasting.** Pasting a
+key is ten seconds; finding the page of the provider's site that creates one is ten minutes of
+settings menus. Every key provider carries a deep link straight to it, above the field, because
+that is the order somebody does it in. Each card also says what the provider is *for* -- a list
+of six names tells nobody which to connect -- what the free tier is, and, when there is no
+button, why not, because "why can I connect Gmail in one click but not this?" is a reasonable
+question whose unanswered version reads as the feature being unfinished.
+
+`ALL_PROVIDERS` builds the database's check constraint and `CONNECTIONS` renders the screen, so
+`test_connection_catalogue.py` asserts both directions: a provider in one and not the other is
+either a card nobody can fill in or a key nobody can be told where to get.
+`test_nothing_claims_one_click_that_does_not_have_it` is the one that keeps the claim honest, and
+it will hold Apollo to having no key page the day its method changes.
+
+**And one-click unsubscribe needed no implementation at all.** It was built in S11.4 and has been
+waiting on one value; setting `PUBLIC_API_URL` turned it on. Verified live:
+`https://api.arkvane.in/u/<token>` answers a page with a button for an unknown token exactly as
+it does for a real one, which is the no-oracle rule holding in production.
+
+8 new unit tests, ruff and mypy strict clean, frontend builds, 35 dashboard and catalogue guards
+pass.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that
