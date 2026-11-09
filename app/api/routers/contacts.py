@@ -20,6 +20,7 @@ from sqlalchemy import select
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
 from app.db.models import CONTACT_PROVIDERS, Campaign, ContactCandidate
 from app.db.queue import QueueFull
+from app.domain import connections
 from app.services.contacts import keys, lookup
 from app.services.importer import first_job
 from app.services.importer import service as importer
@@ -70,6 +71,11 @@ async def list_provider_keys(user: CurrentUserDep, session: SessionDep) -> dict[
                 "usable": status_.usable,
                 "last_used_at": status_.last_used_at.isoformat() if status_.last_used_at else None,
                 "added_by": status_.added_by,
+                # **How this one is connected, and where its key comes from** (ADR-060). Sent
+                # with the row rather than hard-coded in the screen, so adding a provider --
+                # or Apollo becoming a redirect once they approve a partner integration -- is
+                # a catalogue entry and not a second screen.
+                **connections.describe(status_.provider),
             }
             for status_ in statuses
         ],

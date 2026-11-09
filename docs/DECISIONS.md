@@ -4730,3 +4730,57 @@ instruction to a model. Somebody deciding can open them.
   evidence supports, and a lesson that could add to the evidence would route around it.
 - **Waiting for ~1,050 sends per arm.** That is the A/B significance number and a different
   question; this one needs three edits, not statistical power.
+
+## ADR-060 — Connecting a provider: declare the method, and do not fake the button
+
+**Status:** accepted, 2026-11-10. **Context:** F9 (contact lookups) and F17 (search).
+
+**Asked for directly:** *"for apis like appolo ..can we do somehing like user just click on
+connect with appolo and we will redirect to that appolo api location and we just have to create
+and then it automa save and return back to our website."* That is OAuth, and it is exactly how
+Connect Gmail already works (ADR-018). The question is whether the provider offers it.
+
+**What each provider actually offers, checked rather than assumed:**
+
+| Provider | One-click? | Why |
+|---|---|---|
+| Google | **yes**, already built | Google offers an authorization-code flow to anybody. |
+| Apollo | **partner-gated** | They do run one, but the client id and secret come from their developer portal *after they approve an integration*. The button is one catalogue entry and one token exchange away; what stands in the way is an application to Apollo, not code. |
+| Hunter | **no** | Their documentation describes a key added to every call and nothing else. There is no flow to build. |
+| Snov | **no, despite the name** | `client_credentials` — OAuth's machine-to-machine grant. No redirect, no consent screen; the user still pastes a client id and a secret, so it is a key by any other name. |
+| Tavily, Brave, Serper | **no** | API keys only. |
+
+**Decision.** `app/domain/connections.py` declares, per provider, how it is connected: the
+`method` (`oauth` | `key`), what it is for, where its key page is, whether it wants a client id,
+what the free tier is, and — when there is no button — **why there is not**.
+
+**The screen asks the catalogue rather than assuming.** That is the whole point: adding Apollo's
+redirect later is a changed `method` and an adapter, not a second screen and not a parallel
+concept to keep in step.
+
+**What was deliberately not built: a fake redirect.** A button that opens the provider's site in
+a tab and then shows a paste field would *look* like a connection and still be a paste. It is the
+same dishonesty as `List-Unsubscribe-Post` beside a bare mailto (ADR-033) — announcing a
+capability that is not there — pointed at a user instead of at a receiving mail server. And it is
+the worse kind, because somebody would believe the flow had failed when it had merely never
+existed.
+
+**What is available today is the part that actually wastes time, and it is not the pasting.**
+Pasting a key is ten seconds. Finding the page of the provider's site that creates one is ten
+minutes of settings menus. So every key entry carries a deep link straight to it, and the card
+puts that link *above* the field, because the order matches what somebody actually does: go and
+make a key, then come back and paste it.
+
+**Two lists that must agree, so a test says so.** `ALL_PROVIDERS` is what the database's check
+constraint is built from; `CONNECTIONS` is what the screen renders. A provider in one and not the
+other is either a card nobody can fill in or a key nobody can be told where to get — this
+project's signature defect, caught here before it shipped rather than after.
+`test_nothing_claims_one_click_that_does_not_have_it` is the one that keeps the claim honest, and
+it will hold Apollo to having no `key_page` the day its `method` changes.
+
+**The admin gate is unchanged.** A member reads which providers are connected and cannot change a
+credential or spend a verify credit — the gate the previous form had, kept rather than lost in a
+rewrite.
+
+**Owner action, and it is the only thing between here and a real button:** apply to Apollo's
+developer programme for OAuth client credentials.
