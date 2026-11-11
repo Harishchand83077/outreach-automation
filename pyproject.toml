@@ -7,10 +7,10 @@ requires-python = "==3.12.*"
 # Pinned to exact versions. The prototype used `>=` throughout with no lockfile, so two
 # installs a week apart were different programs (issue E6). `uv.lock` pins the full graph.
 dependencies = [
-    "fastapi==0.162.0",
+    "fastapi==0.162.2",
     "uvicorn[standard]==0.54.0",
     "python-multipart==0.0.33",
-    "pydantic==2.14.2",
+    "pydantic==2.14.3",
     "pydantic-settings==2.16.2",
     "python-dotenv==1.2.4",
     "openpyxl==3.1.5",
@@ -21,7 +21,7 @@ dependencies = [
     # logs are structured JSON on stdout (`app/core/logging.py`), and the database is Postgres.
     # They are listed here only as a note, because an image that still carried four unused
     # dependency trees would carry their vulnerabilities too (§19).
-    "sqlalchemy[asyncio]==2.1.6",
+    "sqlalchemy[asyncio]==2.1.8",
     "asyncpg==0.32.0",
     "alembic==1.20.1",
     # Windows ships no tz database, and scheduling is defined in Asia/Kolkata, so ZoneInfo
@@ -30,7 +30,7 @@ dependencies = [
     # RFC-compliant address syntax. Deliverability (MX) is checked separately through an
     # injectable resolver, so no test ever needs the network.
     "email-validator==2.3.0",
-    "dnspython==2.9.1",
+    "dnspython==2.9.2",
     # Used directly rather than a vendor SDK: every provider in the chain speaks the same
     # OpenAI-compatible endpoint, and we need control over error classification (issue E5).
     "httpx==0.28.1",
