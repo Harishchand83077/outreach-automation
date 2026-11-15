@@ -4784,3 +4784,98 @@ rewrite.
 
 **Owner action, and it is the only thing between here and a real button:** apply to Apollo's
 developer programme for OAuth client credentials.
+
+## ADR-061 — A deployment that can say which build it is, and a client somebody can register
+
+**Status:** accepted, 2026-11-15. **Context:** ADR-058 (the OAuth server), and the deploy drift
+this file has now recorded five times.
+
+Two gaps, found by asking what in the API has no screen rather than by reading the plan. The v3
+plan is complete; these are both the same failure as ADR-048 — built, correct and unreachable.
+
+### Part 1 — the OAuth server had no way to register a client
+
+ADR-058 shipped an authorization server so that connecting your own Claude would stop meaning
+*paste a token*. It needs a registered client, `POST /oauth/clients` existed, and **nothing in
+the dashboard called it** — so the only way to set up the flow was a `curl` by somebody who
+could already paste anything. The feature was inert in exactly the way ADR-048 describes.
+
+**Settings → Connected applications**, beside the token panel it completes. **Owner only**, and
+that is not a formality: this is the one screen in the product that decides what a consent
+screen says, and the redirect URIs are where authorization codes are delivered. Whoever can add
+one can put their own address on a page reading "allow this". The gate is the route's — a hidden
+button is not security — but a form that always answers 403 is worse than no form.
+
+The stored redirect URIs are **shown**, because an exact-match rule cannot be debugged without
+seeing what was actually saved. A wrong port or a trailing slash is the commonest way one of
+these flows dies, and from the outside it reads as our bug.
+
+### Part 2 — a merged pull request looks like a shipped one
+
+Cloudflare rebuilds the dashboard on every merge to `main`; the API is deployed by hand. The two
+drift apart routinely, and this file records the consequence five times — most recently four
+slices in a row, where the Signals screen answered **Not Found** because the live backend was an
+older image. **A 404 cannot say "this API is older than this screen"**, so the investigation
+started at DNS, CORS and connectivity each time. The repository's own note named this as the
+next thing worth building.
+
+- `GET /version` returns `commit`, `built_at` and `started_at`, and nothing else. Not a
+  dependency list, not a path, not a setting: an inventory of what is installed is a list of
+  which advisories to try. `started_at` answers a question the commit cannot — *did the deploy
+  restart anything?* A rollback that quietly left the old container running reports an uptime in
+  days beside a commit that looks current.
+- **Public**, deliberately. The thing that needs this answer is a dashboard that may not be able
+  to authenticate against a mismatched build, and a commit hash of a private repository names a
+  build without describing it.
+- **Baked into the image, not set on the container.** The identity has to travel with the
+  artifact: a restart passing a different value would have the deployment confidently report a
+  build it is not running, which is worse than reporting none. The `ARG` is the **last** layer,
+  because a value that changes on every commit invalidates everything below it.
+- **`unknown` is answered rather than guessed**, and the comparison is skipped when either side
+  is unknown. A development run bakes nothing and `local` is the Compose default, so without
+  that a developer would see the banner on every page load for ever — and then nobody reads it
+  on the day it is true. The same reasoning as alerting only after three consecutive worker
+  failures.
+- **"Older" is claimed only when both build times parse and the API's is earlier.** Two hashes
+  are different and never older, and the two times come from two machines' clocks, so the banner
+  shows both rather than only the conclusion. Where it cannot tell, it says the builds differ
+  and lets the reader decide: *the API is behind*, asserted wrongly, sends somebody to redeploy
+  something that was already current.
+- The comparison is a **pure function in its own module with its own tests**, not a condition
+  inside a component. The dashboard's suite renders nothing, which is exactly how a button once
+  shipped throwing `ReferenceError`.
+
+`/version` is the one route the dashboard calls that lives **above** `/api/v1`, so it gets its
+own client function rather than a `path` argument that would let any screen escape the prefix.
+`test_dashboard_calls_real_routes` caught that on the first run, which is what that guard is for.
+
+### Part 3 — `PUBLIC_PATHS` was read by nothing
+
+Found while adding `/version` to it. What makes a route public here is declaring no identity
+dependency; the frozenset was a comment with parentheses. So a route that forgot its auth would
+not appear in it, and a route named in it could grow an auth dependency with the list still
+claiming otherwise — the signature defect, in the one place where being wrong is a security
+question.
+
+`tests/unit/test_public_paths.py` compares the two, in **both** directions: a route that forgot
+its auth is the dangerous one, and a list that over-claims is what makes somebody reason wrongly
+about the first. Three things came out of writing it:
+
+1. **A single-level scan finds zero routes.** This FastAPI keeps `_IncludedRouter` wrappers in
+   `app.routes` rather than flattening them, so `isinstance(route, APIRoute)` matches nothing and
+   a guard that scans nothing passes trivially while reading as evidence. It walks the wrappers
+   and rebuilds each path from the include prefix, and `test_there_is_something_to_check` states
+   its own preconditions.
+2. **Keying by path alone was wrong**, and the guard found it: `/mcp` also serves `GET` and
+   `DELETE` stubs that answer 405 by design, and a 405 needs no credential to be correct. It is
+   keyed by method and path now — which is also the only way to express the unsubscribe
+   endpoint's deliberate split, where `GET` renders a button and `POST` acts.
+3. **Four routes authenticate in the handler body**, not through a dependency: `/mcp` and the
+   three extension endpoints. That is ADR-028's two-doors rule — each door must refuse the wrong
+   *kind* of key, which means reading the header itself, where a shared `Depends` would accept
+   every credential the other doors accept. Exempting them is only honest if something checks
+   they do the work, so a separate test parses each handler with `ast` and asserts it resolves a
+   bearer. Parsed rather than grepped, because the comment explaining each door names the very
+   call being asserted.
+
+Run against `/api/v1/me` with its `CurrentUserDep` removed, it names `GET /api/v1/me`.

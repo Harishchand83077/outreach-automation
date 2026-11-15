@@ -21,6 +21,12 @@ x-app: &app
   build:
     context: ..
     dockerfile: Dockerfile
+    args:
+      # deploy.sh exports both. Empty on a hand-built image, which /version reports as
+      # `unknown` rather than guessing -- an unknown build is not compared against the
+      # dashboard's, so the mismatch banner stays silent instead of crying wolf.
+      BUILD_COMMIT: ${IMAGE_TAG:-}
+      BUILD_TIME: ${BUILD_TIME:-}
   image: outreach:${IMAGE_TAG:-local}
   restart: unless-stopped
   env_file:

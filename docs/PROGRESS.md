@@ -3573,6 +3573,94 @@ it does for a real one, which is the no-oracle rule holding in production.
 8 new unit tests, ruff and mypy strict clean, frontend builds, 35 dashboard and catalogue guards
 pass.
 
+
+**The v3 plan is complete, so the question became what in the API has no screen -- and the
+answer was two things that were inert rather than missing (ADR-061, slice S17.3).** Found by
+diffing the served routes against the paths the dashboard calls: 102 served, 94 called, and of
+the eight the only real gap was `/oauth/clients`.
+
+**ADR-058's authorization server could not be used by anybody.** It shipped so that connecting
+your own Claude would stop meaning *paste a token*; a flow needs a registered client; the route
+existed and nothing called it. So the only way to set the flow up was a `curl` by somebody who
+could already paste anything -- ADR-048's failure exactly, one slice after that ADR was written.
+**Settings -> Connected applications** now does it, owner-only, beside the token panel it
+completes. The stored redirect URIs are shown, because an exact-match rule cannot be debugged
+without seeing what was actually saved: a wrong port or a trailing slash is the commonest way
+one of these dies, and from the outside it reads as our bug.
+
+**And a merged pull request still looked like a shipped one.** Cloudflare rebuilds the dashboard
+on every merge; the API is deployed by hand. This file records the consequence five times, most
+recently for four slices in a row -- the Signals screen answered **Not Found** because the live
+backend was an older image, and `/watchlist` 404ing cannot say *this API is older than this
+screen*, so the investigation started at DNS, CORS and connectivity each time. This file's own
+note named the fix as the next thing worth building.
+
+`GET /version` answers `commit`, `built_at` and `started_at` and nothing else -- an inventory of
+what is installed is a list of which advisories to try. `started_at` answers what the commit
+cannot: *did the deploy restart anything?* A rollback that quietly left the old container running
+reports an uptime in days beside a commit that looks current.
+
+**Baked into the image rather than set on the container**, because the identity must travel with
+the artifact: a restart passing a different value would have the deployment confidently report a
+build it is not running, which is worse than reporting none. Verified end to end rather than
+inferred -- `docker build --build-arg` then `docker run`, and `Settings` inside the container
+reads both values back. An image built *before* this change has no such field at all, which is
+also why the banner will stay silent against the currently-deployed API until it is redeployed.
+
+**Silence is the default and most of the design.** Either side unknown means no claim: a
+development run bakes nothing and `local` is the Compose default, so without that a developer
+would see the banner on every page load for ever -- and then nobody reads it on the day it is
+true. The same reasoning as alerting only after three consecutive worker failures. And **"older"
+is claimed only when both build times parse and the API's is earlier**: two hashes are different
+and never older, and the times come from two machines' clocks, so the banner shows both rather
+than only the conclusion. *The API is behind*, asserted wrongly, sends somebody to redeploy
+something that was already current.
+
+The comparison is a pure function in its own module with eight tests, not a condition inside a
+component -- the dashboard's suite renders nothing, which is exactly how a button once shipped
+throwing `ReferenceError`.
+
+**`test_dashboard_calls_real_routes` caught my first version on its first run.** `/version` is
+the one route the dashboard calls that lives *above* `/api/v1`, and `api.js` prefixes every
+path -- so my `useLoad("/version")` would have asked for `/api/v1/version`, which does not
+exist. It has its own client function now rather than a `path` argument that would let any
+screen escape the prefix.
+
+**And `PUBLIC_PATHS` was read by nothing.** Found while adding `/version` to it. What makes a
+route public here is declaring no identity dependency; the frozenset was a comment with
+parentheses -- so a route that forgot its auth would not appear in it, and a route named in it
+could grow an auth dependency with the list still claiming otherwise. The signature defect, in
+the one place where being wrong is a security question.
+
+`tests/unit/test_public_paths.py` compares the two in both directions, and writing it produced
+three findings of its own:
+
+1. **A single-level scan finds zero routes.** This FastAPI keeps `_IncludedRouter` wrappers in
+   `app.routes` rather than flattening them, so `isinstance(route, APIRoute)` matches nothing --
+   a guard that scans nothing, passing trivially while reading as evidence. It walks the
+   wrappers and rebuilds each path from the include prefix, and states its own preconditions.
+2. **Keying by path alone was wrong, and the guard found it.** `/mcp` also serves `GET` and
+   `DELETE` stubs that answer 405 by design, and a 405 needs no credential to be correct. Keyed
+   by method and path now -- which is also the only way to express the unsubscribe endpoint's
+   deliberate split, where `GET` renders a button and `POST` acts.
+3. **Four routes authenticate in the handler body**, not through a dependency: `/mcp` and the
+   three extension endpoints. That is ADR-028's two-doors rule -- each door must refuse the
+   wrong *kind* of key, which means reading the header itself where a shared `Depends` would
+   accept every credential the other doors accept. Exempting them is only honest if something
+   checks they do the work, so a second test parses each handler with `ast` and asserts it
+   resolves a bearer. Parsed rather than grepped, because the comment explaining each door names
+   the very call being asserted.
+
+Run against `/api/v1/me` with its `CurrentUserDep` removed, it names `GET /api/v1/me`.
+
+**Still outstanding and recorded rather than quietly left:** five routers still read the
+module-level `config` singleton rather than `SettingsDep` (`connect`, `operations`, `platform`,
+`team`, `unsubscribe`), which is the gap ADR-041 found and named. `unsubscribe` is the one worth
+doing first, because it signs public URLs with a key the send loop reads from a different object.
+
+12 new tests (8 on the comparison in the frontend suite, 4 integration on the route) plus 4
+structural, ruff and mypy strict clean, frontend builds, 22 frontend tests pass, no migration.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

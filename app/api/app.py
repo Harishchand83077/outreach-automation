@@ -63,7 +63,14 @@ REQUEST_ID_HEADER = "X-Request-ID"
 DEFAULT_RATE_LIMIT = RateLimit(limit=300, window_seconds=60.0)
 
 #: Paths that must answer without a token, because a load balancer cannot hold one.
-PUBLIC_PATHS = frozenset({"/health", "/ready"})
+#:
+#: **This set is read by nothing.** What actually makes a route public is declaring no
+#: `CurrentUserDep`, which is where each of these three does it; this is the written-down
+#: list, and a test asserts the two agree rather than trusting that they do. Found while
+#: adding `/version` (S17.3), which is public for the reason the others are not: the
+#: dashboard has to be able to ask which build is running even when it cannot sign in
+#: against that build.
+PUBLIC_PATHS = frozenset({"/health", "/ready", "/version"})
 
 
 def allowed_origins(settings: Settings) -> list[str]:
