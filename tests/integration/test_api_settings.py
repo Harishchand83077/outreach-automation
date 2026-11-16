@@ -367,10 +367,12 @@ class TestChangingTheSendMode:
         the machine happens to be configured as -- it passed in CI, where the throwaway `.env`
         is not production, and failed on a developer box whose `.env` is. A test that depends on
         ambient configuration is a test that proves nothing on the machine it passes on.
-        """
-        from app.core import settings as settings_module
 
-        monkeypatch.setattr(settings_module.config, "APP_ENV", "development")
+        Pinned on **the app's own settings** since ADR-061's addendum, because the route reads
+        those. Patching the singleton would leave the pin doing nothing -- which is the failure
+        this docstring already warns about, arriving through the fix for a different one.
+        """
+        monkeypatch.setattr(api.app.state.settings, "APP_ENV", "development")
         response = api.patch(
             "/api/v1/admin/sending-config",
             json={"send_mode": "live", "confirm": "LIVE"},
@@ -382,10 +384,14 @@ class TestChangingTheSendMode:
         assert org.send_mode != "live"
 
     async def test_live_needs_the_typed_confirmation(self, api, owner, db, org, monkeypatch):
-        """So that enabling real sending cannot be a mis-click or a replayed request."""
-        from app.core import settings as settings_module
+        """So that enabling real sending cannot be a mis-click or a replayed request.
 
-        monkeypatch.setattr(settings_module.config, "APP_ENV", "production")
+        **The app's own settings are patched, not the module-level singleton.** This test used
+        to patch the singleton and passed only because the route read it (ADR-061 addendum) --
+        which meant it was also reading the developer's `.env`, where `APP_ENV` happens to be
+        `production`. A test that depended on that was a test of the defect.
+        """
+        monkeypatch.setattr(api.app.state.settings, "APP_ENV", "production")
         response = api.patch(
             "/api/v1/admin/sending-config", json={"send_mode": "live"}, headers=owner
         )

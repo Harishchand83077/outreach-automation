@@ -21,8 +21,7 @@ import logging
 from fastapi import APIRouter, Response, status
 from fastapi.responses import HTMLResponse
 
-from app.api.deps import SessionDep
-from app.core.settings import config
+from app.api.deps import SessionDep, SettingsDep
 from app.db import repo
 from app.db.models import SUPPRESSION_REASONS, Lead
 from app.db.repo import OrgContext
@@ -66,9 +65,9 @@ def _page(message: str, *, form: bool, code: int = 200) -> HTMLResponse:
 
 
 @router.get(PATH, response_class=HTMLResponse, include_in_schema=False)
-async def confirm(token: str, session: SessionDep) -> HTMLResponse:
+async def confirm(token: str, session: SessionDep, settings: SettingsDep) -> HTMLResponse:
     """Show a confirmation. **Writes nothing** — see the module docstring."""
-    resolved = unsubscribe.verify(token, secret=unsubscribe.signing_key(config.CREDENTIAL_KEY))
+    resolved = unsubscribe.verify(token, secret=unsubscribe.signing_key(settings.CREDENTIAL_KEY))
     if resolved is None:
         await session.rollback()
         return _page(
@@ -81,14 +80,14 @@ async def confirm(token: str, session: SessionDep) -> HTMLResponse:
 
 
 @router.post(PATH, include_in_schema=False)
-async def act(token: str, session: SessionDep) -> Response:
+async def act(token: str, session: SessionDep, settings: SettingsDep) -> Response:
     """Suppress the address. This is what a receiving mail server POSTs to.
 
     **Answers 200 for an unknown token as well as a known one**, after doing nothing. A public
     endpoint that distinguishes the two is an oracle for which tokens exist; and from the
     recipient's side the outcome is identical either way — they will not be emailed again.
     """
-    secret = unsubscribe.signing_key(config.CREDENTIAL_KEY)
+    secret = unsubscribe.signing_key(settings.CREDENTIAL_KEY)
     resolved = unsubscribe.verify(token, secret=secret)
     if resolved is None:
         await session.rollback()

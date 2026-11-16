@@ -4879,3 +4879,40 @@ about the first. Three things came out of writing it:
    call being asserted.
 
 Run against `/api/v1/me` with its `CurrentUserDep` removed, it names `GET /api/v1/me`.
+
+### ADR-061 addendum — routers read the settings they were given
+
+ADR-041 found this and named it rather than closing it: a router reaching for the module-level
+`config` singleton means **an app constructed with its own `Settings` — which is every test app
+— is partially ignoring them.** Five routers still did it (`connect`, `operations`, `platform`,
+`team`, `unsubscribe`). They take `SettingsDep` now, and a structural guard asserts no router
+imports the singleton.
+
+**In production the two are the same object, which is exactly why it survived four phases.**
+Where it bites is anywhere they diverge, and both symptoms are the silent kind:
+
+- **`unsubscribe` signs and verifies a public URL** with a key derived from `CREDENTIAL_KEY`,
+  while the send loop builds that URL from its own object. Two keys means every opt-out is
+  refused — and `POST /u/{token}` answers 200 after doing nothing for *every* refusal,
+  deliberately, so the endpoint is not an oracle (ADR-033). That correct decision is what makes
+  a wrong key indistinguishable from a working one: the recipient sees a success, nothing is
+  logged, and the suppression is never written. **An opt-out we silently refuse is one we will
+  breach.**
+- **`operations` called `effective_send_mode(config, override)`**, so
+  `GET /admin/sending-config` — the route that answers "what happens if I approve this draft?" —
+  resolved from a different object than the gate. Hard rule 1 says the mode is decided in
+  exactly one function; it is, and the screen was asking it about a different deployment. The
+  bare `config` argument survived a `config.` search, which is why it took reading the call.
+
+**Two legitimate readers of the singleton remain, and the rule is about *where*.** A **worker**
+has no request to inject from and reads the process configuration at start; `app.py` builds the
+application. Neither is a router, and the guard is scoped to `app/api/routers/`.
+
+`connect._back` took the dashboard URL from the singleton while being called only from a route
+that now has settings injected. It takes the URL as an argument: a helper and its only caller
+looking at two different configuration objects is the same defect one frame down.
+
+The guard asserts **both** directions — no router imports the singleton, and enough routers do
+take the dependency — because deleting every `SettingsDep` in the tree would otherwise satisfy
+the first on its own. That is the vacuity trap that left `tools/list`'s ordering assertion
+comparing a list with itself.
