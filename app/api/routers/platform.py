@@ -34,8 +34,7 @@ from typing import Any
 from fastapi import APIRouter
 from sqlalchemy import Select, func, select
 
-from app.api.deps import OperatorDep, SessionDep
-from app.core.settings import config
+from app.api.deps import OperatorDep, SessionDep, SettingsDep
 from app.db.models import (
     Alert,
     Campaign,
@@ -73,7 +72,9 @@ async def _tally(session: Any, statement: Select[tuple[Any, int]]) -> dict[str, 
 
 
 @router.get("/platform/overview")
-async def platform_overview(operator: OperatorDep, session: SessionDep) -> dict[str, Any]:
+async def platform_overview(
+    settings: SettingsDep, operator: OperatorDep, session: SessionDep
+) -> dict[str, Any]:
     """Every workspace, in aggregate, plus the health of the deployment underneath them.
 
     `operator` is taken as a dependency rather than ignored even though nothing below reads it:
@@ -206,11 +207,11 @@ async def platform_overview(operator: OperatorDep, session: SessionDep) -> dict[
             "search_budget": SEARCH_BUDGET,
         },
         "deployment": {
-            "app_env": config.APP_ENV,
-            "signup_mode": config.SIGNUP_MODE,
-            "max_orgs": config.MAX_ORGS,
-            "grant_days": config.GOOGLE_GRANT_DAYS,
-            "google_oauth_configured": config.google_oauth_configured,
+            "app_env": settings.APP_ENV,
+            "signup_mode": settings.SIGNUP_MODE,
+            "max_orgs": settings.MAX_ORGS,
+            "grant_days": settings.GOOGLE_GRANT_DAYS,
+            "google_oauth_configured": settings.google_oauth_configured,
         },
         "you": {"email": operator.email},
     }

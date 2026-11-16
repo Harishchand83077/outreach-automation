@@ -28,8 +28,7 @@ from fastapi.responses import RedirectResponse
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUserDep, SessionDep, require_role
-from app.core.settings import config
+from app.api.deps import CurrentUserDep, SessionDep, SettingsDep, require_role
 from app.db.models import Mailbox, MailCredential, OAuthState
 from app.db.state import record_event
 from app.services import credentials as credential_store
@@ -49,6 +48,7 @@ STATE_TTL = timedelta(minutes=15)
 
 @router.get("/connect/google/status")
 async def google_status(
+    settings: SettingsDep,
     user: CurrentUserDep,
     session: SessionDep,
     mailbox_id: Annotated[uuid.UUID | None, Query()] = None,
@@ -61,7 +61,7 @@ async def google_status(
     """
     mailbox = await _mailbox_for(session, user, mailbox_id)
     base: dict[str, Any] = {
-        "configured": config.google_oauth_configured,
+        "configured": settings.google_oauth_configured,
         "encryption_ready": credential_store.is_configured(),
         "mailbox_id": str(mailbox.id) if mailbox else None,
         "from_email": mailbox.from_email if mailbox else None,
@@ -179,6 +179,7 @@ async def verify_connection(
 @router.get("/connect/google/callback")
 async def google_callback(
     session: SessionDep,
+    settings: SettingsDep,
     state: Annotated[str | None, Query()] = None,
     code: Annotated[str | None, Query()] = None,
     error: Annotated[str | None, Query()] = None,
@@ -194,19 +195,37 @@ async def google_callback(
     """
     if error:
         # The ordinary case is somebody pressing Cancel on the consent screen.
-        return _back(f"Google did not connect the account ({error}).", ok=False)
+        return _back(
+            f"Google did not connect the account ({error}).",
+            ok=False,
+            dashboard_url=settings.DASHBOARD_URL,
+        )
     if not state or not code:
-        return _back("That link was incomplete. Start again from the dashboard.", ok=False)
+        return _back(
+            "That link was incomplete. Start again from the dashboard.",
+            ok=False,
+            dashboard_url=settings.DASHBOARD_URL,
+        )
 
     row = await session.scalar(select(OAuthState).where(OAuthState.state == state))
     if row is None:
-        return _back("That connection link is not valid. Start again from the dashboard.", ok=False)
+        return _back(
+            "That connection link is not valid. Start again from the dashboard.",
+            ok=False,
+            dashboard_url=settings.DASHBOARD_URL,
+        )
     if row.used_at is not None:
         # A replayed callback. Refused rather than quietly re-run: a second exchange of a
         # one-time code fails anyway, and saying so is clearer than a Google error.
-        return _back("That connection link was already used.", ok=False)
+        return _back(
+            "That connection link was already used.", ok=False, dashboard_url=settings.DASHBOARD_URL
+        )
     if row.created_at < datetime.now(tz=UTC) - STATE_TTL:
-        return _back("That connection link expired. Start again from the dashboard.", ok=False)
+        return _back(
+            "That connection link expired. Start again from the dashboard.",
+            ok=False,
+            dashboard_url=settings.DASHBOARD_URL,
+        )
 
     row.used_at = datetime.now(tz=UTC)
 
@@ -214,7 +233,7 @@ async def google_callback(
         tokens = await google_oauth.exchange_code(code)
     except google_oauth.OAuthError as exc:
         await session.commit()
-        return _back(str(exc), ok=False)
+        return _back(str(exc), ok=False, dashboard_url=settings.DASHBOARD_URL)
 
     assert tokens.refresh_token is not None, "exchange_code refuses a response without one"
     email = await google_oauth.account_email(tokens.access_token)
@@ -222,7 +241,9 @@ async def google_callback(
     mailbox = await session.get(Mailbox, row.mailbox_id) if row.mailbox_id else None
     if mailbox is None or mailbox.org_id != row.org_id:
         await session.commit()
-        return _back("That mailbox no longer exists.", ok=False)
+        return _back(
+            "That mailbox no longer exists.", ok=False, dashboard_url=settings.DASHBOARD_URL
+        )
 
     # **Did they authorise the account they meant to?** With several Google accounts signed in,
     # picking the wrong one on the consent screen is easy, and without this check the mistake
@@ -233,13 +254,14 @@ async def google_callback(
             f"You approved {email}, but this mailbox sends as {mailbox.from_email}. "
             "Connect the matching account, or change the mailbox address first.",
             ok=False,
+            dashboard_url=settings.DASHBOARD_URL,
         )
 
     try:
         sealed = credential_store.seal(tokens.refresh_token)
     except credential_store.CredentialError as exc:
         await session.commit()
-        return _back(str(exc), ok=False)
+        return _back(str(exc), ok=False, dashboard_url=settings.DASHBOARD_URL)
 
     existing = await session.scalar(
         select(MailCredential).where(MailCredential.mailbox_id == mailbox.id)
@@ -280,7 +302,9 @@ async def google_callback(
     )
     await session.commit()
     logger.info("mailbox connected", extra={"mailbox_id": str(mailbox.id)})
-    return _back(f"{existing.account_email} is connected.", ok=True)
+    return _back(
+        f"{existing.account_email} is connected.", ok=True, dashboard_url=settings.DASHBOARD_URL
+    )
 
 
 @router.delete("/connect/google/{mailbox_id}", dependencies=[Depends(require_role("admin"))])
@@ -322,9 +346,14 @@ async def _mailbox_for(
     return await session.scalar(stmt.order_by(Mailbox.created_at).limit(1))
 
 
-def _back(message: str, *, ok: bool) -> RedirectResponse:
-    """Send the browser back to the dashboard with something to show the person."""
-    base = (config.DASHBOARD_URL or "/").rstrip("/")
+def _back(message: str, *, ok: bool, dashboard_url: str) -> RedirectResponse:
+    """Send the browser back to the dashboard with something to show the person.
+
+    The URL is handed in rather than read from the module-level config, so this helper and the
+    route that calls it cannot be looking at two different `Settings` objects (the gap ADR-041
+    recorded). It is the only caller, and it is a route with the dependency injected.
+    """
+    base = (dashboard_url or "/").rstrip("/")
     from urllib.parse import quote
 
     return RedirectResponse(

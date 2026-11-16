@@ -19,9 +19,8 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 
-from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, require_role
+from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
 from app.api.pagination import clamp_limit
-from app.core.settings import config
 from app.db import ops, repo
 from app.db.models import (
     Job,
@@ -533,6 +532,7 @@ async def worker(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
 
 @router.get("/admin/sending-config")
 async def sending_config(
+    settings: SettingsDep,
     session: SessionDep,
     user: Annotated[CurrentUser, Depends(require_role("admin"))],
 ) -> dict[str, Any]:
@@ -574,25 +574,25 @@ async def sending_config(
         ).scalars()
     )
     return {
-        "send_mode": effective_send_mode(config, override),
+        "send_mode": effective_send_mode(settings, override),
         "source": "dashboard" if override else "environment",
-        "environment_default": config.SEND_MODE,
+        "environment_default": settings.SEND_MODE,
         "editable": user.may("owner"),
         "set_by": org.send_mode_set_by if org else None,
         "set_at": org.send_mode_set_at.isoformat() if org and org.send_mode_set_at else None,
         # `live` is refused outside production, so the screen can say why the option is absent
         # rather than appearing broken.
-        "live_allowed": config.APP_ENV == "production",
-        "smtp_host": config.SMTP_HOST,
-        "smtp_port": config.SMTP_PORT,
+        "live_allowed": settings.APP_ENV == "production",
+        "smtp_host": settings.SMTP_HOST,
+        "smtp_port": settings.SMTP_PORT,
         # A list, because a campaign picks its own mailbox and an org may hold several. Empty
         # means nobody has added one yet, which is a different answer from "we do not know".
         "sending_accounts": [m.from_email for m in mailboxes],
         # Kept for the Settings screen's single-line summary. None rather than the operator's
         # address when this org has no mailbox of its own.
         "sending_account": mailboxes[0].from_email if mailboxes else None,
-        "imap_host": config.IMAP_HOST,
-        "environment": config.APP_ENV,
+        "imap_host": settings.IMAP_HOST,
+        "environment": settings.APP_ENV,
         # The product rules that are locked in code rather than configurable per campaign, so
         # the settings screen can state them instead of implying they are editable.
         "locked": {
@@ -607,6 +607,7 @@ async def sending_config(
 
 @router.patch("/admin/sending-config")
 async def set_sending_mode(
+    settings: SettingsDep,
     session: SessionDep,
     user: Annotated[CurrentUser, Depends(require_role("owner"))],
     payload: Annotated[dict[str, Any], Body()],
@@ -644,10 +645,10 @@ async def set_sending_mode(
             )
 
     if requested == "live":
-        if config.APP_ENV != "production":
+        if settings.APP_ENV != "production":
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
-                f"Live sending can only be enabled in production, and this is {config.APP_ENV}.",
+                f"Live sending can only be enabled in production, and this is {settings.APP_ENV}.",
             )
         if str(payload.get("confirm") or "") != "LIVE":
             raise HTTPException(
@@ -670,13 +671,13 @@ async def set_sending_mode(
     logger.warning(
         "send mode changed",
         extra={
-            "previous_mode": previous or f"environment:{config.SEND_MODE}",
-            "new_mode": requested or f"environment:{config.SEND_MODE}",
+            "previous_mode": previous or f"environment:{settings.SEND_MODE}",
+            "new_mode": requested or f"environment:{settings.SEND_MODE}",
             "changed_by": user.email,
         },
     )
     return {
-        "send_mode": effective_send_mode(config, org.send_mode),
+        "send_mode": effective_send_mode(settings, org.send_mode),
         "source": "dashboard" if org.send_mode else "environment",
         "set_by": org.send_mode_set_by,
         "set_at": org.send_mode_set_at.isoformat(),
@@ -685,6 +686,7 @@ async def set_sending_mode(
 
 @router.get("/admin/sender-requirements")
 async def sender_requirements(
+    settings: SettingsDep,
     user: Annotated[CurrentUser, Depends(require_role("admin"))],
     session: SessionDep,
 ) -> dict[str, Any]:
@@ -712,7 +714,7 @@ async def sender_requirements(
     # One resolver for the whole response, so several domains sharing a name server do not pay
     # for the same lookup twice.
     resolver = DnsTxtResolver()
-    configured = bool(config.PUBLIC_API_URL.strip())
+    configured = bool(settings.PUBLIC_API_URL.strip())
     reports = [
         check_domain(domain, resolver=resolver, unsubscribe_configured=configured)
         for domain in domains

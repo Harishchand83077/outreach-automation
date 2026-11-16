@@ -3653,13 +3653,36 @@ three findings of its own:
 
 Run against `/api/v1/me` with its `CurrentUserDep` removed, it names `GET /api/v1/me`.
 
-**Still outstanding and recorded rather than quietly left:** five routers still read the
-module-level `config` singleton rather than `SettingsDep` (`connect`, `operations`, `platform`,
-`team`, `unsubscribe`), which is the gap ADR-041 found and named. `unsubscribe` is the one worth
-doing first, because it signs public URLs with a key the send loop reads from a different object.
+**And the five routers reading the `config` singleton are fixed too (ADR-061 addendum).**
+ADR-041 found that gap and named it rather than closing it: a router reaching for the
+module-level singleton means an app constructed with its own `Settings` -- which is every test
+app -- is partially ignoring them. In production the two are the same object, which is exactly
+why it survived four phases.
 
-12 new tests (8 on the comparison in the frontend suite, 4 integration on the route) plus 4
-structural, ruff and mypy strict clean, frontend builds, 22 frontend tests pass, no migration.
+Both symptoms are the silent kind. **`unsubscribe` signs and verifies a public URL** with a key
+derived from `CREDENTIAL_KEY` while the send loop builds that URL from its own object -- and
+`POST /u/{token}` answers 200 after doing nothing for *every* refusal, deliberately, so the
+endpoint is not an oracle (ADR-033). That correct decision is what makes a wrong key
+indistinguishable from a working one: the recipient sees a success, nothing is logged, and the
+suppression is never written. An opt-out we silently refuse is one we will breach. And
+**`operations` called `effective_send_mode(config, override)`**, so the route that answers "what
+happens if I approve this draft?" resolved from a different object than the gate -- hard rule 1
+says the mode is decided in exactly one function, it is, and the screen was asking it about a
+different deployment. The bare `config` argument survived a `config.` search, which is why it
+took reading the call rather than grepping for it.
+
+`connect._back` read the dashboard URL from the singleton while being called only from a route
+that now has settings injected; it takes the URL as an argument, because a helper and its only
+caller looking at two different configuration objects is the same defect one frame down.
+
+Two legitimate readers remain and the rule is about *where*: a worker has no request to inject
+from and reads the process configuration at start, and `app.py` builds the application. Neither
+is a router, so the guard is scoped to `app/api/routers/` and asserts both directions -- no
+router imports the singleton, and enough routers do take the dependency, because deleting every
+`SettingsDep` in the tree would otherwise satisfy the first on its own.
+
+14 new tests (8 on the comparison in the frontend suite, 6 integration) plus 7 structural,
+ruff and mypy strict clean, frontend builds, 22 frontend tests pass, no migration.
 
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the

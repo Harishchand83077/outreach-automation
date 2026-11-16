@@ -25,8 +25,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import func, select
 
-from app.api.deps import ROLE_ORDER, CurrentUserDep, SessionDep, require_role
-from app.core.settings import config
+from app.api.deps import ROLE_ORDER, CurrentUserDep, SessionDep, SettingsDep, require_role
 from app.db.models import Invitation, Mailbox, MailCredential, Member
 from app.db.state import record_event
 from app.services import api_tokens
@@ -80,7 +79,9 @@ async def list_team(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]
 
 
 @router.get("/admin/overview")
-async def admin_overview(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+async def admin_overview(
+    settings: SettingsDep, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
     """Everything an admin has to keep track of, in one place.
 
     **Written because three of the gates live in three different systems** and nothing showed
@@ -193,14 +194,14 @@ async def admin_overview(user: CurrentUserDep, session: SessionDep) -> dict[str,
         "workspace": {
             # Reported, never editable here. The send mode has exactly one write path and it is
             # owner-gated with a typed confirmation (ADR-010).
-            "signup_mode": config.SIGNUP_MODE,
-            "grant_days": config.GOOGLE_GRANT_DAYS,
-            "google_oauth_configured": config.google_oauth_configured,
-            "max_orgs": config.MAX_ORGS,
+            "signup_mode": settings.SIGNUP_MODE,
+            "grant_days": settings.GOOGLE_GRANT_DAYS,
+            "google_oauth_configured": settings.google_oauth_configured,
+            "max_orgs": settings.MAX_ORGS,
         },
         # The step this system cannot take for you, named with the place to take it.
         "google_test_users": {
-            "required_while_unpublished": config.GOOGLE_GRANT_DAYS > 0,
+            "required_while_unpublished": settings.GOOGLE_GRANT_DAYS > 0,
             "console_url": "https://console.cloud.google.com/auth/audience",
             "note": (
                 "While the OAuth client is unpublished, only addresses on its test-user list "
