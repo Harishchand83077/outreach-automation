@@ -19,8 +19,8 @@ recognise — *zero contacts*, which is indistinguishable from "nobody works the
 
 | | Hunter | Apollo | Snov |
 |---|---|---|---|
-| Endpoint | `GET api.hunter.io/v2/domain-search` | `POST api.apollo.io/api/v1/mixed_people/search` | `POST /v1/oauth/access_token`, then `GET /v2/domain-emails-with-info` |
-| Endpoint confidence | **Documented**, confirmed by Hunter's own help centre | **Disputed** — community sources give both `/mixed_people/search` and `/mixed_people/api_search`; Apollo's own reference was not reached | **Disputed** — Snov also documents an asynchronous `start` / `result/{task_hash}` flow, and the sources disagree about which is current |
+| Endpoint | `GET api.hunter.io/v2/domain-search` | `POST api.apollo.io/api/v1/mixed_people/api_search` | `POST /v1/oauth/access_token`, then `GET /v2/domain-emails-with-info` |
+| Endpoint confidence | **Documented**, confirmed by Hunter's own help centre | **Path confirmed, response unverified** — Apollo's developer portal (key form, 2026-11-17) lists `mixed_people/api_search` and no `mixed_people/search`, and says people search is not included in the Free plan. No live call has been made, so the response shape is still an assumption | **Disputed** — Snov also documents an asynchronous `start` / `result/{task_hash}` flow, and the sources disagree about which is current |
 | Auth | Key. Docs show `api_key` as a **query parameter**; we send `X-API-KEY` | Key in `X-Api-Key`. One source says query parameters stopped being accepted in September 2024 | Client id + secret exchanged for a one-hour Bearer token |
 | Credential kind | `api_key` | `api_key` | `oauth` (the user still copies both values) |
 | Addresses returned | Yes, with a `confidence` and sometimes a verification status | **No** on most plans — revealing one is a separate enrichment call that spends a credit | Yes, with a status |

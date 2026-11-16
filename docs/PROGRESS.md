@@ -3684,6 +3684,30 @@ router imports the singleton, and enough routers do take the dependency, because
 14 new tests (8 on the comparison in the frontend suite, 6 integration) plus 7 structural,
 ruff and mypy strict clean, frontend builds, 22 frontend tests pass, no migration.
 
+
+**A Setup page, and four defects found by setting the product up in a browser (ADR-062).**
+`/setup` lists what a workspace still has to connect, in order, each row linking to the screen
+that does it. It re-derives nothing: every state is a field the owning route already computes,
+and a step whose request has not come back is `unknown`, never to-do.
+
+The defects, all found by using the live site rather than by a test:
+
+1. **An Apollo key could not have worked.** The adapter called `mixed_people/search`; Apollo's
+   own key form lists only `mixed_people/api_search`, and says people search is excluded from
+   the Free plan even with a master key. The endpoint is corrected and the card now says the
+   plan limit before anybody makes a key. The response shape is still unverified.
+2. **Every Apollo address was called verified** because it was present. It is verified only on
+   Apollo's own `email_status` now; anything else is a guess.
+3. **"Connect null".** The provider card's heading fell back to the provider id when the API
+   sent no label; the button, the key link and the hint did not. One name now.
+4. The browser tab said "Funding Outreach Automation" on a product called Arkvane, and the
+   Apollo key link pointed at an address that only redirects.
+
+**Still open, deliberately not in this change:** `deps.current_user` resolves a person with two
+memberships to whichever row the database returns first (no ordering, no unique index on
+`user_id`). ADR-022 describes it; nothing prevents it. It changes how sign-in resolves a
+workspace, so it wants its own reviewed PR.
+
 **Next up.**
 1. ~~**Phase 9 slice 2 — privacy and retention (D6).**~~ Done, above. `DELETE /leads/{id}` as a real erasure, the
    retention sweep in the `Scheduler` (Q7's default is 12 months), and a `PRIVACY.md` that

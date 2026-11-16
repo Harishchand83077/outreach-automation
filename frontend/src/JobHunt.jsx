@@ -982,10 +982,14 @@ function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
       .finally(() => setBusy(false));
   };
 
+  // One name for the card, the link and the button. An API older than this screen sends no
+  // label, and the button once read "Connect null" because only the heading had a fallback.
+  const name = row.label || row.provider;
+
   return (
     <li className="list-row">
       <div style={{ minWidth: 0 }}>
-        <strong>{row.label || row.provider}</strong>{" "}
+        <strong>{name}</strong>{" "}
         {row.connected ? (
           <span className="pill" data-tone={row.usable ? "success" : "danger"}>
             <span className="pill-dot" />
@@ -998,6 +1002,12 @@ function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
           {row.purpose}
           {row.free_tier ? ` ${row.free_tier}` : ""}
         </p>
+        {/* A plan limit that would make a key useless here, said before the key is made. */}
+        {row.plan_note ? (
+          <p className="hint" data-tone="warning" style={{ margin: "4px 0 0" }}>
+            {row.plan_note}
+          </p>
+        ) : null}
         {open ? (
           <form onSubmit={save} style={{ marginTop: 12 }}>
             {/* The deep link first, because the order matches what somebody actually does:
@@ -1005,7 +1015,7 @@ function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
             {row.key_page ? (
               <p className="hint">
                 <a href={row.key_page} target="_blank" rel="noreferrer">
-                  Open {row.label}&apos;s API key page
+                  Open {name}&apos;s API key page
                 </a>{" "}
                 — make a key there, then paste it here.
               </p>
@@ -1032,7 +1042,7 @@ function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
               />
               <p className="hint">
                 Encrypted before it is stored, never shown again, and never
-                returned by any route. Saving does not call {row.label} —
+                returned by any route. Saving does not call {name} —
                 verifying does, and that spends one of your credits.
               </p>
             </div>
@@ -1076,7 +1086,7 @@ function ConnectCard({ row, onError, onToast, onChanged, mayAdminister }) {
             data-variant={row.connected ? undefined : "brand"}
             onClick={() => setOpen(true)}
           >
-            {row.connected ? "Replace key" : `Connect ${row.label}`}
+            {row.connected ? "Replace key" : `Connect ${name}`}
           </button>
         ) : null}
         {row.connected && mayAdminister ? (

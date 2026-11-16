@@ -57,6 +57,10 @@ class Connection:
     #: silence**, because "why can I connect Gmail in one click but not this?" is a reasonable
     #: question with a real answer.
     oauth_note: str = ""
+    #: What this provider's free plan cannot do, when that would make a key useless here.
+    #: **Said before somebody makes the key**: a lookup refused for a plan reason reads as our
+    #: bug, and the provider's own key form is the only other place that mentions it.
+    plan_note: str = ""
 
     @property
     def one_click(self) -> bool:
@@ -71,8 +75,15 @@ CONNECTIONS: tuple[Connection, ...] = (
         label="Apollo",
         purpose="Find people at a company, with a verified work address where they have one.",
         method="key",
-        key_page="https://app.apollo.io/#/settings/integrations/api",
-        free_tier="A free plan with a monthly credit allowance.",
+        # The developer portal. The older settings address only redirects here.
+        key_page="https://developer.apollo.io/#/keys",
+        free_tier="A free plan exists, but it does not include the people search used here.",
+        plan_note=(
+            "Apollo's free plan does not include people search or email lookup -- its own key "
+            "form says those are for paid plans, even with a master key. A key from a free "
+            "account will be refused on every lookup here. When creating a key on a paid "
+            "plan, tick api/v1/mixed_people/api_search."
+        ),
         oauth_note=(
             "Apollo does offer a one-click authorisation flow, but only to approved partners: "
             "the credentials for it come from their developer portal after they approve an "
@@ -170,4 +181,5 @@ def describe(provider: str) -> dict[str, object]:
         "needs_client_id": entry.needs_client_id,
         "free_tier": entry.free_tier,
         "oauth_note": entry.oauth_note,
+        "plan_note": entry.plan_note,
     }
