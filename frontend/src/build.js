@@ -50,9 +50,11 @@ export function buildMismatch(api, ui = UI_BUILD) {
   const uiAt = Date.parse(ui.built_at || "");
   const comparable = Number.isFinite(apiAt) && Number.isFinite(uiAt);
 
+  // A time is passed on only when it parses. The API answers the literal word `unknown` for an
+  // image built without one, and the banner once printed it as a timestamp: "(unknownZ)".
   return {
-    api: { commit: api.commit, built_at: api.built_at || "" },
-    ui: { commit: ui.commit, built_at: ui.built_at || "" },
+    api: { commit: api.commit, built_at: Number.isFinite(apiAt) ? api.built_at : "" },
+    ui: { commit: ui.commit, built_at: Number.isFinite(uiAt) ? ui.built_at : "" },
     apiOlder: comparable && apiAt < uiAt,
   };
 }

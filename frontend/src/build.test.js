@@ -57,6 +57,15 @@ describe("buildMismatch", () => {
   });
 });
 
+describe("buildMismatch with an unknown time", () => {
+  it("does not pass an unparseable build time on as a timestamp", () => {
+    // Seen on the live banner: "Server b6ffde5 (unknownZ)".
+    const result = buildMismatch({ commit: "b6ffde5", built_at: "unknown" }, UI);
+    expect(result.api.built_at).toBe("");
+    expect(result.apiOlder).toBe(false);
+  });
+});
+
 describe("known", () => {
   it("counts the placeholders as unknown", () => {
     expect(known("abc1234")).toBe(true);
