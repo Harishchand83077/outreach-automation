@@ -200,23 +200,41 @@ class HunterProvider:
         return found
 
 
+def _apollo_status(email: str | None, reported: object) -> str:
+    """Our status for an Apollo address: verified only on Apollo's word.
+
+    No address is `unknown`. An address Apollo itself marks `verified` is `verified`. Anything
+    else -- `guessed`, `unavailable`, a value we have never seen, or no status at all -- is a
+    `guess`, because the cost of the two mistakes is not equal: a verified address shown as a
+    guess costs a second look, and a guess shown as verified costs a bounce.
+    """
+    if not email:
+        return "unknown"
+    return "verified" if str(reported or "").strip().lower() == "verified" else "guess"
+
+
 class ApolloProvider:
     """Apollo's people search.
 
-    `POST https://api.apollo.io/api/v1/mixed_people/search` with the key in `X-Api-Key`.
+    `POST https://api.apollo.io/api/v1/mixed_people/api_search` with the key in `X-Api-Key`.
 
-    **Two things about this one are recorded rather than smoothed over.** The path is reported
-    inconsistently by the community -- `/mixed_people/search` and `/mixed_people/api_search` both
-    appear, and Apollo's own reference was not reached -- so the path is a module constant and
-    `docs/CONTACT_PROVIDERS.md` says it is unverified. And Apollo's search deliberately returns
-    **no email addresses** on most plans: revealing one is a separate enrichment call that spends
-    a credit. So this returns people with `email=None` and `email_status="unknown"`, which the
-    dashboard shows as a name and a title to decide about. A provider that returns no address is
-    still useful; one that *pretends* to is how a guess gets mailed.
+    **The path is the one Apollo's own key form offers.** Its developer portal scopes a key to
+    named endpoints, and on 2026-11-17 that list held `mixed_people/api_search` and no
+    `mixed_people/search` -- the path this class used before, which was recorded as disputed
+    and which no key can even be scoped to. The same form says people search is **not included
+    in the Free plan**, so a free key is refused here; `connections.py` says that on the card.
+    The response shape has still never been seen from a live call, which
+    `docs/CONTACT_PROVIDERS.md` records.
+
+    Apollo's search deliberately returns **no email addresses** on most plans: revealing one is
+    a separate enrichment call that spends a credit. So a person usually comes back with
+    `email=None` and `email_status="unknown"`, which the dashboard shows as a name and a title
+    to decide about. When an address *is* returned, it is verified only if Apollo's own
+    `email_status` says so -- present is not the same as checked.
     """
 
     name = "apollo"
-    ENDPOINT = "https://api.apollo.io/api/v1/mixed_people/search"
+    ENDPOINT = "https://api.apollo.io/api/v1/mixed_people/api_search"
 
     def __init__(self, api_key: str) -> None:
         self._key = api_key
@@ -262,7 +280,7 @@ class ApolloProvider:
                     full_name=_clip(row.get("name"), 300),
                     title=_clip(row.get("title"), 300),
                     email=email,
-                    email_status="verified" if email else "unknown",
+                    email_status=_apollo_status(email, row.get("email_status")),
                     confidence=None,
                     profile_url=_clip(row.get("linkedin_url"), 2000),
                 )

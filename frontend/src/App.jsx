@@ -26,6 +26,7 @@ import { SignIn, useSession } from "./Auth";
 import ErrorBoundary from "./ErrorBoundary";
 import JobHunt from "./JobHunt";
 import Operations from "./Operations";
+import Setup from "./Setup";
 import Signals from "./Signals";
 import Sending from "./Sending";
 import {
@@ -174,6 +175,7 @@ const ROUTES = [
   { path: "/sending", id: "sending", scoped: true },
   { path: "/job-hunt", id: "jobhunt" },
   { path: "/operations", id: "operations" },
+  { path: "/setup", id: "setup" },
   { path: "/team", id: "admin" },
   { path: "/settings", id: "settings", scoped: true },
   { path: "/platform", id: "platform" },
@@ -384,6 +386,8 @@ function Dashboard({ session }) {
     ...(mayAdminister
       ? [
           { group: "Controls" },
+          // First under Controls: it is the list of what the other three still need doing.
+          { id: "setup", label: "Setup", icon: Icons.check, to: "/setup" },
           { id: "admin", label: "Team", icon: Icons.people, to: "/team" },
           {
             id: "operations",
@@ -641,6 +645,8 @@ function Dashboard({ session }) {
                 />
               ) : view === "operations" ? (
                 <Operations onError={handle} onToast={toast} />
+              ) : view === "setup" ? (
+                <Setup onError={handle} />
               ) : view === "admin" ? (
                 <Admin onError={handle} onToast={toast} />
               ) : view === "platform" ? (

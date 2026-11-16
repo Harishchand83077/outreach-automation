@@ -127,6 +127,40 @@ class TestApollo:
         # Still useful: a name and a title are something a person can act on.
         assert found[0].full_name == "Asha Rao"
 
+    def test_the_endpoint_is_the_one_apollo_lets_a_key_be_scoped_to(self) -> None:
+        """Apollo's own key form lists `mixed_people/api_search` and no `mixed_people/search`.
+
+        Read off the developer portal's endpoint picker on 2026-11-17. The older path was a
+        guess recorded as disputed; a key cannot even be scoped to it, so a lookup there fails
+        for every key anybody could create.
+        """
+        assert providers.ApolloProvider.ENDPOINT.endswith("/api/v1/mixed_people/api_search")
+
+    @respx.mock
+    async def test_an_address_is_verified_only_when_apollo_says_so(self) -> None:
+        """An address is not verified because it is present.
+
+        Apollo sends its own `email_status` beside each address. Calling every returned address
+        verified would show a pattern-built guess as safe to mail, and mailing guesses is how a
+        bounce rate rises -- which now pauses a mailbox by itself (ADR-034).
+        """
+        respx.post(providers.ApolloProvider.ENDPOINT).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "people": [
+                        {"name": "A", "email": "a@acme.test", "email_status": "verified"},
+                        {"name": "B", "email": "b@acme.test", "email_status": "guessed"},
+                        {"name": "C", "email": "c@acme.test"},
+                    ]
+                },
+            )
+        )
+
+        found = await _find(providers.ApolloProvider("key"))
+
+        assert [row.email_status for row in found] == ["verified", "guess", "guess"]
+
     @respx.mock
     async def test_a_refused_key_is_its_own_failure(self) -> None:
         """Recorded as `invalid_reason`, so the next press refuses before calling."""

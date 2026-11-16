@@ -4916,3 +4916,45 @@ The guard asserts **both** directions — no router imports the singleton, and e
 take the dependency — because deleting every `SettingsDep` in the tree would otherwise satisfy
 the first on its own. That is the vacuity trap that left `tools/list`'s ordering assertion
 comparing a list with itself.
+
+
+## ADR-062 — A Setup page, and the truth about Apollo's free plan
+
+**Status:** accepted, 2026-11-17.
+
+**Context.** Found by setting the deployed product up with the owner, in a browser. Two things.
+
+*Setting it up meant four screens and nothing saying which still needed doing.* A sending
+account is connected on Sending, a contact key on Job hunt, a send mode and a connector token on
+Settings, a booking webhook back on Sending. Every control existed. The list did not. The
+competitors this was compared with (Instantly, Smartlead) each put a "what to do next" panel
+beside every screen; ours had nothing equivalent.
+
+*An Apollo key could not have worked.* Apollo's developer portal scopes a key to named
+endpoints. On 2026-11-17 that list held `api/v1/mixed_people/api_search` and no
+`mixed_people/search`, which is the path `ApolloProvider` called and which
+`CONTACT_PROVIDERS.md` had recorded as disputed. The same form states that people search and
+`people/match` are "not included in your Free plan and won't be accessible even with a master
+key". So a free key is refused whatever we call. And the adapter marked every returned address
+`verified` because it was present, ignoring Apollo's own `email_status`.
+
+**Decision.**
+
+1. `/setup`, admin-only, under Controls. Seven of our own non-networked reads, two required
+   steps (a usable sending account, a send mode other than `disabled`) and five optional ones.
+   **It owns no control and re-derives nothing**: each state is a field the owning route already
+   computes (`usable`, `configured`), so it cannot disagree with the screen it links to. The
+   decision is a pure function in `setupSteps.js` with tests, because the dashboard suite
+   renders nothing.
+2. **`unknown` is a state.** A step whose request has not returned, or returned an error, is
+   never shown as to-do, and no count is stated until every request is back.
+3. `ApolloProvider.ENDPOINT` is `mixed_people/api_search`. The catalogue gains `plan_note`, sent
+   with the row and shown on the card, and Apollo's key link points at the developer portal.
+4. An Apollo address is `verified` only when Apollo says so; anything else present is a `guess`.
+
+**Not decided here.** Whether to build on `mixed_people/organization_top_people`, the one people
+endpoint the free plan allows. Its response has not been seen.
+
+**Consequences.** The response shape of `api_search` is still an assumption: no live call has
+been made, because hard rule 5 forbids buying the plan that would allow one. One function reads
+it, so a wrong assumption is one function and one test.

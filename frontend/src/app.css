@@ -289,6 +289,11 @@
   color: var(--text-faint);
 }
 
+/* A hint that is a caution rather than an aside: a plan limit, said before a key is made. */
+.hint[data-tone='warning'] {
+  color: var(--warning-text);
+}
+
 /* ================================================================ card */
 
 .card {
@@ -1468,5 +1473,105 @@ tbody tr:hover {
 @media (max-width: 640px) {
   .list-row {
     flex-direction: column;
+  }
+}
+
+/* ================================================================ setup */
+
+/* The checklist of what a workspace still has to connect. A step is a row with a mark, the
+   reason it matters, and one link to the screen that does the work. */
+.setup-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-5);
+  flex-wrap: wrap;
+}
+
+.setup-count {
+  font-size: var(--text-lg);
+}
+
+.setup-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.setup-step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  transition: border-color var(--fast) var(--ease);
+}
+
+.setup-step + .setup-step {
+  margin-top: var(--space-2);
+}
+
+/* The one step worth doing next carries the brand; every other row stays calm. */
+.setup-step[data-next] {
+  border-color: var(--brand);
+  background: var(--brand-softer);
+}
+
+.setup-step[data-state='done'] {
+  background: var(--surface);
+}
+
+.setup-mark {
+  flex: 0 0 22px;
+  height: 22px;
+  margin-top: 1px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-full);
+  border: 1.5px solid var(--border-strong);
+  color: var(--text-inverse);
+}
+
+.setup-step[data-state='done'] .setup-mark {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.setup-step[data-state='attention'] .setup-mark {
+  border-color: var(--danger);
+}
+
+.setup-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.setup-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-md);
+}
+
+.setup-detail {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--warning-text);
+}
+
+.setup-step .btn {
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .setup-step {
+    flex-wrap: wrap;
+  }
+
+  .setup-step .btn {
+    margin-left: calc(22px + var(--space-3));
   }
 }

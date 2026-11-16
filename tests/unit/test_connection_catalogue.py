@@ -82,3 +82,23 @@ def test_a_contact_provider_describes_what_it_finds() -> None:
         entry = connections.for_provider(provider)
         assert entry is not None
         assert entry.purpose.strip()
+
+
+def test_apollo_points_at_the_page_that_creates_a_key() -> None:
+    """The old settings address redirects; the developer portal is where a key is made."""
+    entry = connections.for_provider("apollo")
+    assert entry is not None
+    assert entry.key_page == "https://developer.apollo.io/#/keys"
+
+
+def test_a_plan_limit_is_said_before_somebody_makes_a_key() -> None:
+    """Apollo's free plan excludes people search, and its own key form says so.
+
+    Somebody who creates a key and then finds every lookup refused reads that as our bug. The
+    card carries the sentence, and `describe` sends it with the row.
+    """
+    entry = connections.for_provider("apollo")
+    assert entry is not None
+    assert "paid" in entry.plan_note.lower()
+    assert connections.describe("apollo")["plan_note"] == entry.plan_note
+    assert connections.describe("hunter")["plan_note"] == ""
