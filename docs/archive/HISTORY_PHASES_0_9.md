@@ -1,0 +1,601 @@
+# Implementation History: Phases 0–9
+
+Extracted from `docs/PROGRESS.md`. Covers initial build through Phase 8 completion (Phase 9 slice 1 & 2, Phase 8 dashboard, first real sends, ADR-010 send mode).
+
+---
+
+**Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1134 tests
+pass; ruff, ruff format and mypy strict are clean. **57 of 59 issues are resolved.**
+
+**IT IS RUNNING.** `https://api.arkvane.in` serves the API over a valid Let's Encrypt
+certificate, and `/ready` answers:
+
+```json
+{"ready":true,"checks":{"database":"ok","worker":"ok","worker_seen_seconds_ago":1}}
+```
+
+All four containers healthy, all seven migrations applied, all five worker tasks cycling, logs
+as one JSON object per line. **`SEND_MODE=disabled`, verified inside the running container.**
+Nothing has ever been sent.
+
+**Phase 9 slice 1 (this session): the system can be deployed, and it can be watched.**
+
+Everything before this ran on one laptop. The hosted dashboard was pointing at an API that
+existed nowhere else, which is why it showed nothing.
+
+- **`Dockerfile`** — one image, two commands. The api and the worker are the same code, so they
+  cannot drift apart: a deploy updates both or neither, and a schema the api expects is a schema
+  the worker has. Non-root (uid 10001), multi-stage, dependencies from `uv.lock` with `--locked`
+  so a build in six months installs the same packages. Built and smoke-tested locally **and** in
+  CI, because a Dockerfile that is only exercised on the VM is a Dockerfile first tested during a
+  deploy.
+- **`deploy/compose.prod.yml`** — Postgres, api, worker, Caddy. Postgres publishes **no port at
+  all**; it is reachable only on the Compose network, and a dump is taken by running `pg_dump`
+  inside that network. Memory limits on all four, because on a small VM the alternative to a
+  limit is the kernel choosing what to kill. Log rotation on all four, because a full disk stops
+  Postgres rather than just the logging.
+- **`deploy/Caddyfile`** — TLS obtained and renewed by Caddy itself, no certbot to forget. It
+  strips any `X-Forwarded-For` a caller sent, and the api trusts the header only from the Compose
+  network: without that pair, the address-keyed rate limit is an honour system.
+- **`deploy/deploy.sh`** — refuses a dirty tree, migrates *before* starting the new containers,
+  waits for `/health`, and puts the previous image back if the api never answers. **It cannot
+  touch `SEND_MODE` and cannot run `down -v`**, and CI asserts both of those by grep.
+- **`deploy/backup.sh`** — nightly dump, 14 days, verified readable, written to a temporary name
+  and renamed only on success. ADR-001 put Postgres on the VM, which removed five problems and
+  introduced one: the database dies with the box. The weekly off-box copy is the mitigation, and
+  it is manual.
+- **`docs/DEPLOY.md`** — the runbook. Rewritten after the fact against the AWS instance that now
+  exists, so §1 records what was actually done and found rather than what was planned.
+
+**Structured logging (E7).** `app/core/logging.py`: one JSON object per line, human-readable in
+development. The decision worth recording is that **context travels in `contextvars`, not in
+arguments** — the api binds `request_id` once per request, the runner binds `job_id`, `org_id`
+and `lead_id` once per job, and every line written underneath carries them without the emitting
+code knowing they exist. A request id that has to be passed down in order to be logged is a
+request id that will be missing from the one line that mattered.
+
+Secrets are scrubbed from every rendered line as a *second* defence. The first is not logging
+them; this one exists because secrets arrive in logs by accident, inside the text of an exception
+raised by a driver that was handed a URL with a password in it. The tests pass a secret through
+every path it would really travel: the message, a format argument, an `extra` field, and an
+exception.
+
+**`/ready` now fails when the worker is dead (ADR-009).** It checked only the database until now,
+so **an api serving perfectly while the worker was dead reported itself ready** — and the symptom
+of a dead worker is that nothing is researched, drafted or sent, which is invisible from outside
+for hours. The worker upserts a `worker_heartbeats` row once a minute and `/ready` fails on its
+**age**. `health.py`'s argument for keeping health in memory still holds; it is about the liveness
+signal, and the api simply cannot see another process's memory. Point an external monitor at
+`/ready`, never `/health`.
+
+**Alerts (`alerts` table plus an optional webhook).** The table is the record, the webhook is the
+nudge, in that order — an alert that exists only inside a failed HTTP request is an alert nobody
+will ever see, and a push failure never propagates, or the system stops working *because* it
+tried to say it was in trouble. One hour's cool-down per kind; acknowledging re-arms it. The
+worker raises `worker_task_stalled` and `worker_task_failing:<task>` about itself, after **three**
+consecutive failures rather than one, because alerting on blips trains whoever receives them to
+ignore them.
+
+**Two deliberate deviations from ADR-004**, both recorded in ADR-009: `worker_heartbeats` carries
+no `org_id`, and `alerts.org_id` is nullable, meaning "the system". A process is not tenant data,
+and a stalled worker stops every org's work at once — attributing it to one org would hide it
+from the others.
+
+**A near miss worth recording, because it is a hard-rule-2 incident.** A test built a bare
+`Settings()`, which loaded the real `.env`, and a failing assertion then printed every configured
+API key into the terminal. The test was about something else entirely and had not asked for them.
+Removing the variables from `os.environ` is not enough, because `pydantic-settings` reads the file
+itself — so `tests/conftest.py` now has an **autouse, session-scoped `hermetic_settings`** fixture
+that detaches `Settings` from `.env` for the whole run. A test that forgets `_env_file=None` is
+hermetic anyway. The stale `settings_factory` fixture, which still imported the deleted
+`config.config`, was fixed at the same time.
+
+**C6 and D5 close here.** ADR-006 had already settled the account — paid Google Workspace on a
+dedicated domain, where SMTP relay is supported and ~2000/day leaves real headroom over our 100 —
+and `DEPLOY.md` §6 is the runbook it promised: the SPF, DKIM and DMARC records as GoDaddy's panel
+wants them (the apex is `@`, and the DKIM name is `google._domainkey`, not the full hostname), the
+two steps everyone forgets (press **Start authentication**, and never add a second SPF record),
+and a verify-as-received gate before the first send.
+
+**Six dependencies deleted.** `langchain`, `langchain-core`, `langchain-groq`, `langgraph`, `rich`
+and `aiosqlite` went with the prototype in Phase 7 but stayed in `pyproject.toml`. Nothing in
+`app/` imports them. They are gone now rather than later because an image that ships six unused
+dependency trees ships their vulnerabilities too. The suite is green afterwards.
+
+**The server, as provisioned this session.** Full detail in `docs/DEPLOY.md` §1; the facts worth
+having in front of you:
+
+- `t3.small`, Ubuntu 24.04.4, 2 GB RAM, 30 GiB, Elastic IP **3.25.23.191**, SSH as `ubuntu`.
+- **`api.arkvane.in` → 3.25.23.191**, an A record at GoDaddy with a 600-second TTL, resolving on
+  both Google and Cloudflare public resolvers. The domain is **arkvane.in** — an earlier draft
+  guessed `athenaedu.in` from the Message-ID in ADR-002's addendum, which was a test mailbox.
+- **`arkvane.in`'s mail records were already correct and were not touched**: Google Workspace MX,
+  exactly one SPF record, a 2048-bit DKIM key, and DMARC at `p=none` with reporting. So D5's
+  runbook (`DEPLOY.md` §6) is now a verification step rather than a setup step. The zone went
+  from 16 records to 17 and every mail record was re-checked afterwards.
+- **Sydney, not Mumbai, and that was forced.** The AWS Free Plan pins a project to one region and
+  this account's is `ap-southeast-2`; the console refuses Mumbai outright. Reaching Mumbai means
+  activating advanced features, which changes billing, so it was not taken. The cost is ~150–200 ms
+  of latency that only the dashboard notices.
+- **Outbound 587 and 993 are open; 25 is blocked.** This was the one thing that could have stopped
+  the whole deployment, and it was checked on the instance rather than assumed. We send on 587.
+- **`t3.small` is not free forever** — roughly $19/month in Sydney once the plan's credits run
+  out. A €4–5 Hetzner box is the better long-term home and nothing here is AWS-specific.
+- A read-only, repository-scoped **deploy key** was added to the repo (Settings → Deploy keys) so
+  the private repository can be cloned without a personal token. Revoking it is one click.
+- A **$5 monthly budget alarm** (`outreach-automation-5usd`) emails at 85%, 100% and forecast-100%.
+
+**What the first real deploy cost, and what it found.** Nothing in Phase 9 had ever been run
+against a server, and six defects surfaced in a row. Every one of them was invisible locally and
+in CI, which is the point worth keeping:
+
+1. **`env_file` marked `required: false`** — so a missing secrets file was a *silent* success.
+   Added so CI could validate without a `.env`; it turned the one failure that must be loud into
+   the one that was quietest. CI now writes a throwaway `.env` and then asserts the variables
+   **reach the container**, because a config that merely parses proves nothing.
+2. **Migrations ran with `--no-deps`**, before Postgres existed, and died on `name resolution` —
+   which reads like a DNS fault and is a startup-order one. The compose file already declared
+   `depends_on: service_healthy`; the script was overriding it.
+3. **Caddy crash-looped**: `log` inside a `handle` block is not an ordered handler, so Caddy
+   refused the whole config. Access logging moved to site level, `log_skip` on the health paths.
+4. **`ACME_EMAIL` never reached Caddy** — its `environment:` block simply did not list it — so
+   Caddy used its `admin@localhost` fallback and Let's Encrypt refused it: *"contact email has
+   invalid domain"*. No certificate was issued and every HTTPS request failed with a TLS internal
+   error, which looks nothing like a missing variable. The fallback is gone and compose now
+   requires the value.
+5. **`deploy.sh` polled the api on the host**, which publishes no port — only Caddy does. It
+   reported a perfectly healthy stack as a failure and rolled it back while the api logged
+   "Application startup complete". Health is now checked inside the container.
+6. **`/openapi.json` was open in production** while `/docs` was closed — the same map of every
+   route and schema, in a more convenient format, unauthenticated.
+
+**And two of my own diagnoses were wrong before the right one.** I twice "fixed" the `env_file`
+path, in opposite directions, on partial evidence. The rule is simply that every relative path in
+a compose file resolves against the **project directory**, which defaults to the compose file's
+own directory — so `../.env` and `context: ..` both already meant the repository root, and
+passing `--project-directory` to force it broke both at once. The compose file now says so, and
+says not to add the flag back.
+
+**Phase 9 slice 2 — privacy and retention (D6) — done.** The last issue outside Phase 8.
+
+- **`DELETE /api/v1/leads/{id}`** erases a lead with its drafts, messages, research and events.
+  Admin-only: it is the single irreversible action in the API.
+- **It leaves a hashed suppression behind**, and that is the decision worth knowing about. A lead
+  who opted out and then asks to be erased is a conflict: honouring the erasure literally deletes
+  the record of their opt-out, and the next import of the same sheet mails them again — a privacy
+  request producing the exact harm it was meant to prevent. So the address is kept as a SHA-256
+  digest: enough to recognise it if offered again, not enough to read out of the database. The
+  send-time check learned the hashed form in the same change, or the whole thing would be
+  decorative.
+- **Honest about what that buys.** A hash is pseudonymisation, not anonymisation — an email
+  address has little entropy, so anyone with this table and a candidate address can confirm a
+  match. `PRIVACY.md` says exactly that rather than implying more.
+- **Retention** runs hourly in the `Scheduler`: terminal leads erased after
+  `LEAD_RETENTION_MONTHS` (12, Q7's default), research page text cleared after 30 days, findings
+  and sources kept. Leads still in conversation are never aged out — retention removes finished
+  work, and somebody mid-thread is not finished.
+- **`RETENTION_ENABLED` is deliberately excluded from the empty-value-means-false validator.**
+  For the other flags "unset means off" is the safe reading; for this one it would quietly stop
+  the system forgetting anything.
+- **`PRIVACY.md` rewritten** against what the code does — the PII routing rule and its limits,
+  the processor list, and the two gaps that remain: no postal address, and erasure does not reach
+  backups already taken. Anyone promising otherwise is describing a system that takes no backups.
+
+**A mistake worth recording.** Half of this work was written, then destroyed by a `git reset
+--hard` after I switched branches with it uncommitted. Untracked files survived; edits to tracked
+files did not. It was redone from the same reasoning, but the lesson is cheap to write down and
+expensive to relearn: commit before switching, even mid-task.
+
+**Phase 8: a campaign can now be created.** Found by opening the deployed dashboard — it signed
+in correctly, said "No campaigns yet", and offered no way to make one. There was no `POST` route
+for a campaign or a mailbox anywhere, and no script either, so import, research, drafting and
+sending were all gated behind a record that could not exist. **The system was deployed and
+unusable, and only looking at it would have shown that.**
+
+`POST /campaigns` validates the persona at the door rather than at drafting time, because the
+persona is the list of claims a draft may make about us and a malformed one would quietly produce
+a weaker draft. `POST /mailboxes` stores policy and never credentials. Four bugs came out of
+building it, each caught by its own test: a 422 answering 500 because Pydantic's raw error dicts
+are not JSON-serialisable; `daily_cap or 100` turning an explicit 0 into 100; both endpoints
+flushing without committing; and `api.js` flattening a structured error into `[object Object]`,
+discarding the field list the form exists to show.
+
+**The pipeline runs end to end on the live system.** Four imported leads went
+import -> research -> draft -> review queue, and the dashboard shows real grounded drafts with
+their evidence beside them. Getting there took **six** defects, every one invisible to the test
+suite and to CI, and all found by watching real leads fail to move:
+
+1. **`parse_chain` returned an empty chain when `LLM_CHAIN` was unset** — the ordinary case, and
+   the one `settings.py` documents as using the default. `default_chain()` existed and was never
+   called. The system had no providers at all while every key was correctly set. *The existing
+   test asserted the broken behaviour.*
+2. **Every model id in the default chain had been retired.** Groq's two Llama models, both
+   OpenRouter `:free` slugs and `gemini-2.0-flash` all answered 404. Replaced with ids read from
+   each provider's own model list and verified to return content.
+3. **`NEW -> RESEARCHED` is not a legal transition** and nothing ever set `ENRICHING`, so every
+   research job did all its work and died on the final line.
+4. **Research never queued drafting.** `DRAFT_LEAD` was a registered handler with a concurrency
+   cap, enqueued by nobody. The pipeline stopped with everything looking healthy.
+5. **Strict structured output needs `additionalProperties: false` on every object *and*
+   `required` naming every property.** Pydantic emits neither for nested models, so both Groq
+   entries were disabled with a 400 on every structured call. A simplified schema worked, which
+   is exactly why this took two rounds to see — the real schema had to be posted.
+6. **`RESEARCHED -> AWAITING_APPROVAL` is not legal either**, so drafting failed *after* paying
+   for the model and storing the draft.
+
+**Three of those six were the same shape: a correct table and a correct caller, with nothing
+checking that they agreed.** Each component was individually tested and individually right. The
+lifecycle test now walks the whole path — `NEW -> ENRICHING -> RESEARCHED -> DRAFTED ->
+AWAITING_APPROVAL -> APPROVED -> SENT` — and research is asserted to queue drafting, so the next
+gap of that kind fails in CI instead of on a server.
+
+**A provider fix worth keeping in mind:** one free model answers a strict `json_schema` request
+with correct JSON wrapped in a markdown fence. That was being treated as the model failing, which
+cooled down an entry that had done the right thing.
+
+**Phase 9 (this session): the first attempt to send stopped on three things, none of which the
+test suite could have caught.** All three were state in the production database, not code.
+
+1. **`campaigns.settings` was edited by hand and the whole send loop died.** A widened send
+   window was applied with `send_days` as `["mon","tue",...]`, where `CampaignSettings` wants
+   integers (0 = Monday). `model_validate` raised inside `SendLoop._send_for`, the error escaped
+   `tick()`, and `WorkerTask.run` recorded a failure and backed off — then failed again every
+   cycle. **Nothing sent from any mailbox**, and the only evidence was a traceback in the worker
+   log. The dashboard showed four healthy leads and no reason at all.
+
+   Fixed in PR #52: validation happens inside a `try`, a failure becomes *that mailbox's* reason
+   naming the offending fields, and the other mailboxes still get their turn. Field names only,
+   never the stored values — a reason string reaches logs and `/admin`, and echoing stored
+   content into either is how one eventually leaks.
+
+2. **The campaign was still `draft`.** `status` defaults to `draft` on creation and
+   `find_candidates` requires `running`, so an attached mailbox and two approved drafts sent
+   nothing. The UI *printed* the status and said the campaign "can send once you set it
+   running" — and offered no way to set it. The only route was raw SQL against production. PR
+   #52 adds the Set running / Pause sending control, and an explicit line while a campaign is
+   still a draft.
+
+3. **The mailbox's `from_email` is not the authenticated SMTP account.** The row says
+   `rahul@arkvane.in`; SMTP authenticates as a personal Gmail, and `aiosmtplib.send` takes the
+   envelope sender from the `From` header. Probed against Gmail (conversation stopped at
+   `RCPT TO`, no `DATA`, nothing delivered): **Gmail accepts the mismatched envelope**, so
+   there is no rejection and no risk of `_bounce_lead` suppressing a real address. But Gmail
+   will not sign `arkvane.in` mail, so **the SPF and DKIM passes verified for `arkvane.in` do
+   not apply to anything sent this way.** Fine for a workflow test to the owner's own addresses;
+   it must be corrected before real outreach.
+
+**What this says about the test suite.** 1,100 tests, four green CI jobs, and a deploy that
+reports `{"ready":true}` — none of it could see any of the three, because all three were rows.
+The pattern is the same one that produced the six defects of the previous session: a correct
+table and a correct caller, with nothing checking that the data between them agreed. The fix
+that generalises is the one in PR #52 — make the unreadable case *reportable* rather than fatal,
+so the next malformed row costs one mailbox and says so, instead of costing everything silently.
+
+**A deploy defect fixed on the way:** `/opt/outreach/.git/config` had
+`core.sshCommand = ssh -i ~/.ssh/outreach_deploy`. `~` is `/root` under `sudo`, where no such
+key exists, so `deploy/deploy.sh` could never pull — every deploy so far had been done by hand.
+Now an absolute path with `IdentitiesOnly=yes` and an explicit `UserKnownHostsFile`. `deploy.sh`
+runs end to end; the live image is `dbc92e2`.
+
+**Still blocking the first send, and it needs the owner.** Two rows, and the permission guard
+refuses to let a tool `UPDATE` the production database:
+
+```sql
+-- 1. correct the settings this session's own bad UPDATE wrote (0 = Monday)
+UPDATE app.campaigns SET settings = settings ||
+  '{"send_days":[0,1,2,3,4,5,6],"window_start":"00:00:00","window_end":"23:59:00"}'::jsonb
+  WHERE name = 'test_campaign';
+-- 2. or just drop it back to the product default: Mon-Fri 10:00-17:30 IST
+--    UPDATE app.campaigns SET settings = '{}'::jsonb WHERE name = 'test_campaign';
+```
+
+Step 2 — setting the campaign `running` — no longer needs SQL. It is a button in the dashboard
+once the Cloudflare build of `main` lands.
+
+**The first real emails were sent, and three more defects came out of it.** Three leads of
+`test_campaign` went out on `SEND_MODE=allowlist` to the owner's own addresses, were delivered,
+and are recorded `SENT`. Every defect below was invisible to the suite and to CI, and every one
+was found by watching real leads.
+
+**1. A delivered email was not recorded as sent (PR #54).** The worst of the three. The first
+send arrived in the recipient's inbox and the row still said `sending`; the lead stayed
+`APPROVED` and the dashboard's SENT filter was empty for a message somebody had already read.
+
+`send_one` commits twice of its own accord -- once before the SMTP call, because a socket must
+not be held open inside a transaction, and once after, because step 4 has to land whatever the
+outcome was. `SendLoop._send_for` wrapped that call in `session.begin()`, and committing inside
+that block ends it, so the next statement raised `InvalidRequestError: Can't operate on closed
+transaction` **after** the mail had left.
+
+- **At-most-once held.** The unique idempotency key refused the next cycle's claim, so nothing
+  was sent twice. **ADR-002's recovery pass then earned its keep**: it found each message in
+  `[Gmail]/Sent Mail` by `Message-ID` and resolved it to `sent`, 15 minutes later. The system
+  self-healed a bug nobody had found yet, which is the entire argument for that design.
+- **Why 1134 tests missed it:** every test in `test_send_loop.py` called `send_one` with the
+  bare `db` fixture, which has no outer transaction -- so the one thing that differed between
+  the test and the worker was the thing that was broken. `TestThroughTheRealTask` now drives
+  `send_pass` and `tick`, the methods the worker actually calls.
+
+**2. One unreadable campaign stopped every mailbox (PR #52).** A send window widened by hand
+put `send_days` as `["mon","tue",...]` where `CampaignSettings` wants integers (0 = Monday).
+`model_validate` raised inside `_send_for`, escaped `tick()`, and the loop crash-looped --
+nothing sent from **any** mailbox, with the reason visible only as a traceback. Validation is
+now per-mailbox and a failure is reported as that mailbox's reason, naming the offending fields.
+
+**3. The dashboard could not start a campaign, or create a second one (PRs #52, #55).**
+`status` defaults to `draft` and `find_candidates` requires `running`, so an attached mailbox
+and two approved drafts sent nothing and said nothing. The UI printed the status and told the
+operator to "set it running" -- with no control to do it. `NewCampaign` also rendered only when
+no campaign was selected, so the moment a first campaign existed there was no way to make
+another.
+
+**The settings screen (PR #55), and the one thing it deliberately will not do.** Sending rules
+were editable only by raw SQL against production, which is how defect 2 happened.
+`PATCH /campaigns/{id}` now accepts `settings`, validated through `CampaignSettings` and merged
+rather than replaced. A test asserts the property that matters: whatever the route accepts, the
+send loop can read.
+
+**`SEND_MODE` is reported and never editable.** `GET /admin/sending-config` answers "what
+happens if I approve this draft?" from the same configuration object the send guard reads, and
+there is no route that sets it -- it comes from the environment at process start and is checked
+in one function (hard rule 1), so going live stays a deliberate act on the server rather than a
+click a stolen session could make. A test asserts no route can change it. The allowlist is
+reported as a **count**: the count proves the gate is configured, the addresses are personal
+data that would end up in a browser cache and a screenshot.
+
+**Three operational findings worth keeping.**
+
+- **The mailbox's `from_email` is not the authenticated SMTP account.** The row says
+  `rahul@arkvane.in`; SMTP authenticates as a personal Gmail. Probed against Gmail with the
+  conversation stopped at `RCPT TO` -- no `DATA`, nothing delivered -- and **Gmail accepts the
+  mismatched envelope**, so there is no rejection and no risk of `_bounce_lead` suppressing a
+  real address. But Gmail will not sign `arkvane.in` mail, so **the SPF and DKIM passes verified
+  for `arkvane.in` do not apply to anything sent this way.** Fine for a test to the owner's own
+  inbox; it must be corrected before real outreach.
+- **The IMAP loop ingested 1400 messages from the personal inbox, and classified none of them.**
+  Zero matched a lead, so the `In-Reply-To`/`References` matching did its job and no model was
+  called on unrelated mail -- 32 LLM calls in total. It is noise rather than cost, but 1400 rows
+  of the owner's personal email now sit in the database, which is a reason to use a dedicated
+  mailbox rather than a personal one.
+- **`deploy.sh` could never pull.** `/opt/outreach/.git/config` set
+  `core.sshCommand = ssh -i ~/.ssh/outreach_deploy`, and `~` is `/root` under `sudo`, where no
+  such key exists -- so every deploy up to this point had been done by hand. Now an absolute
+  path with `IdentitiesOnly=yes`. `deploy.sh` runs end to end.
+
+**The reboot was not unattended-upgrades.** The journal says
+`systemd-logind: Power key pressed short` -- an ACPI power-button event from the hypervisor,
+which on EC2 means a Reboot or Stop issued from the console or API, most likely while the IAM
+role was being attached (which does not require a restart). Every `Automatic-Reboot` directive
+in `/etc/apt/apt.conf.d/` is commented out, so unattended-upgrades was not responsible and
+nothing needed changing. Recovery already works and was not luck: `docker` and `containerd` are
+`enabled` at boot and all four containers are `unless-stopped`, so the stack came back by itself
+in about 60 seconds. `HandlePowerKey` is deliberately **left alone** -- ignoring it would turn a
+graceful console shutdown into a hard stop, which is worse for a box holding a database.
+
+**SSM Session Manager is live.** The instance profile `outreach-ssm-role` is attached and the
+metadata service confirms it, so a shell is available from any network without an SSH rule.
+Port 22 can now be closed; the dynamic residential IP that broke SSH three times stops
+mattering.
+
+**Phase 8: the dashboard is navigable, and the three things that made it unusable are fixed
+(PR #57).** 1233 tests. The previous version was one long scroll of every section at once,
+styled with inline objects. Each change below is a layout decision rather than a cosmetic one.
+
+- **A reviewer cannot be handed a hundred drafts.** Each carries a subject, a body and its
+  research hooks, so a hundred is a response measured in hundreds of kilobytes.
+  `GET /review/drafts` now takes a cursor and returns **`total` as well as `next_cursor`** --
+  the cursor answers "is there more", which is not the question a reviewer has; "47 waiting" is
+  what decides whether somebody starts now. Ordered oldest first **with `id` breaking the tie**,
+  or two drafts created in the same millisecond page unstably and one is served twice while the
+  other is never seen. Judging a draft refills the page from the same cursor rather than
+  advancing, because advancing would skip whatever moved up into the gap.
+- **An operator with a thousand leads cannot scroll to find one.** Email is unique so it gets a
+  search box; `name`, `company` and `state` are separate filters combining as AND. They were one
+  combined `q`, which cannot tell you whether it matched a person or a company. **`%` and `_`
+  are now escaped** -- unescaped, searching for `%` returns the whole table, and that is the
+  first character somebody types when probing a search box.
+- **Settings are gated by role, not by a hidden button.** `member` reads the dashboard and
+  judges drafts but cannot change the rules underneath them. `GET /admin/sending-config` and
+  `DELETE /suppressions/{id}` now require `admin`. Removing a suppression undoes somebody's
+  opt-out, which is the one action there that can lead to mailing a person who asked not to be;
+  *adding* is protective and stays open to anyone. A test asserts a member can still review --
+  the gate is on the rules, not on the work.
+
+`frontend/src/app.css` replaces the inline `style` objects. Inline styles cannot express a
+hover, a focus ring, a media query or a disabled state, and the absence of those four was most
+of what made the old screen feel unfinished. The sidebar collapses to a horizontal strip under
+900px rather than becoming a drawer, because a drawer needs a focus trap and a strip needs
+nothing.
+
+**Outstanding and blocked: making `SEND_MODE` editable from the dashboard.** The owner asked for
+it twice. It is designed and the migration is written, and it is **not applied**, because the
+permission guard refuses to let a tool weaken the send gate on its own authority -- correctly,
+given hard rule 1. The design, for whoever picks it up:
+
+- `orgs.send_mode`, nullable, with a check constraint. NULL means "use the environment", so
+  adding the column changes no org's behaviour.
+- `effective_send_mode(settings, override)` in `app/services/mail/smtp.py` -- the *same module*
+  as the gate, so the decision still resolves in one place and the structural test over the
+  whole tree still holds.
+- Raising it is gated where it is **written**, not where it is read: `owner` only, `live`
+  refused unless `APP_ENV == "production"`, a typed confirmation, and an audit row naming who
+  did it. A guard that answers differently depending on who is asking is a guard nobody can
+  reason about.
+- This needs an **ADR** and an edit to hard rule 1 in `CLAUDE.md`, because it is a deliberate
+  deviation from what that rule currently says.
+
+**The SSH problem is not IP rotation, or not only that.** This session's failure was the
+*machine* switching to IPv6 (`2401:4900:...`) while the security group holds an IPv4 `/32`;
+forcing `ssh -4` showed the IPv4 address had also rotated inside the ISP's `/20`
+(`182.69.182.117` to `182.69.183.128`). **SSM Session Manager is attached and confirmed**
+(`outreach-ssm-role`, verified through the instance metadata service), so the fix is to stop
+using SSH: EC2 -> Connect -> Session Manager works from any address and any address family, and
+port 22 can be closed entirely. `deploy/deploy.sh` runs the same way inside that session.
+
+**So PR #57's API half is merged but not deployed.** The frontend went out through Cloudflare on
+the merge to `main` and is live -- the published CSS hash matches the local build and the bundle
+contains the new shell -- but the server is still running the previous image, which means the
+new UI is calling `/review/drafts` without cursor support and the lead filters are being
+ignored. **Deploying is one `sudo ./deploy/deploy.sh` through Session Manager.**
+
+**The send mode is now settable from the dashboard, owner-only (PR #59, ADR-010).** Deployed as
+`outreach:51d4ace`; migration `b4f1a7c93d52` applied and verified against the live database.
+
+The mode came only from the environment and was read once at process start. Safe, and unusable
+in the situation that matters most: stopping. Pausing an in-flight campaign meant an SSH
+session, an editor and a container restart -- and **SSH broke four times during this project**,
+three IP rotations on a residential line and once because the machine switched to IPv6 while the
+security group held an IPv4 `/32`. A kill switch that depends on SSH being reachable is not a
+kill switch.
+
+- `orgs.send_mode`, nullable, with a check constraint. **NULL means "use the environment"**, so
+  the migration changed no behaviour. A column with a default would have silently become the
+  authority the moment it was added. Verified on the live database afterwards: `send_mode` is
+  NULL, `SEND_MODE=allowlist`, `APP_ENV=production`.
+- **The one-gate invariant is kept.** `effective_send_mode()` sits in the same module as
+  `allowlist_permits`, so the decision still resolves in one place and the structural test over
+  the whole tree still passes. An unknown value resolves to `disabled`; the check constraint
+  makes that unreachable, which is why it must fail closed.
+- **Every gate is on the write, not the read**, because a guard that answers differently
+  depending on who is asking is a guard nobody can reason about: `owner` not `admin`,
+  `APP_ENV == "production"` for `live`, a typed `confirm: "LIVE"`, and an audit row with a
+  WARNING log line.
+- **Enabling is harder than it was**; restricting is instant and needs no shell. Before, anybody
+  with shell access and an editor could set `live` in `.env`.
+
+`CLAUDE.md` hard rule 1 was edited, since this deliberately supersedes its second half. The
+first half is unchanged.
+
+**The nightly backup had never run, and that was the most serious finding of the session.** No
+`backups/` directory, no cron entry -- `deploy/backup.sh` was written in Phase 9 and never
+scheduled. ADR-001 put Postgres on the VM, which removed five problems and introduced exactly
+one: the database dies with the instance. The dump was the mitigation, and it did not exist. Had
+the box been terminated, everything would have gone with it.
+
+Installed at 02:17 daily with 14 days retained, and run once to prove it: 5,092,979 bytes,
+verified readable. **The off-box copy is still manual and still the part that matters** -- the
+dumps sit on the same disk as the database, which protects against a bad migration and not
+against losing the instance.
+
+**Where the data is, recorded once so it stops being a question.** One Postgres, in Compose on
+the EC2 instance, volume `outreach_pgdata` on the 29 GB root disk, **no published port** --
+reachable only on the Compose network. 22 MB today. Supabase holds **no tables**: it issues a
+JWT, we verify it locally against its JWKS and resolve it to our own `members` row. The local
+Postgres on port 5433 is development and tests only.
+
+**Deploys now go through SSM Session Manager**, not SSH. The instance profile `outreach-ssm-role`
+is attached and verified through the metadata service, so a shell is available from any network
+and any address family. **Port 22 can be closed.** Two things were fixed to make `deploy.sh` work
+under it: `/opt/outreach` is now consistently root-owned (an earlier `sudo git fetch` had left
+root-owned objects in `.git`, which broke git for `ubuntu`), and `core.sshCommand` already used
+an absolute key path from the previous session.
+
+**Phase 8 is complete and the issue register is closed: 59 of 59 (PR #61).** E8 and NEW-3 were
+the last two.
+
+**NEW-3 — the headline number fell as the campaign succeeded.** The prototype counted
+`emails_sent` as the number of leads whose *current* status was `EMAIL_SENT`, so every lead that
+then replied or booked a meeting silently decremented it. `GET /campaigns/{id}/stats` counts
+from the record instead: `emails_sent` counts **messages** (two sends to one person are two
+emails; a `failed` or `sending` row is neither), and `replied`, `bounced`, `opted_out` and
+`meetings_booked` count leads that **ever reached** that state from the append-only `events`
+table. `by_state` is the only snapshot and the dashboard labels it "In flight right now",
+because where everything is and what has happened are different questions.
+
+**E8 — bulk approval, pausing one lead, and the timeline.** `POST /review/bulk-approve` **skips**
+any draft whose validation failed, whose research was thin, or whose confidence is below the
+threshold, and returns the reason keyed by draft id so the UI marks those rows. That asymmetry
+is the design: the failure mode of a bulk button is somebody clearing a queue of a hundred
+without reading any, and the weak ones are exactly the ones worth reading. Capped at 200.
+Pausing a lead is **a flag, never a state** — a `PAUSED` state would need a way back out that
+guessed what the lead was doing before. Lead detail was already in the API and the UI had never
+called it; a row is now clickable and shows every message and the full audit trail, one lead at
+a time (C7).
+
+**Capacity, decided from measurement rather than estimate.** Per-row costs on the live database:
+a message is 3.4 KB, a draft 24 KB, an event 0.35 KB, a research row 28 KB (page text cleared
+after 30 days). At 100 emails a day — 2,200 a month, ~1,100 new leads at two sends each — a lead
+costs about **34 KB permanently**, so **37 MB a month and roughly 250–300 MB over six months**.
+
+- **Postgres stays on the VM.** Supabase free is a 500 MB database, which that fills to 50–60%
+  with no headroom, and a free project **pauses after a week of inactivity**, which would stop
+  the worker mid-campaign. It would also re-add the session-pooler and IPv6 workarounds ADR-001
+  removed. The instance has 23 GB free after a `docker system prune` reclaimed **6.6 GB** of
+  stale images (disk went from 46% to 19%).
+- **`t3.small` stays.** 877 MB of 1,905 MB in use, so a `t3.micro` would not fit.
+- **The credits are the real constraint.** $118.08 of $120 left with $1.92 spent in three days —
+  $0.64 a day, about $19 a month, **184 days of runway**. That lands almost exactly on the six
+  months, so the margin is roughly $3 and nothing paid should be added.
+- **The one free-tier service worth adding is S3 for the backups**, which still sit on the same
+  disk as the database. 70 MB against a 5 GB free allowance. It needs an IAM policy, which is
+  the owner's click.
+
+**Four defects found by an operator using the dashboard, three of them in the same path
+(PRs #65-68).** The pattern is now unmistakable and worth stating once more: every one was a
+correct caller and a correct callee with nothing checking that they agreed.
+
+**Rejecting a draft did nothing visible, and it took three fixes to actually work.** A reviewer
+rejected a draft with "add one more line about athena". The audit trail recorded the feedback,
+the lead went back to `DRAFTED`, the review queue went from 1 to 0 — and no new draft appeared.
+
+1. **Nobody enqueued the regeneration.** `drafts.reject` marked the draft rejected, stored the
+   feedback and returned the lead to `DRAFTED`; its docstring said "for regeneration". The route
+   recorded the rejection. Neither wrote the next draft. The job is now enqueued **inside
+   `reject`, in the same transaction** — a caller can forget, and a caller added later can
+   forget again; here the rejection and the work it implies either both land or neither does.
+2. **The feedback never reached the model.** `build_draft_prompt` has always had a `feedback`
+   slot, filled only by the generator's own validation retries. A reviewer's objection was
+   stored, shown in the timeline, and ignored — so they would reject the same draft twice and
+   reasonably conclude the feedback box did nothing. `handle_draft_lead` now reads the newest
+   rejection for the lead and seeds the prompt with it.
+3. **The regeneration then died on the state machine.** A rejection puts the lead back into
+   `DRAFTED`, and `handle_draft_lead` always transitioned *to* `DRAFTED`, so the replacement
+   arrived with the lead already there: `DRAFTED -> DRAFTED is not a legal transition`, raised
+   after the model had been paid for and the draft written.
+
+   **The obvious fix would have been wrong.** Allowing that means allowing self-transitions, and
+   the ban on those is deliberate — `SENT -> SENT` would be a second email. The handler skips
+   the redundant transition instead, and a test now locks the rule it was tempting to relax.
+   `save_draft` already writes a `draft.created` event per attempt, so the timeline loses
+   nothing.
+
+Verified on the live system afterwards: version 1 `rejected`, version 2 `pending_review`, lead
+back in `AWAITING_APPROVAL` — and the new draft mentions Athena, so the feedback did reach the
+model.
+
+**Creating a second campaign returned a 500, and the error message blamed the wrong thing.**
+`uq_mailboxes_org_from_email` already said two rows cannot share an address within an org;
+`POST /mailboxes` did not, so the second attempt came back as an unhandled
+`UniqueViolationError`. It is now idempotent on the address — the address *is* the mailbox's
+identity, and a 409 would only make the caller ask for the id it just described.
+
+**The misleading message is the part worth keeping.** FastAPI handles a bare `Exception` in
+Starlette's `ServerErrorMiddleware`, which sits *outside* `CORSMiddleware`, so a 500 never
+passes back through it and arrives with no `Access-Control-Allow-Origin`. The browser refuses to
+expose it and `fetch` rejects — so the dashboard said *"the API did not answer with JSON; check
+that the backend is running"* while the backend was running perfectly and had answered with
+JSON. That pointed the investigation at CORS, DNS and connectivity when the fault was a
+duplicate key three layers in. The handler now adds the header itself, reflected only for an
+origin already on the allowlist.
+
+**Two campaigns on one mailbox: whose email goes first, and whose name is on it (PR #67).**
+Asked as a scheduling question; the answer uncovered a correctness bug. `find_candidates` has
+always pulled leads from **every** running campaign on a mailbox, while `SendLoop` handed
+`send_one` a single persona taken from the *oldest* campaign — so a lead belonging to campaign B
+went out **signed by campaign A**, with the wrong sender name, agency and footer, under campaign
+A's window and follow-up rules. Not an ordering problem: a sender-identity one, and the kind
+nobody notices until a recipient replies to the wrong person.
+
+A `Candidate` now carries its own campaign — its persona signs the message, its settings
+schedule the follow-up, and its window decides eligibility, so a campaign whose window is shut
+cannot block one whose window is open.
+
+**The ordering decision.** The daily cap belongs to the **mailbox**, because the cap protects a
+sending *reputation* and reputation attaches to the address, not to how many campaigns the work
+was split into. So campaigns share one allowance: replies first across every campaign (somebody
+who wrote to us is waiting, and which campaign they came from is our bookkeeping), then due
+follow-ups, then first emails — and within a kind, **round-robin across campaigns**, oldest
+approval first inside each. Round-robin rather than strict first-approved-first-sent, because
+with one cap a campaign holding five hundred approved drafts would starve one holding five for
+a working week.
+
