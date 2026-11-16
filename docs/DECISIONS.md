@@ -4958,3 +4958,67 @@ endpoint the free plan allows. Its response has not been seen.
 **Consequences.** The response shape of `api_search` is still an assumption: no live call has
 been made, because hard rule 5 forbids buying the plan that would allow one. One function reads
 it, so a wrong assumption is one function and one test.
+
+## ADR-063 — One file per screen, and a guard for each of the four places a screen is registered
+
+**Status:** accepted, 2026-11-17. **Context:** S18.0, the first slice of the v4 usability work
+(`docs/IMPLEMENTATION_PLAN_V4.md` §2).
+
+**Context.** `App.jsx` had reached **5,374 lines** and held thirty-odd components: the review
+queue, the leads list, the import screen, a campaign and its experiment panel, the new-campaign
+form, the platform view, the team screen, campaign settings, OAuth clients, connector tokens,
+invitations, the send allowlist, the send-mode control and the suppression list. The v4 plan adds
+an Inbox, a campaigns table, an opportunity workspace and a resume workspace. Four more screens
+in that file would make every diff one nobody can read in one sitting, which is the only thing
+standing between "one pull request per slice" and a rubber stamp.
+
+Splitting it is mechanical and also the most dangerous kind of change this codebase can take,
+because **nothing in the toolchain catches the mistake a split makes.** There is no ESLint in
+`frontend/`, and neither Vite nor esbuild fails on an undefined identifier: the bundle is built,
+the page loads, and the first render that reaches `<Field />` throws. The dashboard suite renders
+nothing, so it would not catch it either. Three guards already existed (ADR-048) and none of them
+looks at this: they check that a screen calls a real route, reads real fields, and declares the
+state it sets.
+
+Two further facts shaped the decision. All three of those guards globbed
+`frontend/src/*.jsx` — **not recursive** — so moving screens into a `screens/` folder would have
+left every one of them reading nothing while still passing green. And
+`test_connect_sends_mailbox_id.py` named `App.jsx` by path, so it failed the moment the Connect
+Gmail panel moved, while the behaviour it guards was untouched.
+
+**Decision.**
+
+1. **One file per screen, flat in `frontend/src/`**, following `JobHunt.jsx`, `Sending.jsx`,
+   `Signals.jsx`, `Operations.jsx`, `Overview.jsx` and `Setup.jsx`. `App.jsx` keeps the shell:
+   `App`, the consent page, `ROUTES`, `Dashboard` and the nav. Each screen is the default export
+   of its own file.
+2. **Shared primitives go to `ui.jsx`**: `Field`, `TextArea`, `Centered`, `ModeOption`,
+   `toLocalInput`, `formatBytes` and the five tone mappers. Five screens use `Field`; the tone
+   helpers are one-line mappings from a status to a colour token. They make the same bargain the
+   rest of that file makes — no fetching, no behaviour.
+3. **The three ADR-048 globs become `**/*.jsx`.** The files stay flat, so this changes nothing
+   today; it means a future nesting cannot silently blind a guard, which is the failure mode
+   worth closing — a guard whose passing means nothing is worse than no guard, because its
+   passing is read as evidence.
+4. **A new guard, `test_dashboard_imports_what_it_uses.py`**: a module that uses something
+   another module exports must import it. Two reference shapes — `<Name` for a component and
+   `name(` for a call — which is every way these modules use each other and neither of which
+   appears in English prose, so it needs no JavaScript parser to stay honest about strings.
+5. **A new guard, `test_dashboard_routes_are_registered.py`**: a screen is registered in four
+   places and all four must agree — a `ROUTES` entry, a `view === "<id>"` branch, a `nav` entry
+   whose id is a real route id, and a nav destination some `ROUTES` pattern matches. This is how
+   every screen the v4 plan adds registers from here on.
+6. **A guard names behaviour, not a file.** `test_connect_sends_mailbox_id.py` now reads every
+   screen rather than `App.jsx`. A guard that has to be edited every time code moves is a guard
+   people edit to make it pass, and then it is not believed.
+
+**Not decided here.** TypeScript. New screens stay `.jsx` with JSDoc: the two source-scanning
+guards already catch a wrong path and a wrong field name, which are the two defects generated
+types were wanted for here. Revisit after S19.
+
+**Consequences.** `App.jsx` is 731 lines and there are eleven new screen files. The split was
+verified declaration by declaration — all 52 of them, with comments stripped, byte-identical
+before and after — so the pull request's claim of "moves and imports only" is a checked claim
+rather than an assurance. One dead import (`SignIn`, unused in `App.jsx` before this change)
+went with it. The cost is that a cross-file change now touches more files; the gain is that a
+change to one screen touches one.
