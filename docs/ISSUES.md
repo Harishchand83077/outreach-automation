@@ -194,3 +194,29 @@ every run there starts on a fresh database):
 - `DELETE` in dependency order inside the test's own transaction rather than `TRUNCATE`, which
   takes an `ACCESS EXCLUSIVE` lock. ADR-era note: `TRUNCATE` was chosen because several tests
   deliberately commit, and that reason still holds, so this is the least likely of the three.
+
+### Found in S18.5: an invitation is refused on a membership in *any* workspace, by one global lookup
+
+**Not fixed here.** It is outside the slice, which is about which row `current_user` resolves to,
+and changing it changes who may be invited — a product rule, not a defect I should settle on my
+own.
+
+`POST /team/invitations` (`app/api/routers/team.py:251`) looks up
+`select(Member).where(func.lower(Member.email) == address)` with no org scope and no order, then
+refuses with *"A person belongs to one workspace here."* Three things follow from that:
+
+1. **It is the rule that makes ADR-068's defect latent** rather than live: the product cannot
+   create a second membership, so the unordered lookup in `deps.py` could only have been reached
+   by a hand-inserted row. Worth knowing before any slice relaxes this, because relaxing it turns
+   a latent defect into a live one everywhere ADR-068 did not reach.
+2. **The lookup is unordered too**, and with several matching rows the 409's wording depends on
+   which one comes back: "already in this workspace" against "has a workspace of their own". The
+   guard added in ADR-068 deliberately does not cover it — it is scoped by email, not by
+   `user_id`, so it is a different query shape — and the message is cosmetic rather than a
+   tenancy leak: both branches refuse.
+3. **It matches on email alone**, while membership is keyed by Supabase `sub`. A person who
+   changes their address can be invited again; a person whose old address is still on a row
+   cannot.
+
+The rule itself may well be right. What is worth a decision is whether it stays, and if it does,
+whether it belongs in one place rather than only inside the invitation endpoint.

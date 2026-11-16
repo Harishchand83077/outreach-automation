@@ -121,7 +121,12 @@ async def provision(
         # Two tabs, two first requests, one person. The second loses the race and finds the row
         # the first wrote -- which is the right answer, not an error worth showing anybody.
         await session.rollback()
-        existing = await session.scalar(select(Member).where(Member.user_id == user_id))
+        existing = await session.scalar(
+            select(Member)
+            .where(Member.user_id == user_id)
+            .order_by(Member.created_at, Member.id)
+            .limit(1)
+        )
         if existing is None:
             raise
         return existing
@@ -168,7 +173,12 @@ async def _accept(
     except IntegrityError:
         # Two tabs, one person, as below. Whoever lost the race finds the row the winner wrote.
         await session.rollback()
-        existing = await session.scalar(select(Member).where(Member.user_id == user_id))
+        existing = await session.scalar(
+            select(Member)
+            .where(Member.user_id == user_id)
+            .order_by(Member.created_at, Member.id)
+            .limit(1)
+        )
         if existing is None:
             raise
         return existing

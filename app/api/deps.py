@@ -135,8 +135,27 @@ async def current_user(
     claims: Annotated[TokenClaims, Depends(current_claims)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> CurrentUser:
-    """Resolve the verified subject to a membership, or refuse."""
-    member = await session.scalar(select(Member).where(Member.user_id == claims.subject))
+    """Resolve the verified subject to a membership, or refuse.
+
+    **The order is part of the contract.** This used to be an unordered `select`, so a person with
+    two memberships got whichever row Postgres felt like returning — a different workspace on two
+    consecutive requests, with no error anywhere to say so. The rule is the oldest membership,
+    tie-broken by id: stable, and predictable to the person, because the workspace they have been
+    using for months does not change under them the day somebody invites them to a second one.
+    `created_at` alone is not enough — two invitations accepted in one transaction share a
+    timestamp to the microsecond, and the order would be undefined again.
+
+    Choosing a *different* workspace is deliberately not here. `/me` lists the others so the
+    dashboard can say which one you are in; switching needs somewhere to keep the choice, and a
+    request that silently resolved to a workspace held in a cookie would be the same defect with
+    better manners.
+    """
+    member = await session.scalar(
+        select(Member)
+        .where(Member.user_id == claims.subject)
+        .order_by(Member.created_at, Member.id)
+        .limit(1)
+    )
     if member is None:
         # **Sign-up happens here, on the first authenticated request**, rather than at a
         # dedicated endpoint. A separate `POST /signup` would be a second door into the same
