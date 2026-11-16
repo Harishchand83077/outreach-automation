@@ -6,8 +6,26 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 
 **Where we are.** The v3 plan is complete. Phases 0–9 are done and deployed; Phases 10–17 (multi-tenant sign-up, Connect Gmail OAuth, MCP connector, browser extension, job-hunt mode, booking webhook, search chain, signals/watchlist, branding, OAuth 2.1 auth server, learning from reviewer edits, full dashboard coverage, Setup page) are all merged and running. **59 of 59 issues resolved.** The API is live at `https://api.arkvane.in`; the dashboard at `https://outreach-automation.sanketyadavdohar123.workers.dev/`.
 
-**Current branch: `docs/implementation-plan-v4`** — the v4 build plan, no code and no migration. The
-banner fix merged as #167.
+**Current branch: `feat/p18-app-split`** — S18.0, the first v4 slice: `App.jsx` split into one
+file per screen, plus the two guards that make such a split safe. No migration, no API change,
+no behaviour change. It stacks on `docs/implementation-plan-v4` (the build plan), so review that
+one first. The banner fix merged as #167.
+
+**S18.0, in one line.** `App.jsx` went from 5,374 lines to 731, eleven screen files came out of
+it, eleven shared primitives moved to `ui.jsx`, and all 52 declarations were checked
+byte-for-byte (comments stripped) to prove nothing but imports changed. **ADR-063.**
+
+**Two new guards, and why they exist.** There is no ESLint in `frontend/`, and neither Vite nor
+esbuild fails on an undefined identifier — so a split that forgot an import would build, deploy
+and throw on the first render that touched it, and the dashboard suite renders nothing.
+`test_dashboard_imports_what_it_uses.py` fails when a module uses something another module
+exports without importing it. `test_dashboard_routes_are_registered.py` fails when a screen is
+missing any of the four things that register it: a `ROUTES` entry, a `view ===` branch, a `nav`
+entry with a real route id, and a nav destination a route pattern matches. Both were proved by
+breaking the tree on purpose and watching them fail for the right reason. The three ADR-048
+globs are now recursive, so nesting a screen can never blind them, and
+`test_connect_sends_mailbox_id.py` no longer names `App.jsx` — it reads every screen, because a
+guard that has to be edited whenever code moves is a guard people edit to make it pass.
 
 **v4 planning is done and the repo has been reconciled against it.** `docs/OUTREACH_PLATFORM_V4.md`
 stays the *product* source of truth; `docs/IMPLEMENTATION_PLAN_V4.md` is the *build* plan and its §1
@@ -41,9 +59,12 @@ backend suite goes once per slice and the unit and integration subsets carry the
    describes what this system actually does with a lead's data — including that public page text
    goes to providers marked `allow_pii=false` and a lead's name, address and reply never do.
    **D6 is the last issue outside Phase 8.**
-2. **S18.0 — split `App.jsx` (5,374 lines) and add the route-registration guard**, then S18.5
-   (deterministic membership resolution, `needs-human`), then the Inbox, the campaigns table and
-   the next-step panel. `docs/IMPLEMENTATION_PLAN_V4.md` §2 is the ordered list.
+2. ~~**S18.0 — split `App.jsx` and add the registration guard.**~~ Done, in review (ADR-063).
+   Next: **S18.5**, deterministic membership resolution — `app/api/deps.py` selects a membership
+   with no `order_by`, so a person with two of them gets an arbitrary workspace per request.
+   `needs-human`, because it changes how sign-in picks a workspace. Then the Inbox (S18.1), the
+   campaigns table (S18.2) and the next-step panel (S18.3).
+   `docs/IMPLEMENTATION_PLAN_V4.md` §2 is the ordered list.
 3. **Phase 8 remainder:** TypeScript and TanStack Query stay deferred on purpose — new screens are
    `.jsx` with JSDoc, because the two source-scanning ADR-048 guards already catch the defects
    generated types were wanted for. Persona *editing*, lead detail with its timeline, bulk actions
