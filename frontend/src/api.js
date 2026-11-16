@@ -82,6 +82,28 @@ async function request(path, init = {}) {
 
 export const getJson = (path) => request(path)
 
+/* `/version` is the one route the dashboard calls that lives **above** `/api/v1` (S17.3), so it
+   cannot go through `request`, which prefixes every path with it.
+
+   Its own function rather than a `path` argument on purpose: a helper that let a caller escape
+   the prefix would be a way for any screen to address anything on the host, and the one route
+   that needs it is better named than parameterised. It also keeps it off
+   `test_dashboard_calls_real_routes`'s list of path-taking helpers, which compares what screens
+   ask for against the paths served under the prefix -- and this is not one of them.
+
+   The root is right for this route for the same reason it is right for `/health`: the question
+   "which build is running?" is asked of the deployment, not of the API's versioned surface, and
+   an operator reaching for it with curl should not have to know the prefix. */
+const ROOT = API.replace(/\/api\/v1$/, '')
+
+export async function getVersion() {
+  // No token: the route is public, and the whole point is that it answers even when this
+  // bundle cannot authenticate against the build that is running.
+  const response = await fetch(`${ROOT}/version`)
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  return response.json()
+}
+
 export function postJson(path, { body, json } = {}) {
   const init = { method: 'POST' }
   if (json !== undefined) {

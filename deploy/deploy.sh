@@ -57,6 +57,10 @@ git pull --ff-only
 
 NEW_SHA="$(git rev-parse --short HEAD)"
 export IMAGE_TAG="$NEW_SHA"
+# Baked into the image beside the commit, so /version can say when this build was made.
+# The dashboard compares the two commits; the times are what let a person see which side is
+# behind, since two hashes are different and never older.
+export BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 say "deploying ${NEW_SHA} (was ${PREVIOUS_SHA}${PREVIOUS_TAG:+, image ${PREVIOUS_TAG}})"
 
 say "building"

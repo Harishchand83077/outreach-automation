@@ -34,6 +34,7 @@ import {
   NotAuthenticated,
   deleteJson,
   getJson,
+  getVersion,
   patchJson,
   putJson,
   postJson,
@@ -45,6 +46,13 @@ import Consent from "./Consent";
 import Landing from "./Landing";
 import Overview from "./Overview";
 import { Link, RouterProvider, navigate, useMatch, useRoute } from "./router";
+import { useLoad } from "./useLoad";
+import { buildMismatch } from "./build";
+
+/* An error handler that does nothing, for the one fetch whose failure is not worth
+   telling anybody about. Module-level so it is a stable reference and the effect does not
+   re-run on every render. */
+const NOTHING = () => {};
 import {
   ActivityChart,
   CommandPalette,
@@ -293,6 +301,23 @@ function Dashboard({ session }) {
   // The gate is the API's; this only decides what to draw. A hidden button is not security, so
   // every endpoint behind these screens checks the role itself.
   const mayAdminister = me ? ["owner", "admin"].includes(me.role) : false;
+
+  // Which build the server is running (S17.3). **Failure is swallowed deliberately**: an API
+  // old enough not to serve /version is exactly the situation this exists to explain, and a
+  // toast about the check failing would be noise stacked on top of the real symptom.
+  const [apiBuild, setApiBuild] = useState(null);
+  useEffect(() => {
+    let live = true;
+    getVersion()
+      .then((body) => {
+        if (live) setApiBuild(body);
+      })
+      .catch(NOTHING);
+    return () => {
+      live = false;
+    };
+  }, []);
+  const mismatch = useMemo(() => buildMismatch(apiBuild), [apiBuild]);
   const isOperator = me ? me.platform_operator === true : false;
 
   if (error && !me) {
@@ -555,6 +580,20 @@ function Dashboard({ session }) {
         </div>
 
         <div className="content">
+          {mismatch ? (
+            <div className="banner" data-tone="warn" role="status">
+              <span>
+                {mismatch.apiOlder
+                  ? "The server is running an older build than this page."
+                  : "The server and this page are different builds."}{" "}
+                A screen can ask for something the server does not yet serve, which arrives as
+                a plain Not Found. Server {mismatch.api.commit}
+                {mismatch.api.built_at ? ` (${mismatch.api.built_at.slice(0, 16)}Z)` : ""}, this
+                page {mismatch.ui.commit}
+                {mismatch.ui.built_at ? ` (${mismatch.ui.built_at.slice(0, 16)}Z)` : ""}.
+              </span>
+            </div>
+          ) : null}
           {error ? (
             <div className="banner" data-tone="bad" role="alert">
               <span>{error}</span>
@@ -681,6 +720,7 @@ function Dashboard({ session }) {
               />
             ) : view === "settings" ? (
               <Settings
+                isOwner={me?.role === "owner"}
                 campaign={campaign}
                 onError={handle}
                 onToast={toast}
@@ -4084,7 +4124,7 @@ function Admin({ onError, onToast }) {
 
 /* ---------------------------------------------------------------- settings */
 
-function Settings({ campaign, onError, onToast, onChanged }) {
+function Settings({ campaign, isOwner, onError, onToast, onChanged }) {
   const [config, setConfig] = useState(null);
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -4376,8 +4416,172 @@ function Settings({ campaign, onError, onToast, onChanged }) {
       <h2 className="section-title">Connect your own Claude</h2>
       <McpTokens onError={onError} onToast={onToast} />
 
+      <h2 className="section-title">Connected applications</h2>
+      <OAuthClients isOwner={isOwner} onError={onError} onToast={onToast} />
+
       <h2 className="section-title">Suppression list</h2>
       <Suppressions onError={onError} onToast={onToast} />
+    </>
+  );
+}
+
+
+/* ---------------------------------------------------------- OAuth clients (ADR-058, S17.3)
+
+   **The server has been able to run an authorization code flow since ADR-058 and nobody could
+   use it**, because a flow needs a registered client and registering one was a `POST` with
+   curl. That is ADR-048's failure exactly: built, correct and unreachable -- so the feature
+   whose entire point was "you no longer paste a token" could only be set up by somebody
+   already able to paste anything.
+
+   Owner-only, because this is the one screen in the product that decides what a consent screen
+   says. The redirect URIs are where authorization codes are delivered, so whoever can add one
+   can put their own address on a page that reads "allow this". The gate is the route's; this
+   only decides what to draw, and offering a form that always 403s is worse than offering
+   none. */
+
+function OAuthClients({ isOwner, onError, onToast }) {
+  const clients = useLoad("/oauth/clients", onError);
+  const [clientId, setClientId] = useState("");
+  const [name, setName] = useState("");
+  const [uris, setUris] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const add = (event) => {
+    event.preventDefault();
+    setBusy(true);
+    postJson("/oauth/clients", {
+      json: {
+        client_id: clientId.trim(),
+        name: name.trim(),
+        // One per line is the shape somebody can paste out of a provider's documentation, and
+        // the server matches exactly -- so trailing whitespace would silently break a URI that
+        // looks right on the screen.
+        redirect_uris: uris
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean),
+      },
+    })
+      .then(() => {
+        setClientId("");
+        setName("");
+        setUris("");
+        onToast("Registered. It can now ask people in this workspace for access.");
+        clients.reload();
+      })
+      .catch(onError)
+      .finally(() => setBusy(false));
+  };
+
+  const disable = (row) => {
+    setBusy(true);
+    deleteJson(`/oauth/clients/${row.id}`)
+      .then((body) => {
+        onToast(body?.note || "Disabled.");
+        clients.reload();
+      })
+      .catch(onError)
+      .finally(() => setBusy(false));
+  };
+
+  // Not `clients.data?.clients?.length ? ... : "none yet"` -- that states a falsehood for the
+  // half-second before the fetch returns, which this dashboard has already shipped once.
+  if (!clients.asked) return <SkeletonList count={2} rows={2} />;
+
+  return (
+    <>
+      <p className="hint">
+        A client is an application allowed to ask the people in this workspace for access to it
+        -- your own Claude, for instance. Registering one is what lets somebody connect by
+        pressing Allow instead of pasting a token from the panel above.
+        {clients.data?.note ? ` ${clients.data.note}` : ""}
+      </p>
+
+      {clients.data?.clients?.length ? (
+        <ul className="list">
+          {clients.data.clients.map((row) => (
+            <li className="list-row" key={row.id}>
+              <div style={{ minWidth: 0 }}>
+                <strong>{row.name}</strong>{" "}
+                {row.disabled ? (
+                  <span className="pill">disabled</span>
+                ) : (
+                  <span className="pill" data-tone="success">
+                    <span className="pill-dot" />
+                    active
+                  </span>
+                )}
+                <p className="hint mono" style={{ margin: "4px 0 0" }}>
+                  {row.client_id}
+                </p>
+                {/* Shown because an exact-match rule cannot be debugged without seeing what was
+                    actually stored: a wrong port or a trailing slash is the commonest reason a
+                    flow dies, and from the outside it reads as our fault. */}
+                <p className="hint" style={{ margin: "2px 0 0" }}>
+                  {(row.redirect_uris || []).join(" / ") || "no redirect URI"}
+                </p>
+              </div>
+              {isOwner && !row.disabled ? (
+                <div className="btn-row">
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={busy}
+                    onClick={() => disable(row)}
+                  >
+                    Disable
+                  </button>
+                </div>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          No clients registered, so nobody can connect by pressing Allow. The tokens above still
+          work.
+        </p>
+      )}
+
+      {isOwner ? (
+        <form onSubmit={add} style={{ marginTop: 16 }}>
+          <Field
+            label="Client ID"
+            required
+            value={clientId}
+            onChange={(event) => setClientId(event.target.value)}
+            hint="Whatever the application identifies itself as. Matched exactly."
+          />
+          <Field
+            label="Name"
+            required
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            hint="What the consent screen shows. Use a name the people being asked will recognise."
+          />
+          <TextArea
+            label="Redirect URIs"
+            required
+            rows={3}
+            value={uris}
+            onChange={(event) => setUris(event.target.value)}
+            hint="One per line, https (localhost is exempt). Matched exactly -- the scheme, the port and any path all count."
+          />
+          <div className="btn-row">
+            <button
+              type="submit"
+              className="btn"
+              data-variant="brand"
+              disabled={busy || !clientId.trim() || !name.trim() || !uris.trim()}
+            >
+              Register client
+            </button>
+          </div>
+        </form>
+      ) : (
+        <p className="hint">Only an owner can register or disable a client.</p>
+      )}
     </>
   );
 }

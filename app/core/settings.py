@@ -57,6 +57,10 @@ FUTURE_KEYS: dict[str, list[str]] = {
     # CREDENTIAL_KEY and the GOOGLE_* values moved to REQUIRED_KEYS with ADR-023: without
     # them nobody can connect a mailbox, and without a mailbox nothing can ever send.
     "Phase 10 - sign-up": ["DASHBOARD_URL"],
+    # Reported so an operator can tell "this deployment does not know its own build" from
+    # "the build matches": `GET /version` answers `unknown` for both, and an unknown build
+    # cannot be compared with the dashboard's, so the mismatch banner stays silent.
+    "Build identity": ["BUILD_COMMIT", "BUILD_TIME"],
 }
 
 #: Models Groq has retired; silently upgraded so an old .env keeps working.
@@ -230,6 +234,22 @@ class Settings(BaseSettings):
     #: built against a guess would have receiving servers POST opt-outs into the void, and
     #: claiming RFC 8058 compliance we cannot honour is the defect ADR-033 exists to fix.
     PUBLIC_API_URL: str = ""
+
+    # === Build identity (S17.3) ===
+    # **Not configuration, and here anyway.** These say which build of this repository is
+    # running; nothing behaves differently for a different value. They live in `Settings`
+    # because hard rule 2 says every environment value arrives through `pydantic-settings`, and
+    # a second way of reading the environment is a second thing to keep honest.
+    #
+    # They are baked into the *image* by the Dockerfile rather than set on the container,
+    # because the artifact's identity must travel with the artifact: a restart that passed a
+    # different value would have the deployment confidently report a build it is not running,
+    # which is worse than reporting nothing.
+    #
+    # Empty means unknown -- a development run, or an image built without the build arguments --
+    # and `unknown` is reported as such rather than guessed at.
+    BUILD_COMMIT: str = ""
+    BUILD_TIME: str = ""
 
     # === LLM router (Phase 3) ===
     # Entries whose key is unset are skipped by the router, so adding a provider is just a

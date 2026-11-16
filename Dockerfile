@@ -49,6 +49,18 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
+# Which build this is (S17.3). **Last, and on purpose**: an ARG that changes on every commit
+# invalidates every layer below it, so putting this above the dependency install would mean a
+# full rebuild for every deploy. Here it costs one layer.
+#
+# Baked into the image rather than set on the container, because the identity has to travel with
+# the artifact: a restart that passed a different value would have the deployment confidently
+# report a build it is not running, which is worse than reporting none. Unset builds report
+# `unknown`, which `/version` says plainly.
+ARG BUILD_COMMIT=""
+ARG BUILD_TIME=""
+ENV BUILD_COMMIT=$BUILD_COMMIT     BUILD_TIME=$BUILD_TIME
+
 # Non-root, with no home directory and no shell worth having. The api accepts uploads and the
 # worker parses mail and web pages, so both process bytes chosen by somebody else.
 RUN useradd --system --create-home --uid 10001 outreach
