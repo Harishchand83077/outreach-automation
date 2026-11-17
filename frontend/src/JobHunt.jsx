@@ -1121,11 +1121,17 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
   const usable = providers.filter((row) => row.connected && row.usable);
 
 
+  // **Resolved once, and used by both the markup and the request.** The select used to render
+  // `lookupWith || usable[0].provider` while posting `lookupWith`, so a dropdown nobody had
+  // touched displayed "hunter" and sent "". The server answered 500, and the screen said
+  // "Something went wrong" about a form the person had filled in correctly.
+  const chosen = lookupWith || usable[0]?.provider || "";
+
   const lookup = (event) => {
     event.preventDefault();
     setBusy(true);
     postJson("/contact-candidates/lookup", {
-      json: { provider: lookupWith, domain },
+      json: { provider: chosen, domain },
     })
       .then((body) => {
         onToast(
@@ -1182,7 +1188,7 @@ function Contacts({ campaign, onError, onToast, mayAdminister }) {
           <form onSubmit={lookup}>
             <Field label="Provider">
               <select
-                value={lookupWith || usable[0].provider}
+                value={chosen}
                 onChange={(event) => setLookupWith(event.target.value)}
               >
                 {usable.map((row) => (

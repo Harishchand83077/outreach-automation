@@ -35,6 +35,7 @@ from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.services import credentials
 from app.services.contacts import keys, providers
+from app.services.contacts.keys import ProviderKeyError
 from app.services.credentials import CredentialError
 from app.services.jobposts import boards, company
 
@@ -144,7 +145,20 @@ async def run(
             "credit on the wrong people. Type the company's own domain."
         )
 
-    credential = await keys.live(session, ctx, provider=provider, allowed=CONTACT_PROVIDERS)
+    # **The provider name is checked here, inside the refusal path.** `keys.live` raises
+    # `ProviderKeyError` for a name it does not recognise, and that used to escape as a 500 --
+    # which is what the dashboard actually produced, because its `<select>` fell back to the
+    # first usable entry *for display* while its state stayed empty, so an untouched dropdown
+    # showed a name and posted an empty string. Two halves of one defect; this is the half that
+    # has to refuse rather than crash, whatever a caller sends.
+    #
+    # No provider is named in this comment on purpose: `test_contacts_button_press_only.py`
+    # reads this whole file for provider names, because one here would mean a key resolved from
+    # the environment rather than from this workspace's own row. It caught this comment.
+    try:
+        credential = await keys.live(session, ctx, provider=provider, allowed=CONTACT_PROVIDERS)
+    except ProviderKeyError as exc:
+        raise LookupRefused("choose which provider to look this up with. " + str(exc)) from exc
     if credential is None:
         raise LookupRefused(
             f"this workspace has no {provider} key. Add your own under Settings; there is no "

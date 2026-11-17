@@ -324,6 +324,26 @@ addresses added during this pass in a set. A repeat within one response is now c
 `tests/integration/test_contact_lookup.py`, whose failures before the fix printed the reported
 banner verbatim, request id and all.
 
-**Not established:** which of the two produced the owner's particular 500. Both yield the same
+**Established afterwards, from the server log, and it was neither of the two above.** The
+request id in the banner resolved to:
+
+```
+lookup.py:146 -> keys.live() -> check_provider()
+ProviderKeyError: provider must be one of apollo, hunter, snov, mock, not ''
+```
+
+A **third** escape, earlier than both, and a second half nobody had looked at: the dashboard's
+provider `<select>` rendered `value={lookupWith || usable[0].provider}` while posting
+`lookupWith`. The fallback lived in the markup only, so a dropdown nobody had touched displayed a
+provider and submitted an empty string. The person filled the form in correctly and was told
+something went wrong.
+
+Both halves are fixed, and `tests/unit/test_dashboard_selects_send_what_they_show.py` forbids the
+shape: a `<select>` may not display a fallback its state does not hold. It found two more in
+`Sending.jsx` -- both *correct*, because their handlers re-resolved the same expression, but
+writing it twice is exactly what drifted apart here. Both hoisted to one name.
+
+**The original guess, kept because it was wrong in a useful way:** which of the first two
+produced the 500 was never established, Both yield the same
 banner, and the evidence on screen — *"1 of 25 lookups used today"* — fits either, because
 **Verify** spends a lookup too. The request id in the banner resolves it against the API logs.
