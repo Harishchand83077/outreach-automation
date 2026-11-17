@@ -68,7 +68,7 @@ from app.domain.experiment import (
     ExperimentSpec,
     effective_share,
 )
-from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender
+from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender, sender_for
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
 from app.services.brief import build as brief_build
@@ -237,7 +237,7 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
         found.append({"code": "paused", "message": "The campaign is paused."})
 
     try:
-        Persona.model_validate(campaign.persona or {})
+        sender_for(campaign.persona, campaign.kind)
     except ValidationError as exc:
         fields = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
         found.append(
@@ -252,7 +252,7 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
 
     if campaign.mode == "research" and campaign.persona:
         try:
-            undraftable = Persona.model_validate(campaign.persona).missing_for_drafting()
+            undraftable = sender_for(campaign.persona, campaign.kind).missing_for_drafting()
         except ValidationError:
             undraftable = []  # already reported above as unreadable
         if undraftable:
@@ -1285,10 +1285,13 @@ async def update_campaign(
 
     if "persona" in payload:
         try:
-            replacement = Persona.model_validate(payload["persona"])
+            replacement = sender_for(payload["persona"], campaign.kind)
             if campaign.mode == "research":
                 _refuse_if_undraftable(replacement)
-            campaign.persona = replacement.model_dump(mode="json")
+            # `model_dump` on the adapter reaches the compiled persona, which is not what was
+            # sent and would lose the candidate's own fields. The profile is what is stored.
+            stored = replacement.profile if hasattr(replacement, "profile") else replacement
+            campaign.persona = stored.model_dump(mode="json")
         except ValidationError as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,

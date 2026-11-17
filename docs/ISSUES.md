@@ -236,6 +236,29 @@ seeker is asked to name their agency. A persona matching neither schema is now a
 production `ValidationError` first and pins it, so the other tests cannot pass for an unrelated
 reason.
 
+**It was worse than the first diagnosis, and the owner's own screenshots are what showed it.**
+`Persona.model_validate(campaign.persona)` appeared in **seven** places. Phase 13 added `kind` and
+`CandidateProfile` and updated **one** of them -- the create route. The other six each failed in
+their own way, and not one of them named the cause:
+
+| Where | What the owner saw |
+| --- | --- |
+| `worker/handlers.py` | `research_lead` dead after five attempts; no draft ever written |
+| `campaigns.py:240` | *"The sender persona cannot be read"*, listing the candidate's own fields as faults |
+| `campaigns.py:255` | readiness could never answer for a candidate |
+| `send_loop.py:241` | caught it and `continue`d -- **a job-hunt campaign was skipped in silence and could never have sent** |
+| `reply/drafter.py:175` | answering a reply would raise |
+| `mcp/proposals.py:90` | the connector's propose tool refused |
+| `campaigns.py:1288` | `PATCH` rejected the profile, so the correction could not even be saved |
+
+All six now go through `sender_for(persona, kind)` in `app/domain/kinds.py`, and
+`tests/unit/test_persona_is_read_by_kind.py` is the guard: only that module may choose a schema.
+Proved by stashing the fix and watching it name all six lines.
+
+One trap found on the way: `_SenderAdapter.__getattr__` forwards to the *compiled* persona, so
+`PATCH` calling `model_dump()` on it would have silently stored a `Persona` and dropped every
+candidate field the person typed. The adapter now exposes `profile` explicitly.
+
 **Still to do by hand after deploying:** the dead `research_lead` jobs must be requeued from
 Operations → Dead jobs, and any lead left in `ENRICHING` will be picked up by the retry. Nothing
 drafts retroactively on its own.

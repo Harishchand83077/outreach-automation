@@ -44,7 +44,7 @@ from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
 from app.db.state import record_event, transition
 from app.domain.campaign import CampaignSettings
-from app.domain.kinds import CampaignKind, load_sender
+from app.domain.kinds import sender_for
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
 from app.domain.state import LeadState
@@ -124,12 +124,12 @@ def _persona(campaign: Campaign) -> Any:
     """
     if not campaign.persona:
         raise PermanentFailure("campaign has no persona; nothing may be asserted without one")
-    kind = campaign.kind or CampaignKind.OUTREACH.value
     try:
-        return load_sender(campaign.persona, kind=kind)
+        return sender_for(campaign.persona, campaign.kind)
     except ValidationError as exc:
         raise PermanentFailure(
-            f"campaign {campaign.id} is {kind!r} and its persona does not match that schema: {exc}"
+            f"campaign {campaign.id} is {campaign.kind!r} and its persona does not match that "
+            f"schema: {exc}"
         ) from exc
 
 

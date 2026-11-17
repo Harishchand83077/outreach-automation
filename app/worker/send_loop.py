@@ -36,7 +36,7 @@ from app.db import outbox
 from app.db.models import Campaign, Draft, Lead, Mailbox, Message, Org
 from app.db.state import record_event
 from app.domain.campaign import CampaignSettings
-from app.domain.kinds import opt_out_line_for
+from app.domain.kinds import opt_out_line_for, sender_for
 from app.domain.persona import Persona
 from app.domain.scheduling import (
     followup_due_at,
@@ -238,7 +238,7 @@ async def find_candidates(
         # in the one branch that was meant to handle its absence.
         try:
             settings = CampaignSettings.model_validate(campaign.settings or {})
-            persona = Persona.model_validate(campaign.persona or {})
+            persona = sender_for(campaign.persona, campaign.kind)
         except ValidationError:
             # One unreadable campaign is that campaign's problem. `SendLoop` reports it by name;
             # here we simply do not send for it, and the other campaigns have their turn.
