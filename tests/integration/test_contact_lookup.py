@@ -464,6 +464,27 @@ class TestNothingHereEverReturnsAFiveHundred:
     the whole file was one of them.
     """
 
+    async def test_no_provider_chosen_is_a_sentence_not_a_server_error(self, api, owner) -> None:
+        """**This is the one that actually happened**, and the log named it:
+
+            ProviderKeyError: provider must be one of apollo, hunter, snov, mock, not ''
+
+        The dashboard's dropdown rendered `lookupWith || usable[0].provider` and posted
+        `lookupWith`, so an untouched select displayed `hunter` and sent an empty string. The
+        screen half is fixed too, but the server must refuse any name it does not know rather
+        than crash on it -- a route is not entitled to assume its caller got it right.
+        """
+        await _with_mock_key(api, owner)
+
+        response = api.post(
+            "/api/v1/contact-candidates/lookup",
+            json={"provider": "", "domain": "example.com"},
+            headers=owner,
+        )
+
+        assert response.status_code == 422, response.text
+        assert "provider" in response.text.lower()
+
     async def test_an_undecryptable_key_says_so_instead_of_erroring(
         self, api, owner, db, org
     ) -> None:

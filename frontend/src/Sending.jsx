@@ -64,9 +64,14 @@ function Pool({ campaign, onError, onToast, mayAdminister }) {
     (row) => !memberIds.has(row.id),
   );
 
+  // Resolved once and used by both the select and the handler. Both were correct while the
+  // expression was written out twice; `JobHunt.jsx` had the same pair drift apart, and an
+  // untouched dropdown then posted an empty string the API answered with a 500.
+  const chosenId = chosen || addable[0]?.id;
+
   const add = (event) => {
     event.preventDefault();
-    const id = chosen || addable[0]?.id;
+    const id = chosenId;
     if (!id) return;
     setBusy(true);
     putJson(`/campaigns/${campaign.id}/mailboxes/${id}`, {
@@ -182,7 +187,7 @@ function Pool({ campaign, onError, onToast, mayAdminister }) {
           <form onSubmit={add} style={{ marginTop: 14 }}>
             <Field label="Add a mailbox">
               <select
-                value={chosen || addable[0].id}
+                value={chosenId}
                 onChange={(e) => setChosen(e.target.value)}
               >
                 {addable.map((row) => (
@@ -475,9 +480,11 @@ function SearchKeys({ onError, onToast, mayAdminister }) {
 
   const providers = keys.data?.providers || [];
 
+  const chosenProvider = provider || providers[0]?.provider;
+
   const save = (event) => {
     event.preventDefault();
-    const name = provider || providers[0]?.provider;
+    const name = chosenProvider;
     if (!name) return;
     setBusy(true);
     putJson(`/search-keys/${name}`, { json: { api_key: apiKey } })
@@ -587,7 +594,7 @@ function SearchKeys({ onError, onToast, mayAdminister }) {
           <form onSubmit={save} style={{ marginTop: 14 }}>
             <Field label="Provider">
               <select
-                value={provider || providers[0].provider}
+                value={chosenProvider}
                 onChange={(event) => setProvider(event.target.value)}
               >
                 {providers.map((row) => (
