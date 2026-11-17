@@ -44,6 +44,7 @@ from app.db.queue import JobKind, enqueue
 from app.db.repo import OrgContext
 from app.db.state import record_event, transition
 from app.domain.campaign import CampaignSettings
+from app.domain.kinds import CampaignKind, load_sender
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
 from app.domain.state import LeadState
@@ -102,10 +103,34 @@ async def _lead_and_campaign(session: AsyncSession, job: Job) -> tuple[Lead, Cam
     return lead, campaign
 
 
-def _persona(campaign: Campaign) -> Persona:
+def _persona(campaign: Campaign) -> Any:
+    """The campaign's sender, validated by the campaign's **own kind**.
+
+    **This used to be `Persona.model_validate(campaign.persona)` for every campaign**, which made
+    every `job_hunt` campaign unusable: its persona column holds a `CandidateProfile`, so an
+    outreach `Persona` refused it on `sender_name` and on the literal `kind` field, every job
+    died, and the review queue stayed empty with no indication that anything had crashed.
+    `models.py` already stated the rule -- *"The kind also decides which schema validates
+    `persona`"* -- and the create-campaign route already obeyed it. This is the other half.
+
+    `Any` rather than `Persona`, matching `load_sender`'s own signature: a job hunt yields an
+    adapter that *is* the compiled persona for every attribute but answers
+    `missing_for_drafting()` for the candidate behind it. Asking a job seeker to name their
+    agency is what narrowing this type would cost.
+
+    A blob matching neither schema is a bad payload, so it fails **permanently**. Five attempts
+    at a row that cannot change produces the same crash five times and an hour's delay before
+    anybody sees it on the dead-jobs panel.
+    """
     if not campaign.persona:
         raise PermanentFailure("campaign has no persona; nothing may be asserted without one")
-    return Persona.model_validate(campaign.persona)
+    kind = campaign.kind or CampaignKind.OUTREACH.value
+    try:
+        return load_sender(campaign.persona, kind=kind)
+    except ValidationError as exc:
+        raise PermanentFailure(
+            f"campaign {campaign.id} is {kind!r} and its persona does not match that schema: {exc}"
+        ) from exc
 
 
 async def handle_research_lead(ctx: WorkerContext, session: AsyncSession, job: Job) -> None:

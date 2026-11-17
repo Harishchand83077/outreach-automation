@@ -194,3 +194,62 @@ every run there starts on a fresh database):
 - `DELETE` in dependency order inside the test's own transaction rather than `TRUNCATE`, which
   takes an `ACCESS EXCLUSIVE` lock. ADR-era note: `TRUNCATE` was chosen because several tests
   deliberately commit, and that reason still holds, so this is the least likely of the three.
+
+### Found in production, 2026-11-17: a job-hunt campaign could not draft a single email
+
+**Status: Done** — `fix/persona-by-campaign-kind`.
+
+Reported as *"I created a campaign and uploaded the email sheet but the emails did not draft and
+sent yet."* Diagnosed from the deployed Operations screen, which had it on the Dead jobs panel
+all along:
+
+```
+research_lead   5 attempts
+ValidationError: 7 validation errors for Persona
+  sender_name  Field required   [input_value={'goal': 'schedule a meet...', 'followup_angle': ''}]
+  kind         Extra inputs are not permitted
+```
+
+`_persona()` in `app/worker/handlers.py` ran `Persona.model_validate(campaign.persona)` for every
+campaign, with no `kind`. A `job_hunt` campaign stores a `CandidateProfile` — `full_name`,
+`facts`, `followup_angle` and a literal `kind` — so an outreach `Persona` refused it on every
+lead. Every `research_lead` job burned its five attempts and landed in `dead`.
+
+**The failure was silent in exactly the way that matters.** No research means no hooks, no hooks
+means no draft, and an empty review queue reads as "nothing has happened yet" rather than as a
+crash. The campaign said `running`, the worker was healthy, `/ready` was green, and the owner's
+reasonable conclusion was that the product did not work.
+
+`models.py:276` already stated the rule — *"The kind also decides which schema validates
+`persona`"* — and `campaigns.py:1148` already obeyed it with `load_sender(persona_in, kind=kind)`.
+The worker was the one caller that did not. **The signature defect again: a correct producer, a
+correct consumer, and nothing checking they agreed.** Phase 13 added the kind and the second
+schema; nothing failed when the worker was left behind, because no test ran a job-hunt campaign
+through `_persona`.
+
+**Fixed** by loading through `load_sender(campaign.persona, kind=campaign.kind)`, which also
+returns the adapter whose `missing_for_drafting()` answers for the *candidate* — otherwise a job
+seeker is asked to name their agency. A persona matching neither schema is now a
+`PermanentFailure` rather than five identical crashes an hour apart.
+
+**Proved by** `tests/unit/test_worker_loads_the_right_persona.py`, which reproduces the
+production `ValidationError` first and pins it, so the other tests cannot pass for an unrelated
+reason.
+
+**Still to do by hand after deploying:** the dead `research_lead` jobs must be requeued from
+Operations → Dead jobs, and any lead left in `ENRICHING` will be picked up by the retry. Nothing
+drafts retroactively on its own.
+
+### Found at the same time: an unregisterable OAuth client id, reported as a 500
+
+**Status: Verified, not yet fixed.** Tracked for its own slice.
+
+`POST /oauth/clients` returns **500** for any `client_id` longer than 64 characters, because
+`oauth_clients.client_id` is `String(64)` and the route validates the redirect URIs but never the
+id's length. A Google client id is 73 characters, and that is a perfectly ordinary thing for
+somebody to paste into the field.
+
+Two defects in one: the column is too narrow for real-world identifiers, and the one error a user
+can actually cause arrives as *"Something went wrong. Quote the request id if you report this."*
+The banner also renders at the top of a long Settings page, so on a screen scrolled to the form
+it is invisible — the form simply appears to do nothing.

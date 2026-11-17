@@ -4,6 +4,15 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 
 ## Handoff note (rewrite at the end of every session)
 
+**Fixed from production, 2026-11-17: a job-hunt campaign could not draft a single email.**
+`_persona()` in the worker validated every campaign's persona as an outreach `Persona`, so a
+`job_hunt` campaign -- whose persona column holds a `CandidateProfile` -- killed every
+`research_lead` job on `sender_name Field required`. The queue said `dead`, the campaign said
+`running`, and the review queue said 0, which reads as "nothing has happened yet" rather than as
+a crash. See `docs/ISSUES.md`. **After deploying, the dead jobs have to be requeued by hand from
+Operations -- nothing drafts retroactively.**
+
+
 **Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1134 tests
 pass; ruff, ruff format and mypy strict are clean. **57 of 59 issues are resolved.**
 
