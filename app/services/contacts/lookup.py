@@ -35,6 +35,7 @@ from app.db.repo import OrgContext
 from app.db.state import record_event
 from app.services import credentials
 from app.services.contacts import keys, providers
+from app.services.credentials import CredentialError
 from app.services.jobposts import boards, company
 
 logger = logging.getLogger(__name__)
@@ -162,7 +163,21 @@ async def run(
             "ours, not the provider's: it exists so a loop cannot spend your credits."
         )
 
-    adapter = providers.build(provider, credentials.unseal(credential.secret, settings))
+    # **Inside the refusal path, not one line above it.** Both of these raise the same kinds of
+    # problem the `try` below converts into a sentence the user reads, and both used to escape to
+    # FastAPI's error middleware as "Something went wrong. Quote the request id if you report
+    # this." The worst of it was that `unseal`'s message is the single most actionable one in
+    # this module -- the key cannot be decrypted, save it again -- and it was the one nobody saw.
+    try:
+        adapter = providers.build(provider, credentials.unseal(credential.secret, settings))
+    except CredentialError as exc:
+        raise LookupRefused(
+            f"the stored {provider} key cannot be decrypted, which happens when CREDENTIAL_KEY "
+            "has been rotated or restored from a different environment. Save the key again "
+            "under Settings."
+        ) from exc
+    except providers.ProviderError as exc:
+        raise LookupRefused(str(exc)) from exc
 
     owned = client is None
     http = client or httpx.AsyncClient(timeout=providers.TIMEOUT_SECONDS, follow_redirects=True)
@@ -200,9 +215,19 @@ async def run(
 
     proposed: list[ContactCandidate] = []
     known = 0
+    #: Addresses added during *this* pass. `uq_contact_candidates_email` is unique on
+    #: `(org_id, email_norm)`, and the query below cannot see a row that has not been flushed --
+    #: so a provider returning `Asha@x.com` and `asha@x.com` used to add both and fail on
+    #: `flush()` with an `IntegrityError`, after the credit had been spent and the audit row
+    #: written. Normalising is exactly what makes two different-looking addresses collide, so
+    #: the set holds the normalised form.
+    added: set[str] = set()
     for contact in found:
         email_norm = (contact.email or "").strip().lower() or None
         if email_norm is not None:
+            if email_norm in added:
+                known += 1
+                continue
             existing = await session.scalar(
                 select(ContactCandidate).where(
                     ContactCandidate.org_id == ctx.org_id,
@@ -230,6 +255,8 @@ async def run(
         )
         session.add(row)
         proposed.append(row)
+        if email_norm is not None:
+            added.add(email_norm)
 
     await session.flush()
     return LookupResult(

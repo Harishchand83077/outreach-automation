@@ -4,6 +4,15 @@ Updated 2026-10-11 (Phase 9 slice 1). Read this with `CLAUDE.md` at the start of
 
 ## Handoff note (rewrite at the end of every session)
 
+**Fixed from production, 2026-11-17: a hiring-contact lookup returned 500 after spending a
+credit.** Two escapes from the refusal path in `app/services/contacts/lookup.py`: `unseal` and
+`providers.build` were called one line *above* the `try` that turns such problems into a 422, so
+the message naming the fix -- the key cannot be decrypted, save it again -- never reached the
+person; and the storage loop deduplicated against the database but not against the rows it was
+adding in the same pass, so two addresses differing only in case violated
+`uq_contact_candidates_email` *after* the provider had been paid. See `docs/ISSUES.md`.
+
+
 **Where we are. Phases 0 through 9 slice 1 are merged, and there is now a server.** 1134 tests
 pass; ruff, ruff format and mypy strict are clean. **57 of 59 issues are resolved.**
 

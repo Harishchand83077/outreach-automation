@@ -194,3 +194,55 @@ every run there starts on a fresh database):
 - `DELETE` in dependency order inside the test's own transaction rather than `TRUNCATE`, which
   takes an `ACCESS EXCLUSIVE` lock. ADR-era note: `TRUNCATE` was chosen because several tests
   deliberately commit, and that reason still holds, so this is the least likely of the three.
+
+### Found in production, 2026-11-17: a hiring-contact lookup returned 500, after spending a credit
+
+**Status: Done** — `fix/contact-lookup-500s`.
+
+Reported as *"I got 'Something went wrong. Quote the request id if you report this.' when I go to
+job hunt / hiring contacts and fill in look somebody up — dresma.com."*
+
+Every refusal in `app/services/contacts/lookup.py` is written as a sentence somebody can act on,
+and `run_a_lookup` turns `LookupRefused` into a 422 precisely so they read it. The route even says
+why: *"422 rather than 500: every one of these is a sentence somebody can act on."* **Three paths
+escaped that and reached FastAPI's error middleware instead.** Two of them are real defects:
+
+**1. The decryption failure, which carries the most useful message in the module.**
+
+```python
+adapter = providers.build(provider, credentials.unseal(credential.secret, settings))
+```
+
+`unseal` raises `CredentialError` — *"this credential cannot be decrypted with the current
+CREDENTIAL_KEY"* — which names its own fix. It was raised **one line above** the `try` that
+converts exactly this kind of problem into a sentence, so the user got "Something went wrong" and
+the actionable text went to a log on the VM. It fires whenever `CREDENTIAL_KEY` is rotated or an
+environment is restored from somewhere else, which is a thing that happens and is on this
+project's own to-do list.
+
+`providers.build` was on the same line, and raises `ProviderError` for a credential no adapter can
+parse. Same escape, same 500.
+
+**2. The in-batch duplicate, which charges the user before failing.**
+
+`uq_contact_candidates_email` is unique on `(org_id, email_norm)`. The storage loop asked the
+database whether each address was already known — but nothing is flushed between iterations, so
+that query cannot see a row added moments earlier **in the same pass**. A provider returning
+`Asha@x.com` and `asha@x.com` added both, and `flush()` raised `IntegrityError`.
+
+The order makes it worse than a crash: the provider call has already happened, the credit is
+already spent, and the `contact_lookup` audit row — deliberately unwrapped, because *"the record
+is the budget"* — is already written. So the user pays, the ledger says they used a lookup, and
+they get an opaque 500 with nothing to show for it.
+
+**Fixed** by moving the unseal and the adapter build inside the refusal path, and by tracking the
+addresses added during this pass in a set. A repeat within one response is now counted in
+`already_known`, which is what a second lookup for the same company has always done.
+
+**Proved by** `TestNothingHereEverReturnsAFiveHundred` in
+`tests/integration/test_contact_lookup.py`, whose failures before the fix printed the reported
+banner verbatim, request id and all.
+
+**Not established:** which of the two produced the owner's particular 500. Both yield the same
+banner, and the evidence on screen — *"1 of 25 lookups used today"* — fits either, because
+**Verify** spends a lookup too. The request id in the banner resolves it against the API logs.
