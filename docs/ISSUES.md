@@ -276,3 +276,74 @@ Two defects in one: the column is too narrow for real-world identifiers, and the
 can actually cause arrives as *"Something went wrong. Quote the request id if you report this."*
 The banner also renders at the top of a long Settings page, so on a screen scrolled to the form
 it is invisible — the form simply appears to do nothing.
+### Found in production, 2026-11-17: a hiring-contact lookup returned 500, after spending a credit
+
+**Status: Done** — `fix/contact-lookup-500s`.
+
+Reported as *"I got 'Something went wrong. Quote the request id if you report this.' when I go to
+job hunt / hiring contacts and fill in look somebody up — dresma.com."*
+
+Every refusal in `app/services/contacts/lookup.py` is written as a sentence somebody can act on,
+and `run_a_lookup` turns `LookupRefused` into a 422 precisely so they read it. The route even says
+why: *"422 rather than 500: every one of these is a sentence somebody can act on."* **Three paths
+escaped that and reached FastAPI's error middleware instead.** Two of them are real defects:
+
+**1. The decryption failure, which carries the most useful message in the module.**
+
+```python
+adapter = providers.build(provider, credentials.unseal(credential.secret, settings))
+```
+
+`unseal` raises `CredentialError` — *"this credential cannot be decrypted with the current
+CREDENTIAL_KEY"* — which names its own fix. It was raised **one line above** the `try` that
+converts exactly this kind of problem into a sentence, so the user got "Something went wrong" and
+the actionable text went to a log on the VM. It fires whenever `CREDENTIAL_KEY` is rotated or an
+environment is restored from somewhere else, which is a thing that happens and is on this
+project's own to-do list.
+
+`providers.build` was on the same line, and raises `ProviderError` for a credential no adapter can
+parse. Same escape, same 500.
+
+**2. The in-batch duplicate, which charges the user before failing.**
+
+`uq_contact_candidates_email` is unique on `(org_id, email_norm)`. The storage loop asked the
+database whether each address was already known — but nothing is flushed between iterations, so
+that query cannot see a row added moments earlier **in the same pass**. A provider returning
+`Asha@x.com` and `asha@x.com` added both, and `flush()` raised `IntegrityError`.
+
+The order makes it worse than a crash: the provider call has already happened, the credit is
+already spent, and the `contact_lookup` audit row — deliberately unwrapped, because *"the record
+is the budget"* — is already written. So the user pays, the ledger says they used a lookup, and
+they get an opaque 500 with nothing to show for it.
+
+**Fixed** by moving the unseal and the adapter build inside the refusal path, and by tracking the
+addresses added during this pass in a set. A repeat within one response is now counted in
+`already_known`, which is what a second lookup for the same company has always done.
+
+**Proved by** `TestNothingHereEverReturnsAFiveHundred` in
+`tests/integration/test_contact_lookup.py`, whose failures before the fix printed the reported
+banner verbatim, request id and all.
+
+**Established afterwards, from the server log, and it was neither of the two above.** The
+request id in the banner resolved to:
+
+```
+lookup.py:146 -> keys.live() -> check_provider()
+ProviderKeyError: provider must be one of apollo, hunter, snov, mock, not ''
+```
+
+A **third** escape, earlier than both, and a second half nobody had looked at: the dashboard's
+provider `<select>` rendered `value={lookupWith || usable[0].provider}` while posting
+`lookupWith`. The fallback lived in the markup only, so a dropdown nobody had touched displayed a
+provider and submitted an empty string. The person filled the form in correctly and was told
+something went wrong.
+
+Both halves are fixed, and `tests/unit/test_dashboard_selects_send_what_they_show.py` forbids the
+shape: a `<select>` may not display a fallback its state does not hold. It found two more in
+`Sending.jsx` -- both *correct*, because their handlers re-resolved the same expression, but
+writing it twice is exactly what drifted apart here. Both hoisted to one name.
+
+**The original guess, kept because it was wrong in a useful way:** which of the first two
+produced the 500 was never established, Both yield the same
+banner, and the evidence on screen — *"1 of 25 lookups used today"* — fits either, because
+**Verify** spends a lookup too. The request id in the banner resolves it against the API logs.
