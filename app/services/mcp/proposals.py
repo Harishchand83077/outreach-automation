@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import drafts as drafts_repo
 from app.db.models import Campaign, Classification, Lead, Message, Research
 from app.db.repo import OrgContext
+from app.domain.kinds import sender_for
 from app.domain.persona import Persona
 from app.domain.reply import ReplyLabel
 from app.services.drafting.from_agent import ProposalRejected, draft_from_agent
@@ -87,7 +88,7 @@ async def _persona_for(session: AsyncSession, lead: Lead) -> tuple[Campaign, Per
             "allowed to assert. Fill it in on the campaign first."
         )
     try:
-        return campaign, Persona.model_validate(campaign.persona)
+        return campaign, sender_for(campaign.persona, campaign.kind)
     except ValidationError as exc:
         # Field names only, never the stored values: this sentence reaches a client, a log and
         # whatever the agent decides to show its user.

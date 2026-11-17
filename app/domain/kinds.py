@@ -243,6 +243,16 @@ class _SenderAdapter:
     def persona(self) -> Persona:
         return self._persona
 
+    @property
+    def profile(self) -> CandidateProfile:
+        """What was actually written down, as opposed to what was compiled from it.
+
+        Explicit rather than reachable through `__getattr__`, because that proxy forwards to the
+        compiled persona -- so a caller asking for the profile would silently receive the
+        persona, and storing it back would drop every candidate field the person had typed.
+        """
+        return self._profile
+
 
 def load_sender(data: dict[str, Any], *, kind: CampaignKind | str) -> Any:
     """Validate `campaigns.persona` according to the campaign's kind.
@@ -254,3 +264,17 @@ def load_sender(data: dict[str, Any], *, kind: CampaignKind | str) -> Any:
     if resolved is CampaignKind.OUTREACH:
         return Persona.model_validate(data)
     return _SenderAdapter(CandidateProfile.model_validate(data))
+
+
+def sender_for(persona: dict[str, Any] | None, kind: str | None) -> Any:
+    """The sender of a campaign row, validated by that row's own kind.
+
+    **The one way to read `campaigns.persona`.** Phase 13 added `kind` and a second schema, and
+    updated exactly one of the seven places that read the column -- so a `job_hunt` campaign's
+    research died, its readiness panel said the persona "cannot be read", the send loop skipped
+    it silently and a reply to it crashed, all from one assumption repeated six times.
+
+    `kind` is tolerant of `None` and `""` because rows written before kinds existed carry
+    neither, and every one of them is an outreach campaign.
+    """
+    return load_sender(persona or {}, kind=kind or CampaignKind.OUTREACH.value)

@@ -4,6 +4,15 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 
 ## Handoff note (rewrite at the end of every session)
 
+**Fixed from production, 2026-11-17: a job-hunt campaign could not draft a single email.**
+`_persona()` in the worker validated every campaign's persona as an outreach `Persona`, so a
+`job_hunt` campaign -- whose persona column holds a `CandidateProfile` -- killed every
+`research_lead` job on `sender_name Field required`. The queue said `dead`, the campaign said
+`running`, and the review queue said 0, which reads as "nothing has happened yet" rather than as
+a crash. See `docs/ISSUES.md`. **After deploying, the dead jobs have to be requeued by hand from
+Operations -- nothing drafts retroactively.**
+
+
 **Where we are.** The v3 plan is complete. Phases 0–9 are done and deployed; Phases 10–17 (multi-tenant sign-up, Connect Gmail OAuth, MCP connector, browser extension, job-hunt mode, booking webhook, search chain, signals/watchlist, branding, OAuth 2.1 auth server, learning from reviewer edits, full dashboard coverage, Setup page) are all merged and running. **59 of 59 issues resolved.** The API is live at `https://api.arkvane.in`; the dashboard at `https://outreach-automation.sanketyadavdohar123.workers.dev/`.
 
 **Current branch: `docs/implementation-plan-v4`** — the v4 build plan, no code and no migration. The

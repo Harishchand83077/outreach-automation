@@ -33,7 +33,7 @@ from app.db.models import Campaign, Lead, Message, Research
 from app.db.outbox import is_suppressed
 from app.db.repo import OrgContext
 from app.db.state import record_event
-from app.domain.persona import Persona
+from app.domain.kinds import sender_for
 from app.domain.reply import ReplyAction, ReplyLabel, policy_for
 from app.domain.state import TERMINAL, LeadState
 from app.services.drafting.generator import DraftResult, Router, generate_draft
@@ -172,7 +172,7 @@ async def draft_reply(
     campaign = await session.get(Campaign, lead.campaign_id)
     if campaign is None or not campaign.persona:
         return ReplyDraftOutcome(skipped_reason="the campaign has no persona to write as")
-    persona = Persona.model_validate(campaign.persona)
+    persona = sender_for(campaign.persona, campaign.kind)
 
     their_text = strip_quoted(message.body_text or "")[:MAX_REPLY_CHARS]
     hooks: list[dict[str, object]] = [reply_hook(their_text)]
