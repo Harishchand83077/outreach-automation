@@ -5022,3 +5022,65 @@ before and after — so the pull request's claim of "moves and imports only" is 
 rather than an assurance. One dead import (`SignIn`, unused in `App.jsx` before this change)
 went with it. The cost is that a cross-file change now touches more files; the gain is that a
 change to one screen touches one.
+
+## ADR-068 — One person, several memberships: the active workspace is ordered, and it is named
+
+**Status:** accepted, 2026-11-17. **Context:** S18.5 (`docs/IMPLEMENTATION_PLAN_V4.md` §2),
+built second rather than last, so the ADR numbers run out of order on purpose — the number
+belongs to the slice, not to the merge date.
+
+**Context.** `current_user` resolved the verified subject with
+`select(Member).where(Member.user_id == claims.subject)` and **no `order_by`**. A person holding
+two memberships therefore got whichever row Postgres chose to return, which it is entitled to
+change between two identical requests. Every screen sits above that function, so the ambiguity is
+inherited by all of them, and the symptom is not an error: it is a lead list that changes when it
+should not have, with nothing anywhere saying which workspace was read. Two halves of one defect,
+and the second half is why the first stayed invisible — the dashboard named the role (`owner`) and
+never named the workspace that role was held in.
+
+**How reachable it is today, stated rather than implied.** `POST /team/invitations` refuses to
+invite somebody who already holds a membership — *"A person belongs to one workspace here"* —
+so the product cannot currently create the second row. The reachable paths are the first
+`members` row being inserted by hand (`docs/DEPLOY.md` §4.1 asks the owner to do exactly that),
+a row left behind by an earlier experiment, and any future slice that makes a second membership
+legitimate. So this is a latent defect with a one-line fix, not an outage; it is fixed now
+because every S18 screen is about to be built on top of the function that has it, and because the
+fix costs less than the note explaining why it was deferred.
+
+**Decision.**
+
+1. **The active workspace is the oldest membership, tie-broken by id.** `order_by(created_at, id)`
+   with `limit(1)`. Any total order would be stable; this one is also predictable to the person,
+   because the workspace they have been using for months does not change under them the day
+   somebody invites them to a second one.
+2. **`created_at` alone is not the rule.** Two invitations accepted in one transaction share a
+   timestamp to the microsecond, and the order would be undefined again — the same defect wearing
+   a different hat. `id` is the tiebreaker because it is the only other column guaranteed unique.
+3. **The same order wherever a membership is resolved by subject alone.** `provision()`'s two
+   post-`IntegrityError` lookups now carry it too: returning a different row than `current_user`
+   would pick is the same defect, just one request earlier.
+4. **`GET /me` names the active workspace and lists the others.** `org_name`, and `workspaces` as
+   `{org_id, name, role, active}` in resolution order, so the first row is always the active one.
+   A lookup scoped to `user_id` *and* `org_id` is left alone: `uq_members_org_user` makes it
+   single by construction, and there is nothing to order.
+5. **Listing is not switching.** The sidebar says which workspace you are in, and says "1 of N"
+   only when N is more than one. Choosing a different one needs somewhere to keep the choice, and
+   a request that silently resolved to a workspace held in a cookie would be this defect with
+   better manners. It is a later slice.
+6. **A structural guard, `tests/unit/test_membership_is_deterministic.py`.** The property is "no
+   query of this shape is unordered", which belongs to the tree rather than to one function —
+   the same bargain `test_send_guard.py` and `test_cors_methods.py` already make. It parses
+   `app/` with `ast`, judges only the outermost link of a chain, and skips lookups scoped to an
+   org as well.
+
+**Not decided here.** Switching workspaces, and whether a person may hold two memberships at all
+— `team.py` says no today, and that rule is not being changed by a slice about which row a query
+returns.
+
+**Consequences.** `/me` gained two fields and a third query, which the dashboard already calls
+once on load. `TestSeveralMemberships` in `tests/integration/test_api_auth.py` covers the
+resolution, the tie, the naming and the listing; two of its seven tests (the twenty-call
+stability checks) **passed before the fix**, because an unordered query is free to be accidentally
+consistent — which is precisely why this never showed up as a bug report, and why they are kept
+as regression guards rather than presented as reproductions. The guard was proved by deleting the
+`order_by` and watching it name `deps.py:154`.
