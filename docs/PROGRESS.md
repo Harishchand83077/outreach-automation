@@ -6,10 +6,29 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 
 **Where we are.** The v3 plan is complete. Phases 0–9 are done and deployed; Phases 10–17 (multi-tenant sign-up, Connect Gmail OAuth, MCP connector, browser extension, job-hunt mode, booking webhook, search chain, signals/watchlist, branding, OAuth 2.1 auth server, learning from reviewer edits, full dashboard coverage, Setup page) are all merged and running. **59 of 59 issues resolved.** The API is live at `https://api.arkvane.in`; the dashboard at `https://outreach-automation.sanketyadavdohar123.workers.dev/`.
 
-**Current branch: `feat/p18-app-split`** — S18.0, the first v4 slice: `App.jsx` split into one
-file per screen, plus the two guards that make such a split safe. No migration, no API change,
-no behaviour change. It stacks on `docs/implementation-plan-v4` (the build plan), so review that
-one first. The banner fix merged as #167.
+**Current branch: `feat/p18-membership`** — S18.5, the second v4 slice. It stacks on
+`feat/p18-app-split` (S18.0, PR #169), which stacks on `docs/implementation-plan-v4` (the build
+plan, PR #168). **Review in that order: #168, then #169, then this.** The banner fix merged
+as #167.
+
+**S18.5, in one line.** `current_user` selected a membership with no `order_by`, so a person with
+two of them got an arbitrary workspace per request; it is now the oldest membership tie-broken by
+id, `/me` names the active workspace and lists the others, and the sidebar prints the name next to
+the role. **ADR-068** — the number belongs to the slice, so it runs ahead of 064 to 067, which are
+S18.1 to S18.4. **`needs-human`: it changes how sign-in picks a workspace.**
+
+**How reachable that defect was, honestly.** `POST /team/invitations` refuses to invite anybody
+who already holds a membership, so the product cannot create the second row today — the reachable
+paths are the hand-inserted first `members` row that `DEPLOY.md` §4.1 asks for, a leftover row,
+and any later slice that makes two memberships legitimate. It is a latent defect with a one-line
+fix, fixed now because four new screens are about to be built on the function that has it. Two of
+the seven new tests passed before the fix, because an unordered query is free to be accidentally
+consistent; they stay as regression guards and the PR says which ones they are. The invitation
+rule itself, which is unordered and matches on email rather than `sub`, is logged in
+`docs/ISSUES.md` rather than changed here.
+
+**S18.0, still in review.** `App.jsx` split into one file per screen, plus the two guards that
+make such a split safe. No migration, no API change, no behaviour change.
 
 **S18.0, in one line.** `App.jsx` went from 5,374 lines to 731, eleven screen files came out of
 it, eleven shared primitives moved to `ui.jsx`, and all 52 declarations were checked
@@ -59,11 +78,10 @@ backend suite goes once per slice and the unit and integration subsets carry the
    describes what this system actually does with a lead's data — including that public page text
    goes to providers marked `allow_pii=false` and a lead's name, address and reply never do.
    **D6 is the last issue outside Phase 8.**
-2. ~~**S18.0 — split `App.jsx` and add the registration guard.**~~ Done, in review (ADR-063).
-   Next: **S18.5**, deterministic membership resolution — `app/api/deps.py` selects a membership
-   with no `order_by`, so a person with two of them gets an arbitrary workspace per request.
-   `needs-human`, because it changes how sign-in picks a workspace. Then the Inbox (S18.1), the
-   campaigns table (S18.2) and the next-step panel (S18.3).
+2. ~~**S18.0 — split `App.jsx` and add the registration guard.**~~ Done, in review (ADR-063, #169).
+   ~~**S18.5 — deterministic membership resolution.**~~ Done, in review (ADR-068) and
+   **`needs-human`, so it waits for you rather than for CI.** Next: the Inbox (S18.1), the
+   campaigns table (S18.2), the next-step panel (S18.3) and the contact waterfall (S18.4).
    `docs/IMPLEMENTATION_PLAN_V4.md` §2 is the ordered list.
 3. **Phase 8 remainder:** TypeScript and TanStack Query stay deferred on purpose — new screens are
    `.jsx` with JSDoc, because the two source-scanning ADR-048 guards already catch the defects

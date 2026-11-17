@@ -199,6 +199,19 @@
   text-transform: capitalize;
 }
 
+/* A workspace is a name, and the `capitalize` above is for the role word beside it. A name is
+   printed the way its owner typed it, so this turns the inherited transform back off. */
+.sidebar-identity .workspace {
+  font-weight: inherit;
+  text-transform: none;
+}
+
+.sidebar-identity .workspace-note {
+  display: block;
+  margin-top: 2px;
+  text-transform: none;
+}
+
 .main {
   display: flex;
   flex-direction: column;

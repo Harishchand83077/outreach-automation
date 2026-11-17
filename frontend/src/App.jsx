@@ -454,9 +454,27 @@ function Dashboard({ session }) {
             <span className="avatar" aria-hidden="true">
               {who.slice(0, 1) || "?"}
             </span>
+            {/* The role, and now the workspace it is a role *in*. `current_user` resolves one
+                membership per request, and before S18.5 it resolved an arbitrary one -- which was
+                invisible precisely because nothing on the screen named the workspace. The count
+                is shown only when there is more than one, because the common case must not grow
+                a chooser out of nowhere, and switching is not in this slice. */}
             <span className="sidebar-identity">
               <strong title={who}>{who}</strong>
-              <span>{me.role}</span>
+              <span>
+                {me.role}
+                {me.org_name ? <b className="workspace"> · {me.org_name}</b> : null}
+              </span>
+              {me.workspaces && me.workspaces.length > 1 ? (
+                <span
+                  className="workspace-note"
+                  title={me.workspaces
+                    .map((row) => `${row.name} (${row.role})`)
+                    .join(", ")}
+                >
+                  {`1 of ${me.workspaces.length} workspaces`}
+                </span>
+              ) : null}
             </span>
           </div>
           <button
