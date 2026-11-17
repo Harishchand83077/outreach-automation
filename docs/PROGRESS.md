@@ -12,6 +12,14 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 a crash. See `docs/ISSUES.md`. **After deploying, the dead jobs have to be requeued by hand from
 Operations -- nothing drafts retroactively.**
 
+**Fixed from production, 2026-11-17: a hiring-contact lookup returned 500 for a form filled in
+correctly.** The dashboard's provider `<select>` rendered `value={lookupWith || usable[0].provider}`
+while posting `lookupWith`, so an untouched dropdown displayed a provider and submitted an empty
+string; `keys.live` refused the empty name, correctly, and the refusal escaped as a 500. Two more
+escapes from the same refusal path were found and closed with it -- an undecryptable key, whose
+message names its own fix, and a duplicate address that violated `uq_contact_candidates_email`
+*after* the provider had been paid. See `docs/ISSUES.md`.
+
 
 **Where we are.** The v3 plan is complete. Phases 0–9 are done and deployed; Phases 10–17 (multi-tenant sign-up, Connect Gmail OAuth, MCP connector, browser extension, job-hunt mode, booking webhook, search chain, signals/watchlist, branding, OAuth 2.1 auth server, learning from reviewer edits, full dashboard coverage, Setup page) are all merged and running. **59 of 59 issues resolved.** The API is live at `https://api.arkvane.in`; the dashboard at `https://outreach-automation.sanketyadavdohar123.workers.dev/`.
 

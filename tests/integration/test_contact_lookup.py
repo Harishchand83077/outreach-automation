@@ -29,7 +29,7 @@ from app.core.settings import Settings
 from app.db.models import ContactCandidate, Lead, Member, Org, ProviderCredential, Suppression
 from app.db.repo import OrgContext
 from app.services import credentials
-from app.services.contacts import keys, lookup
+from app.services.contacts import keys, lookup, providers
 
 from .test_api_settings import ISSUER, FakeJwks, keypair, member, owner, token_for  # noqa: F401
 
@@ -453,3 +453,111 @@ class TestTenantIsolation:
 
         assert listed.status_code == 200
         assert listed.json()["contact_candidates"] == []
+
+
+class TestNothingHereEverReturnsAFiveHundred:
+    """Reported from production: *"Something went wrong. Quote the request id."*
+
+    Every refusal in this module is a sentence somebody can act on, and `run_a_lookup` converts
+    `LookupRefused` into a 422 so they read it. Three paths escaped that and reached FastAPI's
+    error middleware instead, where they became an opaque 500 -- and the most useful message in
+    the whole file was one of them.
+    """
+
+    async def test_an_undecryptable_key_says_so_instead_of_erroring(
+        self, api, owner, db, org
+    ) -> None:
+        """`CREDENTIAL_KEY` was rotated or lost, which is a thing that happens.
+
+        `unseal` raises `CredentialError` carrying the one sentence that names the fix -- save
+        the key again -- and it was raised **one line above** the try that turns exactly this
+        kind of problem into a 422. So the user got "Something went wrong" and the actionable
+        sentence went to the log.
+        """
+        await _with_mock_key(api, owner)
+        row = await db.scalar(select(ProviderCredential).where(ProviderCredential.org_id == org.id))
+        # Sealed under a different key: precisely what a rotation leaves behind.
+        row.secret = Fernet(Fernet.generate_key()).encrypt(b"pretend")
+        await db.commit()
+
+        response = api.post(
+            "/api/v1/contact-candidates/lookup",
+            json={"provider": "mock", "domain": "example.com"},
+            headers=owner,
+        )
+
+        assert response.status_code == 422, response.text
+        assert "decrypt" in response.text.lower() or "save" in response.text.lower()
+
+    async def test_a_credential_the_adapter_cannot_parse_says_so(self, api, owner, db, org) -> None:
+        """`providers.build` raises `ProviderError`, and it was outside the try as well.
+
+        Snov stores a client id and secret as JSON; anything else is a credential somebody has
+        to save again, which is a sentence, not a server fault.
+        """
+        api.put(
+            "/api/v1/provider-keys/snov",
+            json={"api_key": "not-json-at-all", "label": "test"},
+            headers=owner,
+        )
+
+        response = api.post(
+            "/api/v1/contact-candidates/lookup",
+            json={"provider": "snov", "domain": "example.com"},
+            headers=owner,
+        )
+
+        assert response.status_code in (200, 422), response.text
+        assert response.status_code != 500
+
+    async def test_two_addresses_that_normalise_alike_do_not_collide(
+        self, api, owner, monkeypatch
+    ) -> None:
+        """The in-batch duplicate.
+
+        `uq_contact_candidates_email` is unique on `(org_id, email_norm)`. The loop asked the
+        database whether each address was already known, but never looked at the rows it had
+        just added in the same pass -- and they are not visible to that query, because nothing
+        is flushed between iterations. A provider returning `Asha@x.com` and `asha@x.com`
+        therefore added two rows with the same `email_norm`, and `flush()` raised
+        `IntegrityError` **after** the credit had been spent and the audit row written.
+        """
+
+        class Doubling:
+            name = "mock"
+
+            async def find(self, *, domain, role_hint, client):
+                del role_hint, client
+                return [
+                    providers.FoundContact(
+                        full_name="Asha Rao",
+                        title="Head of Engineering",
+                        email=f"Asha@{domain}",
+                        email_status="verified",
+                        confidence=95,
+                        profile_url=None,
+                    ),
+                    providers.FoundContact(
+                        full_name="A. Rao",
+                        title="Engineering",
+                        email=f"asha@{domain}",
+                        email_status="guess",
+                        confidence=60,
+                        profile_url=None,
+                    ),
+                ]
+
+        await _with_mock_key(api, owner)
+        monkeypatch.setattr(providers, "build", lambda provider, secret: Doubling())
+
+        response = api.post(
+            "/api/v1/contact-candidates/lookup",
+            json={"provider": "mock", "domain": "example.com"},
+            headers=owner,
+        )
+
+        assert response.status_code == 201, response.text
+        body = response.json()
+        # One person, proposed once. The second is the same address and is counted, not stored.
+        assert len(body["proposed"]) == 1
+        assert body["already_known"] == 1
