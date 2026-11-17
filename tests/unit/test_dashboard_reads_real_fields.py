@@ -25,7 +25,10 @@ import pathlib
 import re
 
 ROUTERS = sorted(pathlib.Path("app/api/routers").glob("*.py"))
-SCREENS = sorted(pathlib.Path("frontend/src").glob("*.jsx"))
+#: **Recursive on purpose.** This guard used to glob `*.jsx`, which reads one flat
+#: directory -- so moving a screen into a subfolder would have left it reading nothing
+#: while still passing green, and a guard whose passing means nothing is worse than none.
+SCREENS = sorted(pathlib.Path("frontend/src").glob("**/*.jsx"))
 
 #: `const posts = useLoad('/job-posts', onError)` -> (posts, /job-posts). Only the wrapper, not
 #: the raw helpers: a `getJson(...).then(setX)` loses the association between the path and the

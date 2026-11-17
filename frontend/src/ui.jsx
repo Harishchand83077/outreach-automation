@@ -712,3 +712,130 @@ export function PageHeader({
     </div>
   );
 }
+
+/* --------------------------------------------------------------- moved here in S18.0
+
+   Form primitives and the tone mappers, extracted from `App.jsx` when it was split into one
+   file per screen. They live here rather than in any one screen because five screens use
+   `Field` and two use `TextArea`, and the tone helpers are pure one-line mappings from a status
+   to a colour token -- which is the bargain the rest of this file makes: no fetching, no
+   behaviour, nothing to test but the markup it produces. */
+
+export function ModeOption({ value, active, onChange, title, note }) {
+  return (
+    <button
+      type="button"
+      className="mode-option"
+      data-active={active ? "true" : undefined}
+      onClick={() => onChange(value)}
+      aria-pressed={active}
+    >
+      <strong>{title}</strong>
+      <span>{note}</span>
+    </button>
+  );
+}
+
+export function TextArea({ label, value, onChange, rows = 6, required, hint }) {
+  const id = `t-${label.replace(/\W+/g, "-").toLowerCase()}`;
+  return (
+    <div className="field">
+      <label htmlFor={id}>
+        {label}
+        {required ? null : <span className="muted"> (optional)</span>}
+      </label>
+      <textarea
+        id={id}
+        rows={rows}
+        value={value}
+        onChange={onChange}
+        required={required}
+      />
+      {hint ? <p className="hint">{hint}</p> : null}
+    </div>
+  );
+}
+
+export function Field({ label, value, onChange, required, hint, type = "text" }) {
+  const id = `f-${label.replace(/\W+/g, "-").toLowerCase()}`;
+  return (
+    <div className="field">
+      <label htmlFor={id}>
+        {label}
+        {required ? null : <span className="muted"> (optional)</span>}
+      </label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        onChange={onChange}
+        required={required}
+      />
+      {hint ? <p className="hint">{hint}</p> : null}
+    </div>
+  );
+}
+
+export function Centered({ children }) {
+  return <div className="centered">{children}</div>;
+}
+
+export function statusTone(campaign) {
+  if (campaign.paused) return "warn";
+  if (campaign.status === "running") return "good";
+  if (campaign.status === "archived") return "bad";
+  return undefined;
+}
+
+export function stateTone(state) {
+  if (["SENT", "REPLIED", "MEETING_BOOKED"].includes(state)) return "good";
+  if (["BOUNCED", "ERROR"].includes(state)) return "bad";
+  if (["OPTED_OUT", "SKIPPED", "NO_RESPONSE"].includes(state)) return "warn";
+  if (state === "AWAITING_APPROVAL") return "info";
+  return undefined;
+}
+
+export function verdictTone(verdict) {
+  if (verdict === "importable" || verdict === "ok") return "good";
+  if (verdict === "duplicate" || verdict === "suppressed") return "warn";
+  if (verdict === "invalid" || verdict === "rejected") return "bad";
+  return undefined;
+}
+
+export function modeTone(mode) {
+  if (mode === "live") return "bad";
+  if (mode === "allowlist") return "warn";
+  return undefined;
+}
+
+export function modeExplanation(config) {
+  if (config.send_mode === "disabled") return "nothing can be sent, to anybody";
+  if (config.send_mode === "allowlist") {
+    return "only the addresses on this workspace's allowlist";
+  }
+  return "any recipient — real mail goes to real people";
+}
+
+/** An ISO instant as `datetime-local` wants it: the viewer's own clock, no timezone suffix.
+ *  Done by hand rather than with `toISOString`, which would render UTC and show somebody in
+ *  India a start time seven hours earlier than the one they chose. */
+export function toLocalInput(iso) {
+  if (!iso) return "";
+  const when = new Date(iso);
+  if (Number.isNaN(when.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return (
+    `${when.getFullYear()}-${pad(when.getMonth() + 1)}-${pad(when.getDate())}` +
+    `T${pad(when.getHours())}:${pad(when.getMinutes())}`
+  );
+}
+
+/** Bytes as a person reads them. Sizes here are always between 1 KB and 5 MB, so two units
+ *  and one decimal place covers every case the UI can actually show. */
+export function formatBytes(bytes) {
+  if (!bytes) return "0 KB";
+  const mb = bytes / (1024 * 1024);
+  return mb >= 1
+    ? `${mb.toFixed(1)} MB`
+    : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}

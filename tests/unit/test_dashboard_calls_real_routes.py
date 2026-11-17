@@ -26,7 +26,10 @@ import re
 from app.api.app import create_app
 from app.core.settings import Settings
 
-SOURCES = sorted(pathlib.Path("frontend/src").glob("*.jsx"))
+#: **Recursive on purpose.** This guard used to glob `*.jsx`, which reads one flat
+#: directory -- so moving a screen into a subfolder would have left it reading nothing
+#: while still passing green, and a guard whose passing means nothing is worse than none.
+SOURCES = sorted(pathlib.Path("frontend/src").glob("**/*.jsx"))
 
 #: Every function that takes an API path as its first argument: `api.js`'s own helpers, plus the
 #: `useLoad` wrapper the newer screens load through.
