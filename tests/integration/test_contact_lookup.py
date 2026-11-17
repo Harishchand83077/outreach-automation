@@ -495,15 +495,27 @@ class TestNothingHereEverReturnsAFiveHundred:
         kind of problem into a 422. So the user got "Something went wrong" and the actionable
         sentence went to the log.
         """
-        await _with_mock_key(api, owner)
-        row = await db.scalar(select(ProviderCredential).where(ProviderCredential.org_id == org.id))
-        # Sealed under a different key: precisely what a rotation leaves behind.
+        # **Deliberately not the `mock` key.** Breaking that one and committing it leaves every
+        # later test in this file holding a credential that cannot be decrypted, which is how
+        # the first version of this test turned unrelated assertions red.
+        api.put(
+            "/api/v1/provider-keys/hunter",
+            json={"api_key": "pretend", "label": "test"},
+            headers=owner,
+        )
+        row = await db.scalar(
+            select(ProviderCredential).where(
+                ProviderCredential.org_id == org.id, ProviderCredential.provider == "hunter"
+            )
+        )
+        # Sealed under a different key: precisely what a rotation leaves behind. The lookup
+        # fails at `unseal`, before any adapter is built, so nothing reaches a network.
         row.secret = Fernet(Fernet.generate_key()).encrypt(b"pretend")
         await db.commit()
 
         response = api.post(
             "/api/v1/contact-candidates/lookup",
-            json={"provider": "mock", "domain": "example.com"},
+            json={"provider": "hunter", "domain": "example.com"},
             headers=owner,
         )
 
