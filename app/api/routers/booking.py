@@ -121,7 +121,10 @@ async def receive(
         "a booking webhook was accepted",
         extra={
             "org_id": str(org_id),
-            "created": result.created,
+            # Not `created`: logging owns that name and refuses to overwrite it. This line sits
+            # after the commit, so the booking was recorded and the caller got a 500 for it --
+            # and a provider that sees a 500 retries a webhook that had already succeeded.
+            "booking_created": result.created,
             "matched_by": result.matched_by,
             "state_changed": result.state_changed,
         },

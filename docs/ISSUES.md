@@ -347,3 +347,34 @@ writing it twice is exactly what drifted apart here. Both hoisted to one name.
 produced the 500 was never established, Both yield the same
 banner, and the evidence on screen — *"1 of 25 lookups used today"* — fits either, because
 **Verify** spends a lookup too. The request id in the banner resolves it against the API logs.
+
+### Found in production, 2026-11-18: the ATS poller and the booking webhook both died while logging
+
+**Status: Done** — `fix/ats-poll-log-key`.
+
+Surfaced by the owner asking why a company on the watchlist showed no postings. The Operations
+screen had it on the Dead jobs panel: `poll_ats_feed`, 5 attempts,
+`KeyError: "Attempt to overwrite 'created' in LogRecord"`.
+
+`logging` merges `extra` into the record's `__dict__` and refuses to overwrite anything already
+there. `created` is the record's own timestamp. Two call sites used it:
+
+- `handle_poll_ats_feed` logged it as its **last statement**, so every poll stored its postings
+  and then raised. The job failed, retried five times, landed in `dead`, and polling stopped —
+  which on screen reads as "no jobs found" rather than as a crash. **This is why a watchlist
+  with companies on it was empty.**
+- `POST /booking/{secret}` logged it **after `session.commit()`**, so the booking was recorded
+  and the provider received a 500 for it. A provider that sees a 500 retries a webhook that had
+  already succeeded. This is one of exactly two ways `MEETING_BOOKED` is ever reached.
+
+**No test could have caught either, and that is the whole reason the guard is structural.**
+`Logger.info` checks `isEnabledFor(INFO)` before it builds a record; under pytest the effective
+level is WARNING, so the line is skipped, `makeRecord` never runs, and the clash cannot raise.
+The defect exists only where INFO logging is configured — `app/core/logging.py`, in production.
+An integration test driving the whole handler end to end goes green.
+
+Fixed by renaming the keys to `postings_created` and `booking_created`.
+`tests/unit/test_log_extras_are_not_reserved.py` takes the reserved names from
+`logging.LogRecord` itself rather than a retyped list, scans `app/` with `ast`, and proves the
+failure mode with a real `makeRecord` call so the rule cannot decay into folklore. It named both
+sites before the fix.
