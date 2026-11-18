@@ -404,3 +404,48 @@ Fixed by renaming the keys to `postings_created` and `booking_created`.
 `logging.LogRecord` itself rather than a retyped list, scans `app/` with `ast`, and proves the
 failure mode with a real `makeRecord` call so the rule cannot decay into folklore. It named both
 sites before the fix.
+
+---
+
+## The booking webhook URL was offered as a campaign's booking link
+
+**Found from production, 2026-11-18.** The owner generated a booking webhook secret on the
+Sending screen, whose field hint read *"Paste this into your booking tool"*, and pasted the URL
+into a `job_hunt` campaign's `booking_url`. The drafter then put it in an email as *"Please pick a
+time that works for you"*, and that email was sent to the owner's own address, where the link
+would not open.
+
+**Two defects in one field, not one.**
+
+1. **The URL is a credential.** `/hooks/booking/{token}` authenticates by the token in its own
+   path, and a successful POST is one of exactly two ways a lead reaches `MEETING_BOOKED`. In an
+   email body it reaches every recipient and every mail server on the route.
+2. **It books nothing.** The endpoint is declared `@hooks.post(..., include_in_schema=False)`, so
+   a recipient who clicks it gets `405 Method Not Allowed`. Confirmed against production: `GET`
+   and `HEAD` both answer 405.
+
+**Why nothing caught it.** `Persona._booking_url_must_book` existed and refused exactly one wrong
+shape — the reader's own Google or Outlook calendar, F1's defect — and this is a different shape.
+Worse, the campaign was `job_hunt`, whose persona is a `CandidateProfile`, and **that model had no
+`booking_url` validator at all**: the own-calendar refusal applied to it only when `as_persona()`
+compiled it inside a worker job, where a `ValidationError` reads as the system being broken rather
+than as a field to correct. The go-live gate's `assess_booking_url` had the same single-shape
+blind spot.
+
+**Fixed** by moving the question into one function, `why_it_books_nothing()` in
+`app/domain/booking.py`, called by both persona schemas and by the gate, so `outreach` and
+`job_hunt` cannot disagree about what a usable link is. `is_the_booking_webhook()` recognises the
+shape from `WEBHOOK_PATH`; a test asserts the router still mounts the webhook there, because
+`app/domain/` imports nothing from `app/api/` and the two constants would otherwise drift. The
+gate's failure line deliberately does not echo the URL, since its output is pasted into issues
+and chats and this value is a credential.
+
+**The dashboard text that invited it** was corrected too: the webhook field is now labelled a
+secret, says it only answers POST, and says it is not the campaign's booking link — and the
+job-hunt booking-link hint, which read only "Must start with `https://`", now names the public
+Cal.com or Calendly page and warns against this URL by name.
+
+**Consequence after deploying.** A stored persona holding this URL now fails validation when it
+is read, so the campaign refuses to draft until the field is corrected — with the refusal's own
+text naming the reason. That is the intended outcome: the alternative is sending the secret again.
+The exposed secret itself has to be rotated by hand, which only the owner can do.

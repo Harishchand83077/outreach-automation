@@ -25,7 +25,7 @@ from typing import Annotated, ClassVar, Self
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
-from app.domain.booking import opens_own_calendar
+from app.domain.booking import why_it_books_nothing
 
 #: Default word ceiling for a draft body. Short cold email outperforms long cold email, and a
 #: tight budget also limits how much an unsupervised model can invent.
@@ -112,17 +112,17 @@ class Persona(BaseModel):
     @field_validator("booking_url")
     @classmethod
     def _booking_url_must_book(cls, v: HttpUrl | None) -> HttpUrl | None:
-        """Refuse a link that opens the reader's own calendar.
+        """Refuse a link that books nothing.
 
-        The live campaign's was `calendar.google.com/calendar/u/0/r`, so a recipient clicking it
-        saw their own week and nothing was ever scheduled. Every check until now only asked
-        whether the field was filled in.
+        Two shapes so far, both from live campaigns: `calendar.google.com/calendar/u/0/r`, which
+        showed a recipient their own week, and this system's own booking webhook, whose URL is
+        the workspace's shared secret. Every check before the first of those only asked whether
+        the field was filled in.
         """
-        if v is not None and opens_own_calendar(str(v)):
-            raise ValueError(
-                "this link opens the reader's own calendar and books nothing; use a scheduling "
-                "page that shows your availability"
-            )
+        if v is not None:
+            reason = why_it_books_nothing(str(v))
+            if reason:
+                raise ValueError(reason)
         return v
 
     # --- How it should read ---

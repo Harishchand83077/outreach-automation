@@ -23,8 +23,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
+from app.domain.booking import why_it_books_nothing
 from app.domain.persona import NonEmptyStr, Persona, ProofPoint
 
 
@@ -151,6 +152,22 @@ class CandidateProfile(BaseModel):
     goal: str = Field(default="", max_length=500)
     cta_text: str = Field(default="", max_length=300)
     booking_url: HttpUrl | None = None
+
+    @field_validator("booking_url")
+    @classmethod
+    def _booking_url_must_book(cls, v: HttpUrl | None) -> HttpUrl | None:
+        """The same refusal `Persona` makes, because this field ends up in the same email.
+
+        It was missing here, so a `job_hunt` campaign could store a link `Persona` would have
+        refused; `as_persona()` then raised at drafting time instead -- inside a worker job,
+        which reads as the system being broken rather than as a field to correct.
+        """
+        if v is not None:
+            reason = why_it_books_nothing(str(v))
+            if reason:
+                raise ValueError(reason)
+        return v
+
     tone: str = Field(default="direct and warm", max_length=200)
     language: str = Field(default="en", max_length=20)
     avoid: list[str] = Field(default_factory=list, max_length=100)

@@ -474,7 +474,7 @@ export default function NewCampaign({ onError, onToast, onCreated, onCancel }) {
               value={form.booking_url}
               onChange={set("booking_url")}
               type="url"
-              hint="Must start with https://"
+              hint="Your public Cal.com or Calendly page — not the booking webhook URL from Sending, which is a secret."
             />
           </>
         )}
