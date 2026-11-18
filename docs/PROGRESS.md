@@ -4,6 +4,17 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 
 ## Handoff note (rewrite at the end of every session)
 
+**Fixed from production, 2026-11-18: no Greenhouse posting could ever be fit-scored.**
+`feed_url` requested the board list without `?content=true`, and that response carries no
+descriptions — so every posting polled from a Greenhouse board was stored with `body_text` NULL
+and `fit_store.compute` refused for want of requirements. `docs/ATS_FEEDS.md` had recorded the
+parameter as the fix since the shapes were first captured. Measured before changing anything: 13
+postings, 166 KB, so the 8 MB cap did not need raising. The field is HTML escaped inside a JSON
+string and is flattened by a purpose-built reader that keeps one bullet per line — **not**
+`pages.visible_text`, which collapses whitespace because it exists to hash pages. **ADR-075.**
+**No backfill: `intake` only overwrites stored text with text, so the next poll of a board fills
+in the postings already stored.** See `docs/ISSUES.md`.
+
 **Fixed from production, 2026-11-18: the booking webhook URL was accepted as a campaign's
 booking link, and went out in an email.** The URL under `/hooks/booking/{token}` is the secret a
 booking provider POSTs to; in an email body it hands every recipient the credential that can mark

@@ -56,8 +56,9 @@ async def compute(
         )
     if not (post.body_text or "").strip():
         raise NothingToScore(
-            "This posting has no description stored, so there are no requirements to read. "
-            "Greenhouse's list response carries no body; open the posting and paste it."
+            "This posting has no description stored, so there are no requirements to read. It "
+            "was polled before descriptions were being fetched; the next poll of that board "
+            "fills it in. To score it now, open the posting and paste the text."
         )
 
     requirements = await extract_requirements(

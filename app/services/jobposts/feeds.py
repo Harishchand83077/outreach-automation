@@ -11,7 +11,9 @@ can be tested against saved fixtures and never the network (hard rule).
 
 from __future__ import annotations
 
+import html
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -47,12 +49,56 @@ def feed_url(source: str, slug: str) -> str:
     if not cleaned:
         raise FeedError("a board slug is required")
     if source == "greenhouse":
-        return f"https://boards-api.greenhouse.io/v1/boards/{cleaned}/jobs"
+        # `content=true` is what makes the descriptions arrive. Without it the list carries
+        # titles and nothing else, so every posting stored from this board had no body -- and a
+        # fit score cannot be computed against requirements that were never fetched. Measured on
+        # a live board 2026-11-18: 13 postings with full content came to 166 KB, well under
+        # `MAX_FEED_BYTES`, so this costs one query parameter and no second call per job.
+        return f"https://boards-api.greenhouse.io/v1/boards/{cleaned}/jobs?content=true"
     if source == "lever":
         return f"https://api.lever.co/v0/postings/{cleaned}"
     if source == "ashby":
         return f"https://api.ashbyhq.com/posting-api/job-board/{cleaned}"
     raise FeedError(f"{source} is not a feed we can poll")
+
+
+#: Markup whose *contents* are not words. Dropped whole, tags and all.
+_SCRIPTS = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+#: Tags that end a line of prose. A posting's requirements are a bulleted list, and a list
+#: flattened into one paragraph is measurably harder to read requirements out of -- which is the
+#: only thing this text is for.
+_LINE_ENDS = re.compile(
+    r"(?i)</(p|div|li|ul|ol|h[1-6]|tr|blockquote|section)\s*>|<br\s*/?>|</li\s*>"
+)
+_ANY_TAG = re.compile(r"<[^>]*>")
+#: Horizontal whitespace only, `\xa0` included, so newlines survive the collapse.
+_HORIZONTAL = re.compile(r"[^\S\n]+")
+_BLANK_RUNS = re.compile(r"\n{3,}")
+
+
+def _plain_from_escaped_html(value: Any) -> str | None:
+    """Greenhouse's `content` as readable text.
+
+    The field is **HTML that has been escaped into a JSON string**, so `&lt;p&gt;` arrives where
+    Lever and Ashby send plain text in `descriptionPlain`. Verified against a live board on
+    2026-11-18, not assumed.
+
+    Deliberately not `pages.visible_text`, which exists to hash a page and therefore collapses
+    every run of whitespace into one space. That is right for a fingerprint and wrong here: the
+    requirements in a posting are a `<li>` list, and one unbroken paragraph is what the extractor
+    would then have to read them out of. Block-level tags become newlines first.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    markup = html.unescape(value)
+    markup = _SCRIPTS.sub(" ", markup)
+    markup = _LINE_ENDS.sub("\n", markup)
+    # A second unescape: entities such as `&amp;nbsp;` survive the first one as `&nbsp;`, and a
+    # posting full of literal `&nbsp;` is what an operator would report as a parsing bug.
+    text = html.unescape(_ANY_TAG.sub("", markup))
+    text = _HORIZONTAL.sub(" ", text)
+    text = "\n".join(line.strip() for line in text.split("\n"))
+    return _BLANK_RUNS.sub("\n\n", text).strip()[:MAX_BODY_CHARS] or None
 
 
 def _text(value: Any, limit: int = 500) -> str | None:
@@ -104,8 +150,10 @@ def _one(source: str, row: dict[str, Any]) -> Posting | None:
             apply_url=_text(row.get("absolute_url"), 2000) or "",
             location=_text(location.get("name")) if isinstance(location, dict) else None,
             posted_at=_when(row.get("updated_at") or row.get("first_published")),
-            # Greenhouse's list response has no description; it needs a second call per job.
-            body_text=None,
+            # Present when the list was asked for `content=true`, which `feed_url` now does.
+            # Absent from a response captured before that, and from a board that returns none --
+            # `None` then, and `intake` leaves whatever text is already stored alone.
+            body_text=_plain_from_escaped_html(row.get("content")),
         )
     if source == "lever":
         categories = row.get("categories")

@@ -52,11 +52,34 @@ def test_lever_timestamps_are_epoch_milliseconds():
     assert all(p.posted_at.year > 2000 for p in dated)
 
 
-def test_greenhouse_postings_have_no_body_text():
-    """Its list response carries no description, so a body needs a second call per job.
+def test_greenhouse_carries_body_text_when_the_list_was_asked_for_content():
+    """**Written because fit scoring was impossible for every Greenhouse board.**
 
-    Asserted rather than assumed, because a model that required body text would have made
-    Greenhouse unusable and the reason would not have been obvious.
+    The list response carries no description *unless* asked, and `feed_url` never asked. So
+    every posting polled from a Greenhouse board was stored with `body_text` NULL, and
+    `fit_store.compute` refused with "this posting has no description stored" -- correctly, but
+    for a reason the system had imposed on itself. `docs/ATS_FEEDS.md` had recorded
+    `?content=true` as the answer since the day the shapes were captured.
+
+    The fixture is a real response captured 2026-11-18 with that parameter, trimmed to five
+    postings like its neighbours.
+    """
+    postings = feeds.parse_feed("greenhouse", raw("greenhouse_content"))
+
+    assert len(postings) == 5
+    assert all(p.body_text for p in postings)
+    #: Readable text, not the escaped markup the field actually contains.
+    body = postings[0].body_text
+    assert "&lt;" not in body
+    assert "&nbsp;" not in body
+    assert "<p>" not in body
+
+
+def test_a_greenhouse_response_without_content_still_parses():
+    """The older fixture, captured before the parameter existed, and a board that returns none.
+
+    `None` rather than an empty string, because `intake` only overwrites stored text *with*
+    text -- so a feed that stops carrying descriptions must not blank what is already there.
     """
     assert all(p.body_text is None for p in feeds.parse_feed("greenhouse", raw("greenhouse")))
 
@@ -122,7 +145,10 @@ class TestFeedUrls:
     @pytest.mark.parametrize(
         ("source", "expected"),
         [
-            ("greenhouse", "https://boards-api.greenhouse.io/v1/boards/vercel/jobs"),
+            (
+                "greenhouse",
+                "https://boards-api.greenhouse.io/v1/boards/vercel/jobs?content=true",
+            ),
             ("lever", "https://api.lever.co/v0/postings/vercel"),
             ("ashby", "https://api.ashbyhq.com/posting-api/job-board/vercel"),
         ],
@@ -131,8 +157,68 @@ class TestFeedUrls:
         assert feeds.feed_url(source, "vercel") == expected
 
     def test_a_slug_is_cleaned_rather_than_pasted_in_raw(self):
-        assert feeds.feed_url("greenhouse", " /vercel/ ").endswith("/boards/vercel/jobs")
+        assert "/boards/vercel/jobs" in feeds.feed_url("greenhouse", " /vercel/ ")
+
+    def test_greenhouse_always_asks_for_the_descriptions(self):
+        """The whole point of the fix: without this parameter no Greenhouse posting has a body,
+        and nothing from such a board can be scored."""
+        assert "content=true" in feeds.feed_url("greenhouse", "vercel")
 
     def test_an_empty_slug_is_refused(self):
         with pytest.raises(feeds.FeedError):
             feeds.feed_url("greenhouse", "  ")
+
+
+class TestFlatteningGreenhousesEscapedHtml:
+    """The one piece of real logic in the fix, so it is tested on its own.
+
+    What it is *for* is a requirements list a model can read. A flattener that produced one
+    unbroken paragraph would pass "no tags remain" and still lose the only structure that
+    matters, which is why the list test below checks for newlines rather than for words.
+    """
+
+    def test_a_bulleted_list_keeps_one_requirement_per_line(self):
+        escaped = (
+            "&lt;p&gt;What you will do&lt;/p&gt;&lt;ul&gt;"
+            "&lt;li&gt;Own the pipeline&lt;/li&gt;"
+            "&lt;li&gt;Write Python&lt;/li&gt;"
+            "&lt;li&gt;Talk to customers&lt;/li&gt;&lt;/ul&gt;"
+        )
+
+        lines = [ln for ln in feeds._plain_from_escaped_html(escaped).split("\n") if ln]
+
+        assert lines == [
+            "What you will do",
+            "Own the pipeline",
+            "Write Python",
+            "Talk to customers",
+        ]
+
+    def test_entities_inside_the_markup_are_decoded_too(self):
+        """`&amp;nbsp;` survives one unescape as `&nbsp;`, which reads as a parsing bug."""
+        escaped = "&lt;p&gt;Rust&amp;nbsp;and&amp;nbsp;Go&lt;/p&gt;"
+
+        assert feeds._plain_from_escaped_html(escaped) == "Rust and Go"
+
+    def test_script_and_style_contents_are_dropped_whole(self):
+        escaped = (
+            "&lt;style&gt;.a{color:red}&lt;/style&gt;"
+            "&lt;p&gt;Real words&lt;/p&gt;"
+            "&lt;script&gt;window.x = 1;&lt;/script&gt;"
+        )
+
+        assert feeds._plain_from_escaped_html(escaped) == "Real words"
+
+    def test_a_br_breaks_a_line(self):
+        assert feeds._plain_from_escaped_html("a&lt;br /&gt;b") == "a\nb"
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 7, {"a": 1}, []])
+    def test_anything_that_is_not_text_is_no_body_at_all(self, value):
+        """`None`, never `""`: `intake` overwrites stored text only *with* text, so an empty
+        string here would be the one shape that could blank a description somebody pasted."""
+        assert feeds._plain_from_escaped_html(value) is None
+
+    def test_a_posting_longer_than_the_cap_is_truncated_not_refused(self):
+        escaped = "&lt;p&gt;" + ("word " * 30_000) + "&lt;/p&gt;"
+
+        assert len(feeds._plain_from_escaped_html(escaped)) == feeds.MAX_BODY_CHARS

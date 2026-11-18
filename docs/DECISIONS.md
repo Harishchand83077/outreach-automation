@@ -5118,3 +5118,32 @@ emailed as a scheduling link. `Persona` had a validator that refused one wrong s
 body as a last line of defence. The claim check already permits only `booking_url` as a link, so
 closing the field closes the path; a body scan would be a second rule to keep in step with the
 first, and `docs/ISSUES.md` carries it as a possibility rather than a plan.
+
+## ADR-075 — A feed is asked for the text the product needs, and the text is flattened for reading
+
+**2026-11-18.** Context: Greenhouse's board list omits descriptions unless asked, and `feed_url`
+never asked, so no posting from a Greenhouse board could be fit-scored. Numbered above the
+planned range with ADR-074, for the same reason: this is an unplanned production repair, and
+064 to 073 belong to the S18/S19 slices.
+
+**Decided.**
+
+1. **`content=true` on the list, not a second call per job.** The alternative in
+   `docs/ATS_FEEDS.md` was `/jobs/{id}` per posting, which turns one request into N and gives the
+   poller a partial-failure mode it does not have today. Measured first: 13 postings came to
+   166 KB, so the existing size cap holds roughly a thousand. A board past that fails the cap
+   with a sentence, and *then* the per-job call is worth building.
+2. **The flattener is purpose-built, and does not reuse `pages.visible_text`.** Two functions
+   that both "turn HTML into text" for genuinely different purposes: one fingerprints a page and
+   must collapse whitespace, this one feeds a requirements extractor and must keep one bullet per
+   line. Sharing them would make the hash sensitive to layout or the extractor blind to lists.
+3. **Body text stays optional in the model.** A response captured before the parameter existed
+   still has to parse, and a board that returns no content must yield `None` rather than `""` —
+   `intake` overwrites stored text only with text, so an empty string is the one value that could
+   blank a description somebody pasted in by hand.
+4. **No backfill migration.** The next poll fills in what is already stored, by the rule in point
+   3. A migration would be a second mechanism for something the poller does correctly once a day.
+
+**Consequences.** Greenhouse responses are now roughly 2.5× larger per posting. The refusal in
+`fit_store.compute` was reworded: it still fires for a posting polled before this shipped, and it
+now says the next poll will fix it rather than naming a limitation that no longer exists.

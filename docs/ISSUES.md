@@ -449,3 +449,37 @@ Cal.com or Calendly page and warns against this URL by name.
 is read, so the campaign refuses to draft until the field is corrected — with the refusal's own
 text naming the reason. That is the intended outcome: the alternative is sending the secret again.
 The exposed secret itself has to be rotated by hand, which only the owner can do.
+
+---
+
+## No Greenhouse posting could ever be scored, because the feed was never asked for descriptions
+
+**Found from production, 2026-11-18.** Fit scoring a posting found through the Prodigal watchlist
+answered *"This posting has no description stored, so there are no requirements to read."* The
+message was true and the cause was ours.
+
+`feed_url("greenhouse", slug)` requested
+`https://boards-api.greenhouse.io/v1/boards/{slug}/jobs`. **That response carries titles and no
+descriptions.** So every posting ever polled from a Greenhouse board was stored with `body_text`
+NULL, `fit_store.compute` refused for want of requirements, and the refusal named the cause
+without anyone acting on it: `docs/ATS_FEEDS.md` had recorded `?content=true` as the fix on the
+day the shapes were first captured.
+
+**Measured, not assumed, 2026-11-18.** The live board returned **13 postings in 166 KB** with
+`content=true` — about 7.7 KB of markup each, so `MAX_FEED_BYTES` (8 MB) holds roughly a thousand
+postings and did not need raising. The field arrives as **HTML escaped inside a JSON string**
+(`&lt;p&gt;`), where Lever and Ashby send plain text in `descriptionPlain`.
+
+**Fixed** by passing `content=true` and flattening the field in
+`feeds._plain_from_escaped_html()`: unescape, drop `<script>`/`<style>` whole, turn block tags
+into newlines, strip the rest, unescape again for the entities that were inside the markup.
+
+**Deliberately not `pages.visible_text`.** That function exists to fingerprint a page and so
+collapses every run of whitespace into one space. Correct for a hash, wrong here: a posting's
+requirements are a `<li>` list, and one unbroken paragraph is what the extractor would then have
+to read them out of.
+
+**No backfill is needed.** `intake` already overwrites stored text only *with* text
+(`if body: existing.body_text = body`), so the next poll of a board fills in the postings already
+stored. The refusal message in `fit_store` was reworded to say so, since it will still be correct
+for a posting polled before this shipped.
