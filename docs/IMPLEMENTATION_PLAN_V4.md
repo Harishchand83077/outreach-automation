@@ -49,7 +49,7 @@ format, types and the two JavaScript suites were re-run on this branch and are u
 | "still not built: a resume upload and parser" | **Confirmed.** `app/services/resume/` is `ops / pdf / store / tailor / validate`, and `pdf.py` *writes* a PDF. There is no upload route, no reader, and **no PDF or DOCX dependency in `pyproject.toml`** |
 | `App.jsx` is 4,983 lines | **5,374** |
 | P21 includes "extension field fill and resume download" | Contradicted by the shipped product: `extension/public/manifest.json` describes it as a tool that "never fills in or submits a form". **No field fill is planned**; S19.4 adds *Save this job* and nothing else |
-| "object storage for files … the S3 bucket already used for backups" | There is no S3 client in `app/`, and ADR-016 already decided the opposite for `attachments`: capped bytes in Postgres, so the truth lives in one place and the nightly dump covers it. Documents follow that precedent (**ADR-068**) |
+| "object storage for files … the S3 bucket already used for backups" | There is no S3 client in `app/`, and ADR-016 already decided the opposite for `attachments`: capped bytes in Postgres, so the truth lives in one place and the nightly dump covers it. Documents follow that precedent (**ADR-069**) |
 | `fit_scores` may be superseded by `fit_evaluations`, "only one may remain" | Settled in favour of `fit_scores` (ADR-055): one row per posting, and `matched` already carries the requirement, the fact id and the words that matched. S19.3 reads it. **No second table** |
 | S18.1's instruction to "first check whether an out-of-office label exists" | **It exists.** `ReplyLabel.OUT_OF_OFFICE` in `app/domain/reply.py`, with `LabelPolicy(DEFER, draft_reply=False, notify=False)` and `DEFAULT_OOO_DEFER_DAYS = 5` in `app/services/reply/service.py`. No new label and no policy change: the slice gives it a folder and shows the deferred date |
 | `PROGRESS.md`: "there is still no way to delete a campaign" | `DELETE /campaigns/{campaign_id}` exists (`app/api/routers/campaigns.py:1334`). Stale line, corrected in this PR |
@@ -187,7 +187,7 @@ One list of inbound replies across campaigns.
   order, so no existing row is rewritten.
 - **Guards kept.** `test_contacts_button_press_only.py` passes unchanged: no job kind, no
   scheduler pass, no shared key.
-- **Apollo.** ADR-066 decides **not** to write a `mixed_people/organization_top_people` adapter
+- **Apollo.** ADR-067 decides **not** to write a `mixed_people/organization_top_people` adapter
   until a real response has been seen. An adapter against a guessed shape is how the current
   Apollo assumption got into the repo.
 
@@ -195,7 +195,7 @@ One list of inbound replies across campaigns.
 
 - **Migration.** `documents`: `org_id`, kind, filename, `content_type`, `size_bytes`, `sha256`,
   bytes, extracted text, `uploaded_at`; unique on org and hash. **Capped bytes in Postgres**
-  (2 MB), following ADR-016; ADR-068 records the departure from v4's S3 plan.
+  (2 MB), following ADR-016; ADR-069 records the departure from v4's S3 plan.
 - **Files.** `app/services/candidate/resume_parse.py`; a `parse_resume` job kind;
   `routers/candidate.py` gains `POST /documents`, `GET /documents`, `GET /documents/{id}`,
   `DELETE /documents/{id}` and `POST /documents/{id}/parse` (202).
@@ -267,17 +267,18 @@ separately, and a "too few" floor**. Silence is "no response yet", never a rejec
 
 | ADR | Slice | Decision |
 | --- | --- | --- |
-| 063 | S18.1 | The inbox is a view, not a state: snooze and archive are flags on a thread, and the out-of-office label that already exists keeps its DEFER policy |
-| 064 | S18.2 | One aggregate query for the campaigns table, counted from the record — and no open or click column, ever |
-| 065 | S18.3 | The next step is decided once, in `setupSteps.js`, and drawn in several places |
-| 066 | S18.4 | A lookup walks the user's own provider order and stops at the first verified address; Apollo's people endpoint gets no adapter until a response has been seen |
-| 067 | S18.5 | One person, several memberships: the active workspace is deterministic and is named on `/me` |
-| 068 | S19.1 | An uploaded document is capped bytes in Postgres, and parsing proposes facts nobody has confirmed |
-| 069 | S19.2 | An opportunity wraps an application; one function owns its status, and the backfill is its own reviewed migration |
-| 070 | S19.4 | Freshness is an observation; the extension saves a link and still cannot fill or submit |
-| 071 | S19.5 | A proof pack is a selection of confirmed facts, and the clarity check suggests |
-| 072 | S19.6 | Tie strength is the user's judgement, and the ranking shows its reason |
-| 073 | S19.7 | Edited against unedited, reported with counts and a floor |
+| **063** | **S18.0** | **Accepted.** One file per screen, flat; shared primitives in `ui.jsx`; the ADR-048 globs become recursive; two new guards -- a module must import what it uses, and a screen must be registered in all four places; a guard names behaviour, not a file |
+| 064 | S18.1 | The inbox is a view, not a state: snooze and archive are flags on a thread, and the out-of-office label that already exists keeps its DEFER policy |
+| 065 | S18.2 | One aggregate query for the campaigns table, counted from the record — and no open or click column, ever |
+| 066 | S18.3 | The next step is decided once, in `setupSteps.js`, and drawn in several places |
+| 067 | S18.4 | A lookup walks the user's own provider order and stops at the first verified address; Apollo's people endpoint gets no adapter until a response has been seen |
+| 068 | S18.5 | One person, several memberships: the active workspace is deterministic and is named on `/me` |
+| 069 | S19.1 | An uploaded document is capped bytes in Postgres, and parsing proposes facts nobody has confirmed |
+| 070 | S19.2 | An opportunity wraps an application; one function owns its status, and the backfill is its own reviewed migration |
+| 071 | S19.4 | Freshness is an observation; the extension saves a link and still cannot fill or submit |
+| 072 | S19.5 | A proof pack is a selection of confirmed facts, and the clarity check suggests |
+| 073 | S19.6 | Tie strength is the user's judgement, and the ranking shows its reason |
+| 074 | S19.7 | Edited against unedited, reported with counts and a floor |
 
 `docs/DECISIONS.md` and `docs/PROGRESS.md` — handoff header rewritten — go in the same pull request
 as the slice they describe.
@@ -343,7 +344,7 @@ Nothing from a spike is committed.
 - The backend suite is slow on this machine — **64 minutes**, dominated by the e2e mail tests —
   so it is run once per slice rather than per commit, and the unit and integration subsets carry
   the inner loop. No slice started on an unknown baseline: §1 records the real number, 2,806.
-- Apollo's response shape is still unseen. ADR-066 keeps it that way rather than guessing twice.
+- Apollo's response shape is still unseen. ADR-067 keeps it that way rather than guessing twice.
 - S19.2c alters existing rows. It is `needs-human`, and if the migration cannot be run safely from
   here the pull request carries the exact commands and stops.
 - The v4 document stays the product source of truth and is now partly stale. Rather than rewriting
@@ -360,7 +361,7 @@ Nothing from a spike is committed.
 | Question | Answer |
 | --- | --- |
 | Resume reader dependency for S19.1 | **`pypdf` and `python-docx`**, both free and MIT, pinned versions named in the S19.1 pull request |
-| Where uploaded documents live | **Capped bytes in Postgres**, 2 MB per file, following ADR-016 rather than v4's S3 plan (ADR-068) |
+| Where uploaded documents live | **Capped bytes in Postgres**, 2 MB per file, following ADR-016 rather than v4's S3 plan (ADR-069) |
 | Identity that commits and merges | **`Harishchand83077`**, the account `gh` is authenticated as. No `Co-Authored-By` and no "Generated with" line, per `CLAUDE.md` |
 | TypeScript for new screens | **No.** New files stay `.jsx` with JSDoc; revisit after S19 |
 | Split `App.jsx` before the new screens | **Yes**, as S18.0: moves and imports only |

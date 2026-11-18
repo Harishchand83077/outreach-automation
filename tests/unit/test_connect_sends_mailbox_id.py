@@ -30,24 +30,30 @@ from pathlib import Path
 
 import pytest
 
-APP_JSX = Path(__file__).resolve().parents[2] / "frontend" / "src" / "App.jsx"
+#: Every screen, not one file. This test pinned `App.jsx` until S18.0 split that file into one
+#: screen each and the Connect Gmail panel moved to `Campaign.jsx` -- which failed this guard
+#: while the behaviour it guards was untouched. A guard that names the file rather than the
+#: behaviour has to be edited every time code moves, and a guard people edit to make it pass
+#: stops being believed.
+SCREENS = sorted((Path(__file__).resolve().parents[2] / "frontend" / "src").glob("**/*.jsx"))
 
 
 def source() -> str:
-    return APP_JSX.read_text(encoding="utf-8")
+    """Every screen's source, joined. The route strings appear in exactly one of them."""
+    return "\n".join(path.read_text(encoding="utf-8") for path in SCREENS)
 
 
-def test_the_file_is_where_this_test_thinks_it_is() -> None:
+def test_the_calls_are_where_this_test_thinks_they_are() -> None:
     """Guards every assertion below from passing vacuously.
 
-    A missing or moved file would make `source()` raise rather than silently pass, but a *renamed
-    route* would not -- so the route strings are asserted to be present before anything asserts
-    what sits next to them. A test that cannot fail is worse than no test, because it is counted
-    as coverage.
+    A missing file would make `source()` raise rather than silently pass, but a *renamed route*
+    would not -- so the route strings are asserted to be present before anything asserts what
+    sits next to them. A test that cannot fail is worse than no test, because it is counted as
+    coverage.
     """
     text = source()
 
-    assert APP_JSX.is_file(), f"{APP_JSX} does not exist"
+    assert SCREENS, "no dashboard screens found; this guard is looking at nothing"
     assert "/connect/google/status" in text
     assert "/connect/google/start" in text
 

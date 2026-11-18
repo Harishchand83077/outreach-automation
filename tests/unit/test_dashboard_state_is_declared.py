@@ -27,7 +27,10 @@ import re
 #: screens added for the job-hunt product and the sending controls were never checked at all --
 #: a guard whose scope is one file is a guard that stops applying the moment somebody splits a
 #: component out, which is exactly when a new identifier gets typed.
-SOURCES = sorted(pathlib.Path("frontend/src").glob("*.jsx"))
+#: **Recursive on purpose.** This guard used to glob `*.jsx`, which reads one flat
+#: directory -- so moving a screen into a subfolder would have left it reading nothing
+#: while still passing green, and a guard whose passing means nothing is worse than none.
+SOURCES = sorted(pathlib.Path("frontend/src").glob("**/*.jsx"))
 
 #: A React state setter by convention: `set` then an upper-case letter. Not preceded by a dot, so
 #: `localStorage.setItem` is a method call rather than a free identifier that must be declared.

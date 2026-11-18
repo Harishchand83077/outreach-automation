@@ -20,6 +20,7 @@ import hmac
 import json
 import time
 import uuid
+from datetime import UTC, datetime
 
 import jwt
 import pytest
@@ -247,6 +248,213 @@ class TestMembership:
 
         assert first.json()["org_id"] != other.json()["org_id"]
         assert other.json()["org_id"] == str(second.id)
+
+
+class TestSeveralMemberships:
+    """One person, two workspaces: which one are they looking at?
+
+    `current_user` selected a membership with no `order_by`, so Postgres was free to return
+    either row and did -- the same token could resolve to a different workspace on two
+    consecutive requests, and every screen built above it inherits that. Nothing told the person
+    which one they were in, so the symptom was not an error message but a lead list that
+    changed when it should not have.
+    """
+
+    async def test_two_memberships_resolve_to_the_same_workspace_every_time(
+        self, api, keypair, db, org
+    ):
+        """The defect this slice exists for. Twenty calls, one answer."""
+        private, _ = keypair
+        second = Org(name="Second Workspace Ltd")
+        db.add(second)
+        await db.flush()
+        subject = f"two-{uuid.uuid4()}"
+        db.add_all(
+            [
+                Member(
+                    org_id=org.id,
+                    user_id=subject,
+                    email="both@example.com",
+                    role="owner",
+                    created_at=datetime(2026, 1, 1, tzinfo=UTC),
+                ),
+                Member(
+                    org_id=second.id,
+                    user_id=subject,
+                    email="both@example.com",
+                    role="member",
+                    created_at=datetime(2026, 6, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        await db.commit()
+
+        seen = {
+            api.get("/api/v1/me", headers=auth(token_for(private, subject=subject))).json()[
+                "org_id"
+            ]
+            for _ in range(20)
+        }
+
+        assert seen == {str(org.id)}, (
+            "the same token resolved to more than one workspace across 20 calls: " + repr(seen)
+        )
+
+    async def test_the_oldest_membership_wins(self, api, keypair, db, org):
+        """Stated rather than arbitrary: the workspace they joined first.
+
+        Any rule would be stable; this one is also predictable to the person, because the
+        workspace they have been using for months does not change under them the day somebody
+        invites them to a second one.
+        """
+        private, _ = keypair
+        older = Org(name="Joined First Ltd")
+        db.add(older)
+        await db.flush()
+        subject = f"older-{uuid.uuid4()}"
+        db.add_all(
+            [
+                Member(
+                    org_id=org.id,
+                    user_id=subject,
+                    email="o@example.com",
+                    role="owner",
+                    created_at=datetime(2026, 9, 1, tzinfo=UTC),
+                ),
+                Member(
+                    org_id=older.id,
+                    user_id=subject,
+                    email="o@example.com",
+                    role="member",
+                    created_at=datetime(2026, 2, 1, tzinfo=UTC),
+                ),
+            ]
+        )
+        await db.commit()
+
+        body = api.get("/api/v1/me", headers=auth(token_for(private, subject=subject))).json()
+
+        assert body["org_id"] == str(older.id)
+        assert body["role"] == "member", "the role must come from the membership that won"
+
+    async def test_memberships_created_in_the_same_instant_still_resolve_stably(
+        self, api, keypair, db, org
+    ):
+        """`created_at` ties, so it cannot be the whole rule.
+
+        Two invitations accepted in one transaction share a timestamp to the microsecond. Without
+        a second key the order is undefined again, which is the defect wearing a different hat.
+        """
+        private, _ = keypair
+        same = datetime(2026, 4, 4, 12, 0, tzinfo=UTC)
+        second = Org(name="Same Instant Ltd")
+        db.add(second)
+        await db.flush()
+        subject = f"tie-{uuid.uuid4()}"
+        db.add_all(
+            [
+                Member(
+                    org_id=org.id,
+                    user_id=subject,
+                    email="t@example.com",
+                    role="owner",
+                    created_at=same,
+                ),
+                Member(
+                    org_id=second.id,
+                    user_id=subject,
+                    email="t@example.com",
+                    role="member",
+                    created_at=same,
+                ),
+            ]
+        )
+        await db.commit()
+
+        seen = {
+            api.get("/api/v1/me", headers=auth(token_for(private, subject=subject))).json()[
+                "org_id"
+            ]
+            for _ in range(20)
+        }
+
+        assert len(seen) == 1, "a tie on created_at made the workspace arbitrary again: " + repr(
+            seen
+        )
+
+    async def test_me_names_the_active_workspace(self, api, keypair, member, org):
+        """A workspace nobody can name is a workspace nobody can notice they are in."""
+        private, _ = keypair
+
+        body = api.get("/api/v1/me", headers=auth(token_for(private))).json()
+
+        assert body["org_name"] == org.name
+
+    async def test_me_lists_the_other_workspaces_without_switching_to_them(
+        self, api, keypair, db, org
+    ):
+        """Listing is not switching. This slice reports; choosing comes later."""
+        private, _ = keypair
+        second = Org(name="Other Workspace Ltd")
+        db.add(second)
+        await db.flush()
+        subject = f"list-{uuid.uuid4()}"
+        db.add_all(
+            [
+                Member(
+                    org_id=org.id,
+                    user_id=subject,
+                    email="l@example.com",
+                    role="owner",
+                    created_at=datetime(2026, 1, 2, tzinfo=UTC),
+                ),
+                Member(
+                    org_id=second.id,
+                    user_id=subject,
+                    email="l@example.com",
+                    role="member",
+                    created_at=datetime(2026, 1, 3, tzinfo=UTC),
+                ),
+            ]
+        )
+        await db.commit()
+
+        body = api.get("/api/v1/me", headers=auth(token_for(private, subject=subject))).json()
+
+        assert body["org_id"] == str(org.id)
+        assert [w["org_id"] for w in body["workspaces"]] == [str(org.id), str(second.id)]
+        assert [w["name"] for w in body["workspaces"]] == [org.name, "Other Workspace Ltd"]
+        assert [w["role"] for w in body["workspaces"]] == ["owner", "member"]
+        assert [w["active"] for w in body["workspaces"]] == [True, False]
+
+    async def test_one_membership_lists_exactly_one_workspace(self, api, keypair, member, org):
+        """The common case must not grow a chooser out of nowhere."""
+        private, _ = keypair
+
+        body = api.get("/api/v1/me", headers=auth(token_for(private))).json()
+
+        assert len(body["workspaces"]) == 1
+        assert body["workspaces"][0]["active"] is True
+
+    async def test_another_members_workspaces_are_not_listed(self, api, keypair, db, org, member):
+        """The list is the caller's own memberships, not the org's members."""
+        private, _ = keypair
+        second = Org(name="Not Yours Ltd")
+        db.add(second)
+        await db.flush()
+        db.add(
+            Member(
+                org_id=second.id,
+                user_id=f"stranger-{uuid.uuid4()}",
+                email="s@example.com",
+                role="owner",
+            )
+        )
+        await db.commit()
+
+        body = api.get("/api/v1/me", headers=auth(token_for(private))).json()
+
+        assert [w["org_id"] for w in body["workspaces"]] == [str(org.id)]
 
 
 class TestPublicEndpoints:
