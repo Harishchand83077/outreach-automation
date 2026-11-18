@@ -624,7 +624,11 @@ async def handle_poll_ats_feed(ctx: WorkerContext, session: AsyncSession, job: J
         extra={
             "source": source,
             "slug": slug,
-            "created": result.created,
+            # `created` is a `LogRecord` attribute -- its own timestamp -- and logging raises
+            # rather than overwrite it. This line used to kill every ATS poll *after* the
+            # postings were stored, so the job failed, retried five times and died, and a
+            # watchlist with companies on it simply showed nothing.
+            "postings_created": result.created,
             "updated": result.updated,
             "closed": diff.closed,
             "reopened": diff.reopened,
