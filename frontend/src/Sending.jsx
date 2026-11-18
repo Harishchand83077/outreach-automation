@@ -325,8 +325,8 @@ function Booking({ onError, onToast, mayAdminister }) {
             {hook.data.configured ? (
               <>
                 <Field
-                  label="Webhook URL"
-                  hint="Paste this into your booking tool."
+                  label="Webhook URL (secret — never put it in an email)"
+                  hint="Paste this into the webhook or integration settings of your booking tool. It is not a page anyone can open: it only answers POST, and the token in it is the secret that lets a booking mark a lead booked. It is not your campaign's booking link — that is your public Cal.com or Calendly page."
                 >
                   <input
                     readOnly

@@ -5084,3 +5084,37 @@ stability checks) **passed before the fix**, because an unordered query is free 
 consistent — which is precisely why this never showed up as a bug report, and why they are kept
 as regression guards rather than presented as reproductions. The guard was proved by deleting the
 `order_by` and watching it name `deps.py:154`.
+
+## ADR-074 — One function decides whether a booking link books anything
+
+**2026-11-18.** Numbered above the planned range on purpose: 064 to 073 are reserved by
+`docs/IMPLEMENTATION_PLAN_V4.md` §3 for the S18 and S19 slices, and this is an unplanned repair
+found in production, not one of them.
+
+Context: a booking webhook URL was pasted into a campaign's `booking_url` and
+emailed as a scheduling link. `Persona` had a validator that refused one wrong shape;
+`CandidateProfile` had none; the go-live gate had a third copy of the same single check.
+
+**Decided.**
+
+1. **The question lives in `app/domain/booking.py` and nowhere else.**
+   `why_it_books_nothing(url)` returns the reason or `None`, and both persona schemas and
+   `preflight.assess_booking_url` call it. Three places asking a similar question with different
+   coverage is how a `job_hunt` campaign stored a link `outreach` would have refused.
+2. **A `job_hunt` persona is validated at save time, like an outreach one.** Relying on
+   `as_persona()` to refuse it at drafting time turns a correctable field into a dead worker job.
+3. **The inbound webhook URL is refused by shape, not by host.** `WEBHOOK_PATH` is matched
+   anywhere in the URL, so it catches the link whatever `PUBLIC_API_URL` is set to, including a
+   staging host or an IP. The domain cannot import the router, so a test asserts the router still
+   mounts the webhook at that path — if it ever moves, the test fails and the refusal is updated
+   with it rather than silently passing the new shape.
+4. **The gate does not echo the offending URL.** Its output is pasted into issues and chats, and
+   this particular value is a credential. Every other line in that report quotes what it read.
+5. **The field hints are part of the fix.** The webhook was pasted into the wrong field by
+   somebody following a hint that said "paste this into your booking tool". A validator that
+   refuses what the interface invited is half a fix.
+
+**Not decided here.** Whether the system should detect its *own* secret appearing in a drafted
+body as a last line of defence. The claim check already permits only `booking_url` as a link, so
+closing the field closes the path; a body scan would be a second rule to keep in step with the
+first, and `docs/ISSUES.md` carries it as a possibility rather than a plan.

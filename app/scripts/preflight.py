@@ -51,7 +51,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 
 from app.core.settings import config  # noqa: E402
 from app.db.models import Campaign, Mailbox, Org, SendAllowlistEntry  # noqa: E402
-from app.domain.booking import opens_own_calendar  # noqa: E402
+from app.domain.booking import is_the_booking_webhook, opens_own_calendar  # noqa: E402
 from app.services.deliverability.sender_requirements import (  # noqa: E402
     DnsTxtResolver,
     Verdict,
@@ -106,14 +106,25 @@ def assess_booking_url(booking_url: str | None, cta_text: str | None) -> Line:
             )
         return Line("Booking link", FAIL, "Neither a booking URL nor a written ask.")
 
-    # The shapes live in `app.domain.booking`, which `Persona` validation also reads, so the
-    # gate and the save-time refusal cannot disagree about what a usable link is.
+    # The shapes live in `app.domain.booking`, which both persona schemas also read, so the gate
+    # and the save-time refusal cannot disagree about what a usable link is.
     if opens_own_calendar(url):
         return Line(
             "Booking link",
             FAIL,
             "This link opens the reader's own calendar and books nothing. A recipient clicking "
             "it sees their own week. Use a scheduling page that shows your availability.",
+        )
+    if is_the_booking_webhook(url):
+        # Deliberately does not echo the URL: the gate's output is pasted into issues and chats,
+        # and this particular value is a credential.
+        return Line(
+            "Booking link",
+            FAIL,
+            "This is the inbound booking webhook, and its URL is a secret. In an email it hands "
+            "every recipient the credential that can mark a lead booked, and it books nothing "
+            "because that endpoint only answers POST. Rotate the secret and use the public "
+            "scheduling page of whichever tool posts to it.",
         )
     return Line("Booking link", PASS, f"A booking URL is set ({url}).")
 

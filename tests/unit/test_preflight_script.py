@@ -59,6 +59,16 @@ class TestTheBookingLink:
     def test_a_real_scheduling_page_passes(self, url):
         assert preflight.assess_booking_url(url, None).verdict == preflight.PASS
 
+    def test_the_inbound_webhook_fails_and_the_gate_does_not_echo_it(self):
+        """A live campaign had this in the field, and the gate's output gets pasted around."""
+        url = "https://api.example.com/hooks/booking/abc.def"
+
+        line = preflight.assess_booking_url(url, "Worth a call?")
+
+        assert line.verdict == preflight.FAIL
+        assert "secret" in line.detail
+        assert "abc.def" not in line.detail
+
     def test_a_written_ask_with_no_link_is_a_warning_not_a_failure(self):
         """Allowed by `CampaignSettings` since Phase 2, so the gate must not contradict it.
 

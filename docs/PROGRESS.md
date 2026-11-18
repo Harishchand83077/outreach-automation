@@ -4,6 +4,18 @@ Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this wi
 
 ## Handoff note (rewrite at the end of every session)
 
+**Fixed from production, 2026-11-18: the booking webhook URL was accepted as a campaign's
+booking link, and went out in an email.** The URL under `/hooks/booking/{token}` is the secret a
+booking provider POSTs to; in an email body it hands every recipient the credential that can mark
+a lead booked, and a recipient who clicks it gets 405 because the endpoint only answers POST.
+`Persona` refused exactly one wrong shape (the reader's own calendar, F1) and `CandidateProfile`
+had **no `booking_url` validator at all**, so a `job_hunt` campaign could store a link `outreach`
+would have refused. The question now lives in one function, `why_it_books_nothing()`, called by
+both schemas and by the go-live gate. **ADR-074** — numbered above the planned 064-073 because it
+is an unplanned repair. The field hints that invited it were corrected too. See `docs/ISSUES.md`.
+**The exposed secret has to be rotated by hand, and the stored persona corrected, before that
+campaign will draft.**
+
 **Fixed from production, 2026-11-17: a job-hunt campaign could not draft a single email.**
 `_persona()` in the worker validated every campaign's persona as an outreach `Persona`, so a
 `job_hunt` campaign -- whose persona column holds a `CandidateProfile` -- killed every
