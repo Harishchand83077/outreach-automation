@@ -2108,6 +2108,8 @@ class ProviderCredential(Base):
     #: a screenshot. The same rule as `mail_credentials.invalid_reason`.
     invalid_reason: Mapped[str | None] = mapped_column(Text)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Lower numbers come first in the waterfall; NULL means lowest priority.
+    priority: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - defensive

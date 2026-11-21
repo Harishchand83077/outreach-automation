@@ -18,10 +18,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
-from app.db.models import CONTACT_PROVIDERS, Campaign, ContactCandidate
+from app.db.models import CONTACT_PROVIDERS, Campaign, ContactCandidate, ProviderCredential
 from app.db.queue import QueueFull
 from app.domain import connections
 from app.services.contacts import keys, lookup
+from app.services.contacts.waterfall import ordered_providers
 from app.services.importer import first_job
 from app.services.importer import service as importer
 from app.services.importer.sheet import SheetError
@@ -80,6 +81,53 @@ async def list_provider_keys(user: CurrentUserDep, session: SessionDep) -> dict[
             for status_ in statuses
         ],
         "daily_lookup_budget": lookup.DAILY_LOOKUP_BUDGET,
+        "used_today": await lookup.used_today(session, org_id=user.org_id),
+    }
+
+
+#: Per-provider credit cost notes, from docs/CONTACT_PROVIDERS.md.  Declared here rather than
+#: invented: a note that is wrong is worse than no note.
+_CREDIT_NOTE: dict[str, str] = {
+    "hunter": "1 search credit per 1-10 emails per domain",
+    "snov": "API on premium plans only; check your plan",
+    "apollo": "search is credit-free; each email reveal spends 1 enrichment credit",
+}
+
+
+@router.get("/contact-lookup/preview")
+async def lookup_waterfall_preview(
+    user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """The providers this workspace would try, in waterfall order.
+
+    Returns only providers that have a live, non-invalid key.  ``credit_note`` is
+    the documented cost from ``docs/CONTACT_PROVIDERS.md`` — never invented.
+    Priority is set via ``PUT /provider-keys/{provider}`` (the ``priority`` field).
+    """
+    from sqlalchemy import select as _select
+    rows = list(
+        (
+            await session.execute(
+                _select(ProviderCredential)
+                .where(
+                    ProviderCredential.org_id == user.org_id,
+                    ProviderCredential.revoked_at.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    ordered = ordered_providers(rows)
+    return {
+        "providers": [
+            {
+                "provider": c.provider,
+                "priority": c.priority,
+                "credit_note": _CREDIT_NOTE.get(c.provider),
+                **connections.describe(c.provider),
+            }
+            for c in ordered
+        ],
+        "daily_budget": lookup.DAILY_LOOKUP_BUDGET,
         "used_today": await lookup.used_today(session, org_id=user.org_id),
     }
 
