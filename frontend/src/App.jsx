@@ -53,6 +53,7 @@ import NewCampaign from "./NewCampaign";
 import Opportunities from "./Opportunities";
 import Operations from "./Operations";
 import Overview from "./Overview";
+import ResumeWorkspace from "./ResumeWorkspace";
 import Today from "./Today";
 import Platform from "./Platform";
 import ReviewQueue from "./Review";
@@ -142,6 +143,7 @@ const ROUTES = [
   { path: "/signals", id: "signals" },
   { path: "/sending", id: "sending", scoped: true },
   { path: "/job-hunt", id: "jobhunt" },
+  { path: "/opportunities/:opportunityId/resume", id: "resume-workspace" },
   { path: "/operations", id: "operations" },
   { path: "/setup", id: "setup" },
   { path: "/team", id: "admin" },
@@ -636,6 +638,12 @@ function Dashboard({ session }) {
                   mayAdminister={mayAdminister}
                   onError={handle}
                   onToast={toast}
+                />
+              ) : view === "resume-workspace" ? (
+                <ResumeWorkspace
+                  opportunityId={matched?.params.opportunityId}
+                  opportunityTitle={null}
+                  jobPostId={null}
                 />
               ) : view === "operations" ? (
                 <Operations onError={handle} onToast={toast} />

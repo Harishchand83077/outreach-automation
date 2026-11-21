@@ -29,6 +29,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     MetaData,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -1202,6 +1203,10 @@ class JobPost(Base):
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     body_text: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[datetime] = _now_col(nullable=False)
+    #: When this posting was first stored in this workspace. NULL for older rows — not invented.
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Most recent time the ATS poll confirmed the posting was still open. NULL for older rows.
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: open | archived. A posting is never deleted on disappearing from a feed: a candidate may
     #: have applied to it, and `applications` will point at it.
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="open")
@@ -2277,6 +2282,10 @@ class Connection(Base):
     #: Which upload this row came from, so a re-import can replace rather than accumulate and a
     #: person can delete one upload without losing the others.
     import_batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    #: 1–5 scale, user's own judgement. NULL = not rated. Never inferred (ADR-072).
+    strength: Mapped[int | None] = mapped_column(SmallInteger())
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    relationship_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
@@ -2335,6 +2344,16 @@ class ResumeVersion(Base):
     #: posting archived or removed must not take the document that was sent with it.
     job_post_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="SET NULL")
+    )
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    base_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.documents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     label: Mapped[str] = mapped_column(String(200), nullable=False)
     #: Name and contact details: the only lines in the document that are not facts. Supplied by

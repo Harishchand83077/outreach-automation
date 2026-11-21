@@ -19,6 +19,7 @@ from datetime import date
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Response, status
+from sqlalchemy import select
 
 from app.api.deps import CurrentUserDep, SessionDep
 from app.db.models import APPLICATION_STATUSES, RESUME_SECTIONS, Application, JobPost, ResumeVersion
@@ -284,3 +285,37 @@ async def update_application(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found.")
     await session.commit()
     return {"application": _application(row)}
+
+
+# ---------------------------------------------------------------------------
+# Resume workspace (S19.3) — resume versions linked to an opportunity
+# ---------------------------------------------------------------------------
+
+@router.get("/resume-versions/for-opportunity/{opportunity_id}")
+async def list_versions_for_opportunity(
+    opportunity_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    """Resume versions that were created for a specific opportunity."""
+    rows = list(
+        (
+            await session.execute(
+                select(ResumeVersion)
+                .where(
+                    ResumeVersion.org_id == user.org_id,
+                    ResumeVersion.opportunity_id == opportunity_id,
+                )
+                .order_by(ResumeVersion.created_at.desc())
+            )
+        ).scalars()
+    )
+    return {
+        "versions": [
+            {
+                "id": str(r.id),
+                "label": r.label,
+                "rendered_text": r.rendered_text,
+                "created_at": r.created_at.isoformat(),
+            }
+            for r in rows
+        ]
+    }
