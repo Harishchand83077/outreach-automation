@@ -42,6 +42,7 @@ import {
 } from "./ui";
 import Admin from "./Admin";
 import CampaignScreen from "./Campaign";
+import Campaigns from "./Campaigns";
 import Consent from "./Consent";
 import Import from "./Import";
 import Inbox from "./Inbox";
@@ -130,6 +131,7 @@ const ROUTES = [
   { path: "/leads", id: "leads", scoped: true },
   { path: "/leads/:leadId", id: "leads", scoped: true },
   { path: "/import", id: "import", scoped: true },
+  { path: "/campaigns", id: "campaigns" },
   { path: "/campaigns/new", id: "new" },
   { path: "/campaigns/:campaignId", id: "campaign", scoped: true },
   { path: "/signals", id: "signals" },
@@ -327,6 +329,7 @@ function Dashboard({ session }) {
     { id: "leads", label: "Leads", icon: Icons.leads, to: "/leads" },
     { id: "import", label: "Import", icon: Icons.import, to: "/import" },
     { group: "Outreach" },
+    { id: "campaigns", label: "Campaigns", icon: Icons.campaign, to: "/campaigns" },
     {
       id: "campaign",
       label: "Campaign",
@@ -612,6 +615,8 @@ function Dashboard({ session }) {
                  workspace with no campaign yet -- which is every workspace on its first day. */
               view === "inbox" ? (
                 <Inbox onError={handle} onToast={toast} />
+              ) : view === "campaigns" ? (
+                <Campaigns onError={handle} onToast={toast} />
               ) : view === "signals" ? (
                 <Signals
                   mayAdminister={mayAdminister}
