@@ -151,3 +151,25 @@ export function nextStep(steps) {
     null
   );
 }
+
+// Steps that matter on each screen. A step not listed here will not surface on that screen.
+const SCREEN_STEPS = {
+  overview: ["mailbox", "send-mode"],
+  sending: ["mailbox", "send-mode", "search-key", "booking"],
+  inbox: ["mailbox", "send-mode"],
+  jobhunt: ["contact-key", "facts", "booking"],
+};
+
+/**
+ * The first open step relevant to a specific screen, or null.
+ *
+ * @param {string} screen - The screen id (e.g. "overview", "sending", "inbox", "jobhunt").
+ * @param {object} sources - The same sources object passed to buildSteps.
+ * @returns {object|null} The first open step for this screen, or null.
+ */
+export function nextStepFor(screen, sources) {
+  const ids = SCREEN_STEPS[screen];
+  if (!ids) return null;
+  const steps = buildSteps(sources).filter((s) => ids.includes(s.id));
+  return nextStep(steps);
+}

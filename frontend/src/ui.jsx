@@ -10,6 +10,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { nextStepFor } from "./setupSteps";
+
 /* ------------------------------------------------------------------ icons */
 
 function Icon({ children, size = 17, ...rest }) {
@@ -709,6 +711,40 @@ export function PageHeader({
         {children ? <p className="page-sub">{children}</p> : null}
       </div>
       {actions ? <div className="page-actions">{actions}</div> : null}
+    </div>
+  );
+}
+
+/**
+ * A one-line nudge card: surfaces the first open step relevant to the current screen.
+ *
+ * Usage: `<NextStep screen="overview" sources={sources} />`
+ * - `screen` matches a key in SCREEN_STEPS inside setupSteps.js.
+ * - `sources` is the same object passed to buildSteps (each value is a useLoad result).
+ * Renders nothing when there is no open step or when the sources have not come back yet.
+ */
+export function NextStep({ screen, sources }) {
+  if (!sources) return null;
+  const step = nextStepFor(screen, sources);
+  if (!step) return null;
+  return (
+    <div
+      className="card"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 16px",
+        marginBottom: 20,
+        borderLeft: "3px solid var(--brand)",
+      }}
+    >
+      <div style={{ flex: 1 }}>
+        <div style={{ fontWeight: 600, fontSize: 14 }}>{step.title}</div>
+        <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
+          {step.why}
+        </div>
+      </div>
     </div>
   );
 }
