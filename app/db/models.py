@@ -2412,6 +2412,12 @@ class Application(Base):
     resume_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.resume_versions.id", ondelete="SET NULL")
     )
+    opportunity_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    channel: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     follow_up_due: Mapped[date | None] = mapped_column(Date)
