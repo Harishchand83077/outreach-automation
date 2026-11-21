@@ -25,17 +25,22 @@ branch_labels = None
 depends_on = None
 
 
+_SCHEMA = "app"
+
+
 def upgrade() -> None:
     op.add_column(
         "job_posts",
         sa.Column("first_seen_at", sa.DateTime(timezone=True), nullable=True),
+        schema=_SCHEMA,
     )
     op.add_column(
         "job_posts",
         sa.Column("last_verified_at", sa.DateTime(timezone=True), nullable=True),
+        schema=_SCHEMA,
     )
 
 
 def downgrade() -> None:
-    op.drop_column("job_posts", "last_verified_at")
-    op.drop_column("job_posts", "first_seen_at")
+    op.drop_column("job_posts", "last_verified_at", schema=_SCHEMA)
+    op.drop_column("job_posts", "first_seen_at", schema=_SCHEMA)
