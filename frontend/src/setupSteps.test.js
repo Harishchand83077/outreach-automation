@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSteps, nextStep, progress } from "./setupSteps";
+import { buildSteps, nextStep, nextStepFor, progress } from "./setupSteps";
 
 const heard = (data) => ({ data, asked: true, failed: false });
 const waiting = { data: null, asked: false, failed: false };
@@ -117,5 +117,31 @@ describe("nextStep", () => {
       facts: heard({ facts: [{ id: "pp1" }] }),
     });
     expect(nextStep(steps)).toBe(null);
+  });
+});
+
+describe("nextStepFor", () => {
+  it("returns the first open step relevant to a screen", () => {
+    // overview screen should surface the mailbox step (required, todo)
+    const result = nextStepFor("overview", EMPTY);
+    expect(result).not.toBe(null);
+    expect(result.id).toBe("mailbox");
+  });
+
+  it("returns null when there is nothing left to do for that screen", () => {
+    const all_done = {
+      mailboxes: heard({ mailboxes: [{ usable: true }] }),
+      sending: heard({ send_mode: "allowlist" }),
+      contactKeys: heard({ providers: [{ provider: "hunter", usable: true }] }),
+      searchKeys: heard({ providers: [{ connected: true }] }),
+      booking: heard({ configured: true, last_delivery_at: "2026-11-01T00:00:00Z" }),
+      tokens: heard({ tokens: [{ id: "1" }] }),
+      facts: heard({ facts: [{ id: "pp1" }] }),
+    };
+    expect(nextStepFor("overview", all_done)).toBe(null);
+  });
+
+  it("returns null for an unknown screen rather than crashing", () => {
+    expect(nextStepFor("not-a-screen", EMPTY)).toBe(null);
   });
 });
