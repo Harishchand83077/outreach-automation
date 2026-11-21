@@ -5147,3 +5147,75 @@ planned range with ADR-074, for the same reason: this is an unplanned production
 **Consequences.** Greenhouse responses are now roughly 2.5× larger per posting. The refusal in
 `fit_store.compute` was reworded: it still fires for a posting polled before this shipped, and it
 now says the next poll will fix it rather than naming a limitation that no longer exists.
+
+---
+
+## ADR-070 — Job freshness is an observation; the extension saves a link (S19.4)
+
+**Context.** A posting on a board may be old, closed, or never have been verified as open. The
+extension saw the posting and the user wants to track it.
+
+**Decisions.**
+1. **`first_seen_at` and `last_verified_at` are nullable, with no backfill.** Older rows display
+   "not recorded" rather than a invented date. A backfill would be misleading.
+2. **The extension captures the link, sets the timestamps, and nothing else.** No form filling,
+   no submit — consistent with the manifest description that the extension "never fills in or
+   submits a form". The existing `test_extension_never_submits.py` guard still passes unchanged.
+3. **De-duplication by SHA256(URL), truncated to 64 hex chars.** A posting seen twice returns the
+   existing id; `last_verified_at` is updated only when the posting is still `open`.
+
+**Consequences.** The screen shows freshness as an observation, never a verdict. The extension
+test suite (38 passed, 1 skipped) is unchanged.
+
+---
+
+## ADR-071 — Proof pack is confirmed facts; the clarity check suggests (S19.5)
+
+**Context.** A candidate wants to show which of their confirmed profile facts match a posting's
+top requirements, and get suggestions on plain-text wording.
+
+**Decisions.**
+1. **`proofpack.build()` selects confirmed facts by rules, no model, no generated prose.** An
+   unconfirmed fact is excluded, so the pack cannot contain a hallucination.
+2. **`clarity_check()` suggests and never rewrites.** The function returns spans and reasons;
+   accepting a suggestion is a human act.
+3. **No cover-letter generator.** Out of scope for this slice, and would require a model call
+   whose output is untrusted prose presented as fact — the wrong direction.
+
+**Consequences.** The module is pure (no I/O, no Settings) and fully unit-tested without a
+database. 11 tests pass.
+
+---
+
+## ADR-072 — Tie strength is the user's judgement; ranking shows its reason (S19.6)
+
+**Context.** A referral finder shows which connections work at a target company. The ranking order
+matters: a weaker tie is more likely to pass a referral (Granovetter's strength-of-weak-ties).
+
+**Decisions.**
+1. **`connections.strength` is the user's own declared value (1–5), never inferred.** Inferred
+   strength would be impossible to verify and directly harmful if wrong.
+2. **Moderate ties (3) rank first, then weak (2, 1), then strong (4, 5), then unrated.** The
+   reason is shown for each rank position so the user can override it.
+3. **No LinkedIn request.** Hard rule 4 is unchanged: `linkedin_url` is stored and displayed,
+   never fetched. The existing `test_referral_finder_never_fetches_linkedin.py` still passes.
+
+**Consequences.** The ranking module is pure. 7 tests pass.
+
+---
+
+## ADR-073 — Edited vs unedited, reported with counts and a floor (S19.7)
+
+**Context.** A reviewer wants to know whether editing an AI-drafted email improves outcomes.
+
+**Decisions.**
+1. **"Edited" is defined by `drafts.derived_from_id` being set.** The reviewing UI sets that FK
+   only on approve-with-changes; it is never set by inference.
+2. **Silence is "pending", never a rejection.** Leads that have not replied are not counted as
+   negative outcomes.
+3. **`reply_rate` and `positive_rate` are null when fewer than 5 non-pending messages exist in
+   that group** — to avoid a 1-of-1 rate being read as evidence.
+4. **The module is pure.** `GET /insights/edited-vs-unedited` reads Messages joined to Drafts and
+   calls `edit_insights.compute()`, which is a pure function over plain dicts.
+
+**Consequences.** No migration required. The route is added to the existing `operations` router.

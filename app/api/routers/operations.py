@@ -23,6 +23,7 @@ from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, r
 from app.api.pagination import clamp_limit
 from app.db import ops, repo
 from app.db.models import (
+    Draft,
     Job,
     LlmUsage,
     Mailbox,
@@ -32,6 +33,7 @@ from app.db.models import (
     Suppression,
 )
 from app.db.state import record_event
+from app.domain.edit_insights import compute as _compute_insights
 from app.services.deliverability.sender_requirements import DnsTxtResolver, check_domain
 from app.services.mail.smtp import ALLOWED_SEND_MODES, effective_send_mode
 
@@ -843,4 +845,58 @@ def _lesson(row: Any) -> dict[str, Any]:
         # assertion -- and this one is about to become an instruction to a model.
         "evidence": list(row.evidence or []),
         "state": row.state,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Edit insights (S19.7, ADR-073)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/insights/edited-vs-unedited")
+async def edited_vs_unedited(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
+    """Reply outcomes for drafts sent as-written vs drafts the person edited.
+
+    A draft is "edited" when its `derived_from_id` is set — the reviewing UI
+    sets that FK only when approve-with-changes is used. Silence is pending,
+    never a rejection.
+    """
+    rows = list(
+        (
+            await session.execute(
+                select(Message, Draft)
+                .join(Draft, Draft.id == Message.draft_id)
+                .where(Message.org_id == user.org_id)
+            )
+        ).all()
+    )
+
+    messages = [
+        {
+            "edited": row.Draft.derived_from_id is not None,
+            "outcome": row.Message.outcome,
+        }
+        for row in rows
+    ]
+
+    result = _compute_insights(messages)
+
+    def _bucket(b: Any) -> dict[str, Any]:
+        return {
+            "total": b.total,
+            "replied": b.replied,
+            "positive": b.positive,
+            "pending": b.pending,
+            "reply_rate": b.reply_rate,
+            "positive_rate": b.positive_rate,
+        }
+
+    return {
+        "edited": _bucket(result.edited),
+        "as_written": _bucket(result.as_written),
+        "floor": result.floor,
+        "note": (
+            "reply_rate and positive_rate are null when fewer than "
+            f"{result.floor} non-pending messages exist in that group."
+        ),
     }

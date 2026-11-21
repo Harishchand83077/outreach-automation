@@ -57,6 +57,8 @@ _AUTH_IN_BODY = frozenset(
         ("GET", "/ext/v1/whoami"),
         ("POST", "/ext/v1/suggest"),
         ("POST", "/ext/v1/suggestions/{suggestion_id}/outcome"),
+        # S19.4: job clipper, same bearer-in-header pattern as the other ext routes
+        ("POST", "/ext/v1/jobs/capture"),
     }
 )
 

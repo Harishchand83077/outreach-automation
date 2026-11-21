@@ -16,13 +16,16 @@ typed are never sent, and nothing here reads another tab.
 
 from __future__ import annotations
 
+import hashlib
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, Header, HTTPException, Request, status
+from sqlalchemy import select
 
 from app.api.deps import SessionDep
-from app.db.models import Capture, Suggestion
+from app.db.models import Capture, JobPost, Suggestion
 from app.db.repo import OrgContext
 from app.services import api_tokens
 from app.services.candidate import profile
@@ -177,3 +180,60 @@ async def record_outcome(
     row.state = state
     await session.commit()
     return {"recorded": True}
+
+
+# ---------------------------------------------------------------------------
+# Job capture (S19.4, ADR-070) — save a job link seen in the extension
+# ---------------------------------------------------------------------------
+
+@router.post("/jobs/capture", status_code=status.HTTP_201_CREATED)
+async def capture_job(
+    session: SessionDep,
+    url: Annotated[str, Body(embed=True)],
+    title: Annotated[str, Body(embed=True)],
+    company_domain: Annotated[str | None, Body(embed=True)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """Save a job posting link the extension sees.
+
+    **No form filling. No submit.** The extension captures the link and title;
+    the person decides what to do with it on the dashboard.
+    """
+    bearer = await _bearer(session, authorization)
+    now = datetime.now(tz=UTC)
+
+    # De-duplicate by URL — a posting seen before returns the existing id.
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:64]
+
+    existing = (
+        await session.execute(
+            select(JobPost).where(
+                JobPost.org_id == bearer.org_id,
+                JobPost.source == "pasted",
+                JobPost.external_id == url_hash,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        # Update the title and verification timestamp if the posting is still open.
+        if existing.status == "open":
+            existing.last_verified_at = now
+        await session.commit()
+        return {"job_post_id": str(existing.id), "created": False}
+
+    post = JobPost(
+        org_id=bearer.org_id,
+        source="pasted",
+        external_id=url_hash,
+        company_domain=company_domain,
+        title=title.strip()[:500],
+        apply_url=url[:2000],
+        first_seen_at=now,
+        fetched_at=now,
+        created_at=now,
+    )
+    session.add(post)
+    await session.commit()
+    await session.refresh(post)
+    return {"job_post_id": str(post.id), "created": True}

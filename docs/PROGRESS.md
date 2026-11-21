@@ -1,8 +1,16 @@
 # Progress
 
-Updated 2026-11-17 (restructured; full history in `docs/archive/`). Read this with `CLAUDE.md` at the start of every session.
+Updated 2026-11-22 (restructured; full history in `docs/archive/`). Read this with `CLAUDE.md` at the start of every session.
 
 ## Handoff note (rewrite at the end of every session)
+
+**S19.3–S19.7 merged into `feat/p19-s19-3-7` on 2026-11-22.** Resume workspace (S19.3), job
+freshness + extension clipper (S19.4), proof pack + clarity check (S19.5), referral ranking
+(S19.6), and edited-vs-unedited insights (S19.7) are all done and committed. ADR-070 to ADR-073
+recorded in `docs/DECISIONS.md`. 1610 unit tests pass, 38 dashboard tests pass, 38 extension
+tests pass. The PR stacks on #187 (S19.2c, `needs-human`) and is itself `needs-human` for the
+three migrations it contains. **Next: human review of PRs #187 and this one, then Phase 10
+rehearsal (SEND_MODE=allowlist).**
 
 **Fixed from production, 2026-11-18: no Greenhouse posting could ever be fit-scored.**
 `feed_url` requested the board list without `?content=true`, and that response carries no
@@ -128,7 +136,11 @@ backend suite goes once per slice and the unit and integration subsets carry the
    generated types were wanted for. Persona *editing*, lead detail with its timeline, bulk actions
    and filters remain. `DELETE /campaigns/{id}` **does** exist (`campaigns.py:1334`); the earlier
    note here that it did not was wrong.
-4. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
+4. ~~**S19.1–S19.7:**~~ All done and in review. S19.1 (resume upload/parse) is PR #185 (merged).
+   S19.2a (ADR-069, #186, merged). S19.2c (backfill, **needs-human**, PR #187). S19.3–S19.7
+   (**needs-human** for migrations, this PR). **Waiting for human review of PRs #187 and the
+   S19.3-S19.7 PR before Phase 10.**
+5. **Phase 10:** rehearsal in `SEND_MODE=allowlist`, then the §12 go-live gate.
 
 **Still outstanding for the owner.**
 - **Set the Cloudflare build variables** so the dashboard can reach the API that is now live:
