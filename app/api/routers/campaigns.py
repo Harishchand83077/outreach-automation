@@ -362,6 +362,89 @@ async def _blockers(session: AsyncSession, campaign: Campaign) -> list[dict[str,
     return found
 
 
+@router.get("/campaigns/overview")
+async def campaigns_overview(
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """One aggregate row per campaign: leads, emails sent, replied, meetings booked.
+
+    **Grouped queries, not N+1 over /stats.** Every figure is counted from the record
+    (messages for sends, events.to_state for 'ever reached') so the semantics match
+    GET /campaigns/{id}/stats exactly.
+
+    **No opened or clicked columns** — locked product rule (no tracking pixels, no link
+    rewriting).  A structural test asserts this. ADR-064.
+    """
+    campaigns_result = await session.execute(
+        select(Campaign).where(Campaign.org_id == user.org_id).order_by(Campaign.created_at)
+    )
+    campaigns_list = list(campaigns_result.scalars())
+    if not campaigns_list:
+        return {"campaigns": []}
+
+    campaign_ids = [c.id for c in campaigns_list]
+
+    # Leads total per campaign
+    leads_rows = await session.execute(
+        select(Lead.campaign_id, func.count().label("n"))
+        .where(Lead.org_id == user.org_id, Lead.campaign_id.in_(campaign_ids))
+        .group_by(Lead.campaign_id)
+    )
+    leads_by_campaign = {row.campaign_id: row.n for row in leads_rows}
+
+    # Emails sent per campaign (messages direction=out, status=sent)
+    sent_rows = await session.execute(
+        select(Lead.campaign_id, func.count().label("n"))
+        .select_from(Message)
+        .join(Lead, Lead.id == Message.lead_id)
+        .where(
+            Message.org_id == user.org_id,
+            Lead.campaign_id.in_(campaign_ids),
+            Message.direction == "out",
+            Message.status == "sent",
+        )
+        .group_by(Lead.campaign_id)
+    )
+    sent_by_campaign = {row.campaign_id: row.n for row in sent_rows}
+
+    # "Ever reached" counts from the events audit trail
+    async def ever_reached_all(state: str) -> dict[object, int]:
+        rows = await session.execute(
+            select(Event.campaign_id, func.count(func.distinct(Event.lead_id)).label("n"))
+            .where(
+                Event.org_id == user.org_id,
+                Event.campaign_id.in_(campaign_ids),
+                Event.type == "lead.state_changed",
+                Event.to_state == state,
+            )
+            .group_by(Event.campaign_id)
+        )
+        return {row.campaign_id: row.n for row in rows}
+
+    replied = await ever_reached_all("REPLIED")
+    bounced = await ever_reached_all("BOUNCED")
+    opted_out = await ever_reached_all("OPTED_OUT")
+    meetings = await ever_reached_all("MEETING_BOOKED")
+
+    result = []
+    for c in campaigns_list:
+        result.append({
+            "id": str(c.id),
+            "name": c.name,
+            "status": c.status,
+            "created_at": c.created_at.isoformat(),
+            "leads_total": leads_by_campaign.get(c.id, 0),
+            "emails_sent": sent_by_campaign.get(c.id, 0),
+            "replied": replied.get(c.id, 0),
+            "bounced": bounced.get(c.id, 0),
+            "opted_out": opted_out.get(c.id, 0),
+            "meetings_booked": meetings.get(c.id, 0),
+        })
+
+    return {"campaigns": result}
+
+
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign(
     campaign_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
