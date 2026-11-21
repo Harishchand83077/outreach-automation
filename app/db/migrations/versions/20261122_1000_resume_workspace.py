@@ -23,7 +23,7 @@ down_revision = "a82c5f71e0b4"
 branch_labels = None
 depends_on = None
 
-_SCHEMA = "public"
+_SCHEMA = "app"
 
 
 def upgrade() -> None:
@@ -39,6 +39,7 @@ def upgrade() -> None:
             ),
             nullable=True,
         ),
+        schema=_SCHEMA,
     )
     op.add_column(
         "resume_versions",
@@ -52,16 +53,18 @@ def upgrade() -> None:
             ),
             nullable=True,
         ),
+        schema=_SCHEMA,
     )
     op.create_index(
         "ix_resume_versions_opportunity_id",
         "resume_versions",
         ["opportunity_id"],
         unique=False,
+        schema=_SCHEMA,
     )
 
 
 def downgrade() -> None:
-    op.drop_index("ix_resume_versions_opportunity_id", table_name="resume_versions")
-    op.drop_column("resume_versions", "base_document_id")
-    op.drop_column("resume_versions", "opportunity_id")
+    op.drop_index("ix_resume_versions_opportunity_id", table_name="resume_versions", schema=_SCHEMA)
+    op.drop_column("resume_versions", "base_document_id", schema=_SCHEMA)
+    op.drop_column("resume_versions", "opportunity_id", schema=_SCHEMA)

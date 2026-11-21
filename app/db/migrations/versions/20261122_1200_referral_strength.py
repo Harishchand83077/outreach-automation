@@ -24,6 +24,8 @@ down_revision = "c64d9e58f3a0"
 branch_labels = None
 depends_on = None
 
+_SCHEMA = "app"
+
 
 def upgrade() -> None:
     op.add_column(
@@ -31,21 +33,27 @@ def upgrade() -> None:
         sa.Column(
             "strength",
             sa.SmallInteger(),
-            sa.CheckConstraint("strength IS NULL OR (strength >= 1 AND strength <= 5)", name="ck_connections_strength"),
+            sa.CheckConstraint(
+                "strength IS NULL OR (strength >= 1 AND strength <= 5)",
+                name="ck_connections_strength",
+            ),
             nullable=True,
         ),
+        schema=_SCHEMA,
     )
     op.add_column(
         "connections",
         sa.Column("tags", sa.ARRAY(sa.Text()), nullable=True),
+        schema=_SCHEMA,
     )
     op.add_column(
         "connections",
         sa.Column("relationship_note", sa.Text(), nullable=True),
+        schema=_SCHEMA,
     )
 
 
 def downgrade() -> None:
-    op.drop_column("connections", "relationship_note")
-    op.drop_column("connections", "tags")
-    op.drop_column("connections", "strength")
+    op.drop_column("connections", "relationship_note", schema=_SCHEMA)
+    op.drop_column("connections", "tags", schema=_SCHEMA)
+    op.drop_column("connections", "strength", schema=_SCHEMA)

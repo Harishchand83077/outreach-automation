@@ -45,7 +45,7 @@ down_revision = "f71c9d84b2e5"
 branch_labels = None
 depends_on = None
 
-_SCHEMA = "public"
+_SCHEMA = "app"
 
 
 def upgrade() -> None:
@@ -62,16 +62,19 @@ def upgrade() -> None:
             ),
             nullable=True,
         ),
+        schema=_SCHEMA,
     )
     op.add_column(
         "applications",
         sa.Column("channel", sa.String(40), nullable=True),
+        schema=_SCHEMA,
     )
     op.create_index(
         "ix_applications_opportunity_id",
         "applications",
         ["opportunity_id"],
         unique=False,
+        schema=_SCHEMA,
     )
 
     # 2. Create one opportunity per existing application and link it back.
@@ -84,7 +87,7 @@ def upgrade() -> None:
         sa.text(
             """
             WITH inserted AS (
-                INSERT INTO opportunities (
+                INSERT INTO app.opportunities (
                     id, org_id, job_post_id, company_domain, title,
                     status, created_at, updated_at
                 )
@@ -97,11 +100,11 @@ def upgrade() -> None:
                     'saved',
                     NOW(),
                     NOW()
-                FROM applications a
-                LEFT JOIN job_posts jp ON jp.id = a.job_post_id
+                FROM app.applications a
+                LEFT JOIN app.job_posts jp ON jp.id = a.job_post_id
                 RETURNING id AS opp_id, job_post_id, org_id
             )
-            UPDATE applications a
+            UPDATE app.applications a
             SET opportunity_id = i.opp_id
             FROM inserted i
             WHERE i.job_post_id = a.job_post_id
@@ -112,7 +115,7 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_applications_opportunity_id", table_name="applications")
-    op.drop_column("applications", "opportunity_id")
-    op.drop_column("applications", "channel")
+    op.drop_index("ix_applications_opportunity_id", table_name="applications", schema=_SCHEMA)
+    op.drop_column("applications", "opportunity_id", schema=_SCHEMA)
+    op.drop_column("applications", "channel", schema=_SCHEMA)
     # Orphaned opportunity rows from the upgrade are intentionally left in place.
