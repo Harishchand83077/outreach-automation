@@ -50,8 +50,10 @@ import JobHunt from "./JobHunt";
 import Landing from "./Landing";
 import Leads from "./Leads";
 import NewCampaign from "./NewCampaign";
+import Opportunities from "./Opportunities";
 import Operations from "./Operations";
 import Overview from "./Overview";
+import Today from "./Today";
 import Platform from "./Platform";
 import ReviewQueue from "./Review";
 import Sending from "./Sending";
@@ -133,6 +135,9 @@ const ROUTES = [
   { path: "/import", id: "import", scoped: true },
   { path: "/campaigns", id: "campaigns" },
   { path: "/campaigns/new", id: "new" },
+  { path: "/opportunities", id: "opportunities" },
+  { path: "/opportunities/:opportunityId", id: "opportunities" },
+  { path: "/today", id: "today" },
   { path: "/campaigns/:campaignId", id: "campaign", scoped: true },
   { path: "/signals", id: "signals" },
   { path: "/sending", id: "sending", scoped: true },
@@ -348,6 +353,8 @@ function Dashboard({ session }) {
       icon: Icons.briefcase,
       to: "/job-hunt",
     },
+    { id: "opportunities", label: "Opportunities", icon: Icons.leads, to: "/opportunities" },
+    { id: "today", label: "Today", icon: Icons.review, to: "/today" },
     ...(mayAdminister
       ? [
           { group: "Controls" },
@@ -719,6 +726,10 @@ function Dashboard({ session }) {
                 onToast={toast}
                 onChanged={refreshCampaigns}
               />
+            ) : view === "opportunities" ? (
+              <Opportunities />
+            ) : view === "today" ? (
+              <Today />
             ) : null}
           </ErrorBoundary>
         </div>
