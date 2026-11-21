@@ -2437,6 +2437,134 @@ class Application(Base):
     )
 
 
+class Opportunity(Base):
+    """An opportunity wraps a job post (or a manual entry) with a status machine (S19.2a, ADR-069).
+
+    ``opportunities.status`` is written by **exactly one function** in
+    ``app/db/opportunity.py``.  A structural test asserts that.
+    """
+
+    __tablename__ = "opportunities"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    job_post_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.job_posts.id", ondelete="SET NULL")
+    )
+    company_domain: Mapped[str | None] = mapped_column(String(200))
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="saved")
+    strategy_note: Mapped[str | None] = mapped_column(Text)
+    resume_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.resume_versions.id", ondelete="SET NULL")
+    )
+    closed_reason: Mapped[str | None] = mapped_column(String(20))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    updated_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "job_post_id", name="uq_opportunities_org_post"),
+        CheckConstraint(
+            "status IN ('saved','preparing','ready','applied',"
+            "'in_conversation','interviewing','offer','closed')",
+            name="ck_opportunities_status",
+        ),
+        CheckConstraint(
+            "(status = 'closed' AND closed_reason IS NOT NULL) "
+            "OR (status != 'closed' AND closed_reason IS NULL)",
+            name="ck_opportunities_closed_reason",
+        ),
+        Index("ix_opportunities_org_status", "org_id", "status"),
+        Index("ix_opportunities_job_post", "job_post_id"),
+    )
+
+
+class OpportunityEvent(Base):
+    """Append-only timeline entry for an opportunity. Never edited through the API."""
+
+    __tablename__ = "opportunity_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    occurred_at: Mapped[datetime] = _now_col(nullable=False)
+    #: "user" | "extension" | "system"
+    actor_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_kind: Mapped[str] = mapped_column(String(60), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(20))
+    to_status: Mapped[str | None] = mapped_column(String(20))
+    payload: Mapped[dict[str, object] | None] = mapped_column(JSONB)
+
+    __table_args__ = (
+        CheckConstraint(
+            "actor_kind IN ('user','extension','system')",
+            name="ck_opp_events_actor_kind",
+        ),
+        Index("ix_opp_events_opportunity", "opportunity_id", "occurred_at"),
+    )
+
+
+class Task(Base):
+    """A task attached to an opportunity — proposed tasks need confirmation."""
+
+    __tablename__ = "tasks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="pending")
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="user")
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+    updated_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending','done','dismissed')", name="ck_tasks_status"
+        ),
+        Index("ix_tasks_opportunity", "opportunity_id"),
+        Index("ix_tasks_org_due", "org_id", "due_at"),
+    )
+
+
+class Note(Base):
+    """A free-text note attached to an opportunity."""
+
+    __tablename__ = "notes"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        Index("ix_notes_opportunity", "opportunity_id"),
+    )
+
+
 #: A pool member's share of a campaign's sends, relative to the other members. 1 is the default
 #: and the only value anybody needs until a mailbox is being warmed up beside an established one.
 MIN_MAILBOX_WEIGHT = 1
