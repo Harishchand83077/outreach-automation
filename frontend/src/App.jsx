@@ -44,6 +44,7 @@ import Admin from "./Admin";
 import CampaignScreen from "./Campaign";
 import Consent from "./Consent";
 import Import from "./Import";
+import Inbox from "./Inbox";
 import JobHunt from "./JobHunt";
 import Landing from "./Landing";
 import Leads from "./Leads";
@@ -124,6 +125,7 @@ function ConsentPage() {
 
 const ROUTES = [
   { path: "/", id: "overview" },
+  { path: "/inbox", id: "inbox" },
   { path: "/review", id: "review", scoped: true },
   { path: "/leads", id: "leads", scoped: true },
   { path: "/leads/:leadId", id: "leads", scoped: true },
@@ -314,6 +316,7 @@ function Dashboard({ session }) {
   const nav = [
     { group: "Workspace" },
     { id: "overview", label: "Overview", icon: Icons.home, to: "/" },
+    { id: "inbox", label: "Inbox", icon: Icons.review, to: "/inbox" },
     {
       id: "review",
       label: "Review queue",
@@ -607,7 +610,9 @@ function Dashboard({ session }) {
               /* A screen that needs no campaign is rendered before the campaign gate below,
                  or Signals, Operations, Team and Platform would all be unreachable in a
                  workspace with no campaign yet -- which is every workspace on its first day. */
-              view === "signals" ? (
+              view === "inbox" ? (
+                <Inbox onError={handle} onToast={toast} />
+              ) : view === "signals" ? (
                 <Signals
                   mayAdminister={mayAdminister}
                   onError={handle}

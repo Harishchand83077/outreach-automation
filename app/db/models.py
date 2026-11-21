@@ -2781,3 +2781,35 @@ class DraftLesson(Base):
             name="ck_draft_lessons_state",
         ),
     )
+
+
+class InboxFlag(Base):
+    """Snooze and archive flags for the inbox view.
+
+    A flag is a UI decision — it controls visibility in the inbox without touching
+    the outreach pipeline or ``leads.state``.  The one-writer rule for that column
+    is preserved: nothing here touches it.
+
+    One row per (org, lead) pair; the row is created on the first flag action and
+    updated in place thereafter.  NULL on both columns is valid but rare; it means
+    the reviewer acted and then undid both flags.
+    """
+
+    __tablename__ = "inbox_flags"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE"), nullable=False
+    )
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by: Mapped[str | None] = mapped_column(String(320))
+    updated_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "lead_id", name="uq_inbox_flags_org_lead"),
+        Index("ix_inbox_flags_org_snoozed", "org_id", "snoozed_until"),
+    )

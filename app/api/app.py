@@ -37,6 +37,7 @@ from app.api.routers import (
     extension,
     health,
     imports,
+    inbox,
     jobposts,
     mcp,
     me,
@@ -214,6 +215,7 @@ def create_app(settings: Settings | None = None, *, limiter: RateLimit | None = 
     application.include_router(campaigns.router, prefix="/api/v1")
     application.include_router(candidate.router, prefix="/api/v1")
     application.include_router(review.router, prefix="/api/v1")
+    application.include_router(inbox.router, prefix="/api/v1")
     application.include_router(imports.router, prefix="/api/v1")
     application.include_router(jobposts.router, prefix="/api/v1")
     application.include_router(contacts.router, prefix="/api/v1")
