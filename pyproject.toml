@@ -51,6 +51,12 @@ dependencies = [
     # Main-content extraction: strips nav, footers and boilerplate, so the evidence budget is
     # spent on prose rather than menus.
     "trafilatura==2.3.1",
+    # Resume parsing (S19.1, ADR-068). MIT-licensed, no network required.
+    # pypdf reads PDF text layers; python-docx reads .docx paragraph runs.
+    # Bytes are stored in Postgres (ADR-016 precedent); these dependencies are only called
+    # inside the parse_resume job, never in a request handler.
+    "pypdf==5.1.0",
+    "python-docx==1.1.2",
 ]
 
 [dependency-groups]

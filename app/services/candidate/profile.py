@@ -223,3 +223,61 @@ async def match_question(
         if pattern_words <= wanted and len(pattern_words) > best_score:
             best, best_score = row, len(pattern_words)
     return best
+
+
+async def propose_facts_from_resume(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    proposals: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Store each proposal as an unconfirmed ``profile_fact``.
+
+    Skips proposals with ``kind`` values not in ``FACT_KINDS`` and proposals
+    whose statement already exists for this workspace.  Returns the stored rows
+    as serialisable dicts.
+
+    Nothing confirmed exits this function.  ``confirmed_at`` is always NULL for
+    resume-sourced proposals.
+    """
+    # Map resume proposal kinds to ProfileFact kinds.
+    KIND_MAP = {
+        "experience": "role",
+        "skill": "skill",
+        "role": "role",
+        "project": "project",
+        "education": "education",
+    }
+
+    # Load existing statements once to avoid duplicating entries the person already has.
+    existing_statements: set[str] = {
+        row.statement
+        for row in (
+            await session.execute(
+                select(ProfileFact).where(ProfileFact.org_id == ctx.org_id)
+            )
+        ).scalars()
+    }
+
+    stored: list[dict[str, object]] = []
+    for p in proposals:
+        kind = KIND_MAP.get(str(p.get("kind", "")), "")
+        statement = str(p.get("statement", "")).strip()
+        if not kind or not statement or statement in existing_statements:
+            continue
+        row = await add_fact(
+            session,
+            ctx,
+            kind=kind,
+            statement=statement,
+            source="resume",
+        )
+        existing_statements.add(statement)
+        stored.append({
+            "id": str(row.id),
+            "fact_id": row.fact_id,
+            "kind": row.kind,
+            "statement": row.statement,
+            "confirmed": False,
+        })
+    return stored

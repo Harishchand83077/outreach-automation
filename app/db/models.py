@@ -1073,6 +1073,38 @@ class ProfileFact(Base):
     )
 
 
+class Document(Base):
+    """An uploaded file (resume or CV) stored as bytes in Postgres (S19.1, ADR-068).
+
+    Unique on (org_id, sha256) so uploading the same file twice is idempotent.
+    ``text`` is NULL until the ``parse_resume`` job has run; proposals land in
+    ``profile_facts`` with ``confirmed_at = NULL``.
+    """
+
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    #: Only "resume" for now; the check constraint enforces it.
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    filename: Mapped[str] = mapped_column(String(260), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    bytes: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    #: Populated by parse_resume job. NULL = not yet parsed.
+    text: Mapped[str | None] = mapped_column(Text)
+    uploaded_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "sha256", name="uq_documents_org_sha256"),
+        CheckConstraint("kind IN ('resume')", name="ck_documents_kind"),
+        Index("ix_documents_org_id", "org_id"),
+    )
+
+
 class AnswerBankEntry(Base):
     """An answer to a question application forms keep asking (F6).
 
