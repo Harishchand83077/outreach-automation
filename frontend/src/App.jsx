@@ -163,6 +163,9 @@ function Dashboard({ session }) {
   //: half-second before the fetch returned, the screen said "No campaign yet" to somebody with
   //: two campaigns. A loading state that states a falsehood is worse than a spinner.
   const [campaignsLoaded, setCampaignsLoaded] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem("sidebar-collapsed") === "1"; } catch { return false; }
+  });
   const [campaignId, setCampaignId] = useState(null);
   /* **The route is the state now.** `view` was a `useState`, so every screen was one
      address: no deep link, no back button, nothing to send somebody. `matched` is the first
@@ -430,12 +433,27 @@ function Dashboard({ session }) {
     },
   ];
 
+  const toggleSidebar = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try { localStorage.setItem("sidebar-collapsed", next ? "1" : "0"); } catch {}
+      return next;
+    });
+  };
+
   return (
-    <div className="shell">
-      <nav className="sidebar" aria-label="Sections">
+    <div
+      className="shell"
+      style={sidebarCollapsed ? { gridTemplateColumns: `var(--sidebar-collapsed) minmax(0, 1fr)` } : undefined}
+    >
+      <nav
+        className="sidebar"
+        aria-label="Sections"
+        data-collapsed={sidebarCollapsed ? "true" : undefined}
+      >
         <Link to="/" className="brand" style={{ textDecoration: "none" }}>
           <Mark size={30} title={PRODUCT} />
-          <span className="brand-name">{PRODUCT}</span>
+          {!sidebarCollapsed && <span className="brand-name">{PRODUCT}</span>}
         </Link>
 
         {/* An anchor per item, not a button: a real `href` is what makes middle-click, "copy
@@ -465,43 +483,63 @@ function Dashboard({ session }) {
         )}
 
         <div className="sidebar-foot">
-          <div className="sidebar-user">
-            <span className="avatar" aria-hidden="true">
-              {who.slice(0, 1) || "?"}
-            </span>
-            {/* The role, and now the workspace it is a role *in*. `current_user` resolves one
-                membership per request, and before S18.5 it resolved an arbitrary one -- which was
-                invisible precisely because nothing on the screen named the workspace. The count
-                is shown only when there is more than one, because the common case must not grow
-                a chooser out of nowhere, and switching is not in this slice. */}
-            <span className="sidebar-identity">
-              <strong title={who}>{who}</strong>
-              <span>
-                {me.role}
-                {me.org_name ? <b className="workspace"> · {me.org_name}</b> : null}
-              </span>
-              {me.workspaces && me.workspaces.length > 1 ? (
-                <span
-                  className="workspace-note"
-                  title={me.workspaces
-                    .map((row) => `${row.name} (${row.role})`)
-                    .join(", ")}
-                >
-                  {`1 of ${me.workspaces.length} workspaces`}
-                </span>
-              ) : null}
-            </span>
-          </div>
           <button
             type="button"
-            className="btn"
-            data-variant="quiet"
-            data-size="sm"
-            style={{ width: "100%", marginTop: 6 }}
-            onClick={() => signOut()}
+            className="sidebar-collapse-btn"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
-            Sign out
+            <Icons.chevron size={15} style={{ transform: sidebarCollapsed ? "rotate(0deg)" : "rotate(180deg)", transition: `transform var(--fast) var(--ease)` }} />
           </button>
+          {!sidebarCollapsed && (
+            <>
+              <div className="sidebar-user">
+                <span className="avatar" aria-hidden="true">
+                  {who.slice(0, 1) || "?"}
+                </span>
+                {/* The role, and now the workspace it is a role *in*. `current_user` resolves one
+                    membership per request, and before S18.5 it resolved an arbitrary one -- which was
+                    invisible precisely because nothing on the screen named the workspace. The count
+                    is shown only when there is more than one, because the common case must not grow
+                    a chooser out of nowhere, and switching is not in this slice. */}
+                <span className="sidebar-identity">
+                  <strong title={who}>{who}</strong>
+                  <span>
+                    {me.role}
+                    {me.org_name ? <b className="workspace"> · {me.org_name}</b> : null}
+                  </span>
+                  {me.workspaces && me.workspaces.length > 1 ? (
+                    <span
+                      className="workspace-note"
+                      title={me.workspaces
+                        .map((row) => `${row.name} (${row.role})`)
+                        .join(", ")}
+                    >
+                      {`1 of ${me.workspaces.length} workspaces`}
+                    </span>
+                  ) : null}
+                </span>
+              </div>
+              <button
+                type="button"
+                className="btn"
+                data-variant="quiet"
+                data-size="sm"
+                style={{ width: "100%", marginTop: 6 }}
+                onClick={() => signOut()}
+              >
+                Sign out
+              </button>
+            </>
+          )}
+          {sidebarCollapsed && (
+            <div className="sidebar-user">
+              <span className="avatar" aria-hidden="true" title={who}>
+                {who.slice(0, 1) || "?"}
+              </span>
+            </div>
+          )}
         </div>
       </nav>
 
@@ -606,6 +644,7 @@ function Dashboard({ session }) {
           {/* A render error is caught per screen. One bad field name used to blank the
               whole dashboard: no message, no nav, and nothing an operator could report. */}
           <ErrorBoundary resetKey={path} label={view}>
+            <div key={view} className="screen-enter">
             {view === "overview" ? (
               <Overview onError={handle} mayAdminister={mayAdminister} />
             ) : view === "new" ? (
@@ -739,6 +778,7 @@ function Dashboard({ session }) {
             ) : view === "today" ? (
               <Today />
             ) : null}
+            </div>
           </ErrorBoundary>
         </div>
       </div>
