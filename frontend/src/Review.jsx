@@ -28,15 +28,24 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
   //: round trips to a small button; J/K and A/R is the difference between a queue somebody
   //: works through and one they put off.
   const [focused, setFocused] = useState(0);
+  // Campaign filter — the picker is internal; the prop is the initial value.
+  const [activeCampaignId, setActiveCampaignId] = useState(campaignId || "");
+  const [campaigns, setCampaigns] = useState([]);
+  const [showHelp, setShowHelp] = useState(false);
+
+  // Load campaign list for the picker once on mount.
+  useEffect(() => {
+    getJson("/campaigns/overview")
+      .then((data) => setCampaigns(data.campaigns ?? []))
+      .catch(() => {}); // picker is a convenience; silently degraded is fine
+  }, []);
 
   const load = useCallback(() => {
-    const params = new URLSearchParams({
-      campaign_id: campaignId,
-      limit: String(REVIEW_PAGE),
-    });
+    const params = new URLSearchParams({ limit: String(REVIEW_PAGE) });
+    if (activeCampaignId) params.set("campaign_id", activeCampaignId);
     if (cursor) params.set("cursor", cursor);
     getJson(`/review/drafts?${params}`).then(setPage).catch(onError);
-  }, [campaignId, cursor, onError]);
+  }, [activeCampaignId, cursor, onError]);
 
   useEffect(load, [load]);
 
@@ -233,6 +242,11 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
       } else if (key === "x" && item) {
         event.preventDefault();
         toggle(item.draft_id);
+      } else if (key === "?") {
+        event.preventDefault();
+        setShowHelp((v) => !v);
+      } else if (key === "escape") {
+        setShowHelp(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -263,6 +277,31 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
         eligible; the send loop re-checks the suppression list, the window and
         today&apos;s cap before anything leaves.
       </PageHeader>
+
+      {/* Campaign filter — lets the reviewer scope the queue without leaving the screen */}
+      {campaigns.length > 1 && (
+        <div style={{ marginBottom: 12 }}>
+          <select
+            className="input"
+            style={{ maxWidth: 280 }}
+            value={activeCampaignId}
+            aria-label="Filter by campaign"
+            onChange={(e) => {
+              setActiveCampaignId(e.target.value);
+              setCursor(null);
+              setTrail([]);
+              setSelected([]);
+            }}
+          >
+            <option value="">All campaigns</option>
+            {campaigns.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="queue-head">
         <span className="badge" data-tone={page.total > 0 ? "warn" : "good"}>
@@ -302,6 +341,8 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
           approve
           <span className="kbd">R</span>
           reject
+          <span className="kbd">?</span>
+          help
         </span>
       </div>
 
@@ -534,6 +575,76 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
         <span className="spacer" />
         <span>Oldest first, so nothing waits indefinitely.</span>
       </div>
+
+      {/* Keyboard shortcut overlay — press ? to toggle */}
+      {showHelp && (
+        <>
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(0,0,0,0.4)",
+              zIndex: 199,
+            }}
+            onClick={() => setShowHelp(false)}
+          />
+          <div
+            className="card"
+            style={{
+              position: "fixed",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%,-50%)",
+              zIndex: 200,
+              minWidth: 320,
+              padding: 24,
+            }}
+            role="dialog"
+            aria-label="Keyboard shortcuts"
+          >
+            <strong style={{ display: "block", marginBottom: 16 }}>
+              Keyboard shortcuts
+            </strong>
+            <dl
+              style={{
+                display: "grid",
+                gridTemplateColumns: "auto 1fr",
+                gap: "6px 16px",
+                margin: 0,
+              }}
+            >
+              {[
+                [["J", "↓"], "Move down"],
+                [["K", "↑"], "Move up"],
+                [["A"], "Approve focused draft"],
+                [["R"], "Reject focused draft"],
+                [["X"], "Toggle select focused draft"],
+                [["?"], "Show / hide this overlay"],
+              ].map(([keys, label]) => (
+                <>
+                  <dt style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {keys.map((k) => (
+                      <span key={k} className="kbd">
+                        {k}
+                      </span>
+                    ))}
+                  </dt>
+                  <dd style={{ margin: 0 }}>{label}</dd>
+                </>
+              ))}
+            </dl>
+            <div style={{ marginTop: 16, textAlign: "right" }}>
+              <button
+                className="btn"
+                data-size="sm"
+                onClick={() => setShowHelp(false)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </>
   );
 }
