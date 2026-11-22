@@ -166,6 +166,58 @@ async def bulk_approve_drafts(
     }
 
 
+@router.post("/review/bulk-reject")
+async def bulk_reject_drafts(
+    user: CurrentUserDep,
+    session: SessionDep,
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Reject several drafts with a shared feedback note.
+
+    Every rejected draft will be regenerated using the note as context, so the
+    feedback reaches the model rather than disappearing into a click. Drafts
+    already beyond ``MAX_REJECTIONS``, already sent, or not in this org's queue
+    are skipped and named in the response so the reviewer can handle them one
+    by one.
+    """
+    raw = payload.get("draft_ids")
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "draft_ids must be a non-empty list."
+        )
+    if len(raw) > MAX_BULK:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"At most {MAX_BULK} drafts can be rejected in one request.",
+        )
+    try:
+        draft_ids = [uuid.UUID(str(value)) for value in raw]
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "draft_ids must all be uuids."
+        ) from exc
+
+    feedback = (payload.get("feedback") or "").strip()
+    if not feedback:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "feedback is required: it is what the next draft is written from.",
+        )
+
+    rejected, skipped = await draft_store.bulk_reject(
+        session,
+        user.ctx,
+        draft_ids=draft_ids,
+        rejected_by=user.user_id,
+        feedback=feedback,
+    )
+    await session.commit()
+    return {
+        "rejected": [str(draft_id) for draft_id in rejected],
+        "skipped": skipped,
+    }
+
+
 @router.post("/drafts/{draft_id}/approve")
 async def approve_draft(
     draft_id: uuid.UUID,

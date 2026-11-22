@@ -4,12 +4,14 @@ Updated 2026-11-22 (restructured; full history in `docs/archive/`). Read this wi
 
 ## Handoff note (rewrite at the end of every session)
 
-**S19.3–S19.7 merged into `feat/p19-s19-3-7` on 2026-11-22.** Resume workspace (S19.3), job
-freshness + extension clipper (S19.4), proof pack + clarity check (S19.5), referral ranking
-(S19.6), and edited-vs-unedited insights (S19.7) are all done and committed. ADR-070 to ADR-073
-recorded in `docs/DECISIONS.md`. 1610 unit tests pass, 38 dashboard tests pass, 38 extension
-tests pass. The PR stacks on #187 (S19.2c, `needs-human`) and is itself `needs-human` for the
-three migrations it contains. **Next: human review of PRs #187 and this one, then Phase 10
+**S20 — bulk reject and campaign health score — merged into `feat/p20-s20-bulk-review-health` on 2026-11-22.**
+ADR-076 (campaign health score) and ADR-077 (bulk reject) recorded. `app/domain/health.py` is a
+pure module grading campaigns into good/fair/poor/insufficient from their lifetime stats; it feeds a
+new `health` field on `GET /campaigns/overview` and shows as a colored badge in the Campaigns screen.
+`POST /review/bulk-reject` is the symmetric counterpart to the existing bulk-approve endpoint; the
+review queue UI gains a feedback input and "Reject N" button when any drafts are selected. No
+migration. 22 new unit tests pass; all unit tests pass, 38 dashboard tests pass, 38 extension tests
+pass. **Next: VM deploy (`sudo ./deploy/deploy.sh`) to pick up S19 migrations, then Phase 10
 rehearsal (SEND_MODE=allowlist).**
 
 **Fixed from production, 2026-11-18: no Greenhouse posting could ever be fit-scored.**

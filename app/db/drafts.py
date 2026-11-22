@@ -702,6 +702,47 @@ async def bulk_approve(
     return approved, skipped
 
 
+async def bulk_reject(
+    session: AsyncSession,
+    ctx: OrgContext,
+    *,
+    draft_ids: list[uuid.UUID],
+    rejected_by: str,
+    feedback: str,
+    now: datetime | None = None,
+) -> tuple[list[uuid.UUID], dict[str, str]]:
+    """Reject several drafts with a shared feedback message.
+
+    Returns ``(rejected, {draft_id: reason})``. Drafts that are not in a
+    judgeable status (already sent, approved, or beyond ``MAX_REJECTIONS``) are
+    skipped rather than raising; the caller surfaces which ones need attention.
+    """
+    rejected: list[uuid.UUID] = []
+    skipped: dict[str, str] = {}
+
+    items = {item.draft.id: item for item in await review_queue(session, ctx, draft_ids=draft_ids)}
+
+    for draft_id in draft_ids:
+        item = items.get(draft_id)
+        if item is None:
+            skipped[str(draft_id)] = "not in the review queue"
+            continue
+        try:
+            await reject(
+                session,
+                ctx,
+                draft_id=draft_id,
+                rejected_by=rejected_by,
+                feedback=feedback,
+                now=now,
+            )
+            rejected.append(draft_id)
+        except ValueError as exc:
+            skipped[str(draft_id)] = str(exc)
+
+    return rejected, skipped
+
+
 async def _locked_draft(session: AsyncSession, ctx: OrgContext, draft_id: uuid.UUID) -> Draft:
     result = await session.execute(
         select(Draft).where(Draft.id == draft_id, Draft.org_id == ctx.org_id).with_for_update()

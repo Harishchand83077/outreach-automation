@@ -5219,3 +5219,50 @@ matters: a weaker tie is more likely to pass a referral (Granovetter's strength-
    calls `edit_insights.compute()`, which is a pure function over plain dicts.
 
 **Consequences.** No migration required. The route is added to the existing `operations` router.
+
+---
+
+## ADR-076 — Campaign health score: pure computation, no thresholds in the UI
+
+**Context.** The campaigns table shows raw counts (sent, replied, bounced, meetings). A reviewer
+scanning ten campaigns cannot tell at a glance which one needs attention without mentally dividing
+each pair of numbers.
+
+**Decision.**
+
+1. `app/domain/health.py` is a pure module that grades a campaign's lifetime aggregate counts
+   into ``good``, ``fair``, ``poor`` or ``insufficient``. No I/O; no thresholds embedded in the
+   component.
+2. The overview route (`GET /campaigns/overview`) calls `health.compute()` for each campaign and
+   appends `health: {grade, reason, reply_rate, bounce_rate}` to each row.
+3. The Campaigns screen shows a colored badge (green/yellow/red/muted) with the reason in a
+   `title` tooltip. The badge is "—" when data is insufficient so a fresh campaign does not
+   read as "ungraded = problem".
+
+**Grade thresholds:**
+- **good** — reply rate ≥ 15 % *and* bounce rate ≤ 3 %
+- **poor** — bounce rate ≥ 10 % *or* reply rate < 2 %
+- **fair** — everything else with ≥ 10 sent
+- **insufficient** — fewer than 10 sent
+
+**Consequences.** No migration. 13 unit tests added in `tests/unit/test_campaign_health.py`.
+
+---
+
+## ADR-077 — Bulk reject: symmetric counterpart to bulk approve
+
+**Context.** `POST /review/bulk-approve` already exists (S17, before this slice). Bulk reject
+did not. A reviewer who wants to send a batch of drafts back for rewriting had to click one by
+one, which defeats the purpose of a queue.
+
+**Decision.**
+
+1. `bulk_reject()` is added to `app/db/drafts.py`, mirroring `bulk_approve()`. It calls the
+   existing single-draft `reject()` per draft and skips drafts already beyond `MAX_REJECTIONS`
+   or not in the queue, returning `(rejected, {draft_id: reason})`.
+2. `POST /review/bulk-reject` is added to the review router. It requires a non-empty `feedback`
+   string; the route refuses an empty one with 422 so the feedback actually reaches the model.
+3. The review queue UI gains a rejection-note input and a "Reject N" button, which appear when
+   any drafts are selected.
+
+**Consequences.** No migration. 9 validation unit tests added.
