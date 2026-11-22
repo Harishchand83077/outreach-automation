@@ -68,6 +68,7 @@ from app.domain.experiment import (
     ExperimentSpec,
     effective_share,
 )
+from app.domain.health import compute as _compute_health
 from app.domain.kinds import KINDS, CandidateProfile, defaults_for, load_sender, sender_for
 from app.domain.persona import Persona
 from app.domain.template import CampaignTemplates
@@ -429,17 +430,31 @@ async def campaigns_overview(
 
     result = []
     for c in campaigns_list:
+        sent = sent_by_campaign.get(c.id, 0)
+        health = _compute_health(
+            sent=sent,
+            replied=replied.get(c.id, 0),
+            meetings=meetings.get(c.id, 0),
+            bounced=bounced.get(c.id, 0),
+            opted_out=opted_out.get(c.id, 0),
+        )
         result.append({
             "id": str(c.id),
             "name": c.name,
             "status": c.status,
             "created_at": c.created_at.isoformat(),
             "leads_total": leads_by_campaign.get(c.id, 0),
-            "emails_sent": sent_by_campaign.get(c.id, 0),
+            "emails_sent": sent,
             "replied": replied.get(c.id, 0),
             "bounced": bounced.get(c.id, 0),
             "opted_out": opted_out.get(c.id, 0),
             "meetings_booked": meetings.get(c.id, 0),
+            "health": {
+                "grade": health.grade,
+                "reason": health.reason,
+                "reply_rate": health.reply_rate,
+                "bounce_rate": health.bounce_rate,
+            },
         })
 
     return {"campaigns": result}

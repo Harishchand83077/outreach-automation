@@ -22,6 +22,23 @@ function pct(num, den) {
   return Math.round((num / den) * 100) + "%";
 }
 
+const HEALTH_TONE = { good: "good", fair: "warn", poor: "bad", insufficient: "muted" };
+
+function HealthBadge({ health }) {
+  if (!health) return null;
+  const tone = HEALTH_TONE[health.grade] ?? "muted";
+  return (
+    <span
+      className="badge"
+      data-tone={tone}
+      title={health.reason}
+      style={{ fontSize: 11, cursor: "help" }}
+    >
+      {health.grade === "insufficient" ? "—" : health.grade}
+    </span>
+  );
+}
+
 function StatCell({ value, note }) {
   return (
     <td style={{ textAlign: "right", padding: "10px 12px", fontSize: 14 }}>
@@ -101,6 +118,9 @@ export default function Campaigns({ onError, onToast }) {
                 <th style={{ textAlign: "left", padding: "8px 12px", fontWeight: 600 }}>
                   Campaign
                 </th>
+                <th style={{ textAlign: "center", padding: "8px 12px", fontWeight: 600 }}>
+                  Health
+                </th>
                 <th style={{ textAlign: "right", padding: "8px 12px", fontWeight: 600 }}>
                   Leads
                 </th>
@@ -142,6 +162,9 @@ export default function Campaigns({ onError, onToast }) {
                         {c.status}
                       </span>
                     </div>
+                  </td>
+                  <td style={{ textAlign: "center", padding: "10px 12px" }}>
+                    <HealthBadge health={c.health} />
                   </td>
                   <StatCell value={c.leads_total} />
                   <StatCell

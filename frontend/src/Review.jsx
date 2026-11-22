@@ -22,6 +22,7 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
   const [busy, setBusy] = useState(null);
   const [selected, setSelected] = useState([]);
   const [skipped, setSkipped] = useState({});
+  const [bulkFeedback, setBulkFeedback] = useState("");
   const [dismissing, setDismissing] = useState(new Set());
   //: Which card the keyboard is on. Reviewing a hundred drafts with a mouse is a hundred
   //: round trips to a small button; J/K and A/R is the difference between a queue somebody
@@ -170,6 +171,34 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
     }
   };
 
+  const bulkReject = async () => {
+    const fb = bulkFeedback.trim();
+    if (!fb) {
+      onToast("Add a note first — it is what the next draft is written from.", "error");
+      return;
+    }
+    setBusy("bulk-reject");
+    try {
+      const result = await postJson("/review/bulk-reject", {
+        json: { draft_ids: selected, feedback: fb },
+      });
+      const held = Object.keys(result.skipped || {}).length;
+      onToast(
+        held
+          ? `Rejected ${result.rejected.length}. ${held} could not be rejected — see notes below.`
+          : `Rejected ${result.rejected.length}. Each will be regenerated with your note.`,
+        held ? "info" : "info",
+      );
+      setBulkFeedback("");
+      setSelected([]);
+      afterDecision();
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const shown = page.drafts.length;
   const seen = trail.length * REVIEW_PAGE;
 
@@ -279,12 +308,12 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
       {shown === 0 ? null : (
         <div
           className="filters"
-          style={{ gridTemplateColumns: "1fr auto auto" }}
+          style={{ gridTemplateColumns: "1fr auto auto auto", gap: 8 }}
         >
-          <span className="muted">
+          <span className="muted" style={{ alignSelf: "center" }}>
             {selected.length
               ? `${selected.length} selected`
-              : "Select drafts to approve several at once. Weak ones are held back, not waved through."}
+              : "Select drafts to judge several at once. Weak ones are held back on approval, not waved through."}
           </span>
           <button
             type="button"
@@ -299,6 +328,30 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
               ? "Clear selection"
               : "Select all on this page"}
           </button>
+          {selected.length > 0 && (
+            <input
+              type="text"
+              className="input"
+              placeholder="Rejection note (required)…"
+              value={bulkFeedback}
+              onChange={(e) => setBulkFeedback(e.target.value)}
+              style={{ minWidth: 220 }}
+              aria-label="Shared note for bulk rejection"
+            />
+          )}
+          {selected.length > 0 && (
+            <button
+              type="button"
+              className="btn"
+              data-variant="danger"
+              disabled={busy === "bulk-reject"}
+              onClick={bulkReject}
+            >
+              {busy === "bulk-reject"
+                ? "Rejecting…"
+                : `Reject ${selected.length}`}
+            </button>
+          )}
           <button
             type="button"
             className="btn"
