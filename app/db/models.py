@@ -2302,6 +2302,35 @@ class Connection(Base):
     )
 
 
+class LeadNote(Base):
+    """A free-text note a reviewer leaves on a lead (S21.1, ADR-078).
+
+    Notes are immutable after creation — a reviewer's observation at a point in time should be
+    preserved as written, not silently corrected. If a note is wrong, a new one supersedes it.
+    Deleted when the lead is deleted (CASCADE).
+    """
+
+    __tablename__ = "lead_notes"
+    __table_args__ = (
+        CheckConstraint(
+            "length(body) > 0 AND length(body) <= 2000",
+            name="ck_lead_notes_body_len",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    lead_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    author_id: Mapped[str] = mapped_column(Text, nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+
 #: Where a bullet may be placed. A **fixed vocabulary**, not whatever the model writes: a heading
 #: is the one line of a resume that is not a fact, so letting a proposal invent one would give it
 #: a free line of prose outside the claim check.

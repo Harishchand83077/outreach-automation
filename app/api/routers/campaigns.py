@@ -51,6 +51,7 @@ from app.db.models import (
     Event,
     Experiment,
     Lead,
+    LeadNote,
     Mailbox,
     MailCredential,
     Message,
@@ -1853,6 +1854,90 @@ def _as_utc(moment: datetime | None) -> datetime | None:
     if moment is None:
         return None
     return moment.astimezone(UTC) if moment.tzinfo else moment.replace(tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------- lead notes (S21.1)
+
+_NOTE_MAX = 2000
+
+
+def _validate_note_body(body: str) -> str:
+    """Strip and validate a note body. Raises ValueError for empty or overlong text."""
+    stripped = (body or "").strip()
+    if not stripped:
+        raise ValueError("Note body must not be empty.")
+    if len(stripped) > _NOTE_MAX:
+        raise ValueError(f"Note body must be {_NOTE_MAX} characters or fewer.")
+    return stripped
+
+
+@router.post("/leads/{lead_id}/notes", status_code=status.HTTP_201_CREATED)
+async def create_lead_note(
+    lead_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    payload: Annotated[dict[str, Any], Body()],
+) -> dict[str, Any]:
+    """Leave a free-text note on a lead. Notes are immutable after creation (ADR-078)."""
+    lead = await session.get(Lead, lead_id)
+    if lead is None or lead.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+
+    try:
+        body = _validate_note_body(payload.get("body", ""))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    note = LeadNote(
+        org_id=user.org_id,
+        lead_id=lead_id,
+        author_id=user.user_id,
+        body=body,
+    )
+    session.add(note)
+    await session.commit()
+    await session.refresh(note)
+    return {
+        "id": str(note.id),
+        "author_id": note.author_id,
+        "body": note.body,
+        "created_at": note.created_at.isoformat(),
+    }
+
+
+@router.get("/leads/{lead_id}/notes")
+async def list_lead_notes(
+    lead_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> dict[str, Any]:
+    """All notes for a lead, newest first."""
+    lead = await session.get(Lead, lead_id)
+    if lead is None or lead.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Lead not found.")
+
+    rows = list(
+        (
+            await session.execute(
+                select(LeadNote)
+                .where(LeadNote.org_id == user.org_id, LeadNote.lead_id == lead_id)
+                .order_by(LeadNote.created_at.desc())
+            )
+        ).scalars()
+    )
+    return {
+        "notes": [
+            {
+                "id": str(n.id),
+                "author_id": n.author_id,
+                "body": n.body,
+                "created_at": n.created_at.isoformat(),
+            }
+            for n in rows
+        ]
+    }
 
 
 # --------------------------------------------------------------------------- the brief (S15.3)

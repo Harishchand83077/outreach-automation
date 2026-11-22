@@ -5266,3 +5266,43 @@ one, which defeats the purpose of a queue.
    any drafts are selected.
 
 **Consequences.** No migration. 9 validation unit tests added.
+
+---
+
+## ADR-078 — Lead notes: immutable free-text observations on a lead
+
+**Context.** Reviewers want to leave a note when they learn something about a lead (a prior
+conversation, a reason to skip, context for the next person). Notes belong on the lead, not in
+a separate tool, and they should be retrievable as a list.
+
+**Decision.**
+
+1. A new table `app.lead_notes` stores notes: `org_id`, `lead_id` FK (CASCADE delete), `author_id`
+   (the reviewer's user id), `body` (text, 1–2000 chars, enforced by DB constraint and route
+   validation), `created_at`.
+2. `POST /leads/{lead_id}/notes` creates a note; `GET /leads/{lead_id}/notes` returns them newest
+   first. Both routes check `lead.org_id == user.org_id` (404 on mismatch — not 403, to avoid
+   confirming another org's lead id).
+3. Notes are **immutable after creation**. A reviewer's observation at a point in time should be
+   preserved as written. If a note is wrong, a new one supersedes it. No PATCH or DELETE route.
+
+**Consequences.** Migration `20261122_1300_lead_notes.py` (revision `e83f1a56b9c2`). 8 unit tests.
+
+---
+
+## ADR-079 — Review queue UX: campaign picker and keyboard shortcut overlay
+
+**Context.** The review queue accepted a `campaign_id` query param but had no UI to change it.
+The keyboard shortcut row was helpful but invisible to new users.
+
+**Decision.**
+
+1. When the workspace has more than one campaign, a `<select>` picker appears above the queue.
+   Changing it resets the cursor and reloads. The external `campaignId` prop (from the parent)
+   is the initial value; the internal selection overrides it. This is entirely client-side — no
+   backend change.
+2. Pressing `?` (outside a text field) toggles a centered overlay listing all shortcuts (J/K,
+   A, R, X, ?). `Escape` and clicking the backdrop close it. The `?` key and hint are added to
+   the existing keyboard row.
+
+**Consequences.** No migration, no API change. 38 frontend tests unchanged.

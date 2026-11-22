@@ -4,6 +4,12 @@ Updated 2026-11-22 (restructured; full history in `docs/archive/`). Read this wi
 
 ## Handoff note (rewrite at the end of every session)
 
+**S21 — lead notes, review campaign filter, keyboard overlay — merged 2026-11-22.** ADR-078/079.
+`app.lead_notes` table with `POST/GET /leads/{id}/notes`; notes are immutable, body 1–2000 chars,
+cascade-deleted with the lead. Review queue: campaign picker (`<select>`) when workspace has >1
+campaign; `?` keyboard shortcut overlay listing all keys. No send changes, no auth changes. 8 new
+unit tests. Migration `20261122_1300_lead_notes.py` (revision `e83f1a56b9c2`).
+
 **S20 — bulk reject and campaign health score — merged into `feat/p20-s20-bulk-review-health` on 2026-11-22.**
 ADR-076 (campaign health score) and ADR-077 (bulk reject) recorded. `app/domain/health.py` is a
 pure module grading campaigns into good/fair/poor/insufficient from their lifetime stats; it feeds a
