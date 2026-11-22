@@ -22,6 +22,7 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
   const [busy, setBusy] = useState(null);
   const [selected, setSelected] = useState([]);
   const [skipped, setSkipped] = useState({});
+  const [dismissing, setDismissing] = useState(new Set());
   //: Which card the keyboard is on. Reviewing a hundred drafts with a mouse is a hundred
   //: round trips to a small button; J/K and A/R is the difference between a queue somebody
   //: works through and one they put off.
@@ -45,6 +46,11 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
     onChanged();
   };
 
+  const dismiss = (id) => {
+    setDismissing((current) => new Set([...current, id]));
+    return new Promise((resolve) => setTimeout(resolve, 180));
+  };
+
   const approve = async (item) => {
     setBusy(item.draft_id);
     try {
@@ -56,8 +62,10 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
         "Approved. The send loop decides when it actually goes.",
         "success",
       );
+      await dismiss(item.draft_id);
       afterDecision();
     } catch (err) {
+      setDismissing((current) => { const s = new Set(current); s.delete(item.draft_id); return s; });
       onError(err);
     } finally {
       setBusy(null);
@@ -90,8 +98,10 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
     try {
       await postJson(`/drafts/${item.draft_id}/reject`, { json: { feedback } });
       onToast("Rejected. It will be regenerated with your note.", "info");
+      await dismiss(item.draft_id);
       afterDecision();
     } catch (err) {
+      setDismissing((current) => { const s = new Set(current); s.delete(item.draft_id); return s; });
       onError(err);
     } finally {
       setBusy(null);
@@ -316,6 +326,7 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
             className="card"
             data-interactive="true"
             data-active={index === focused}
+            data-dismissing={dismissing.has(item.draft_id) ? "true" : undefined}
             onMouseEnter={() => setFocused(index)}
           >
             <div className="card-head">

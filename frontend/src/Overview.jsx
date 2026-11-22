@@ -20,11 +20,35 @@
 // `/stats`, which counts from the record -- `emails_sent` is messages and `replied` is leads that
 // *ever reached* that state, so a lead that replied and then booked still counts in both.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { getJson } from "./api";
 import { Link } from "./router";
 import { ActivityChart, Icons, SkeletonList } from "./ui";
+
+/** Counts from 0 to `target` over ~500ms when `target` first becomes a positive number. */
+function useCountUp(target) {
+  const [display, setDisplay] = useState(typeof target === "number" ? target : null);
+  const prev = useRef(null);
+  useEffect(() => {
+    if (typeof target !== "number" || target === prev.current) return;
+    const from = prev.current === null ? 0 : prev.current;
+    prev.current = target;
+    if (target === 0 || from === target) { setDisplay(target); return; }
+    const duration = Math.min(500, 80 + target * 4);
+    const start = performance.now();
+    let frame;
+    const tick = (now) => {
+      const t = Math.min((now - start) / duration, 1);
+      const ease = 1 - Math.pow(1 - t, 3);
+      setDisplay(Math.round(from + (target - from) * ease));
+      if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [target]);
+  return display ?? target;
+}
 
 /** One load, with "we asked and heard back" as a separate fact from "we have data". */
 function useAsked(path, onError) {
@@ -53,6 +77,8 @@ function useAsked(path, onError) {
 }
 
 function Metric({ label, value, note, tone, featured, icon: IconComponent }) {
+  const animated = useCountUp(typeof value === "number" ? value : null);
+  const display = typeof value === "number" ? animated : value;
   return (
     <div
       className="metric"
@@ -63,7 +89,7 @@ function Metric({ label, value, note, tone, featured, icon: IconComponent }) {
         {IconComponent ? <IconComponent size={15} /> : null}
         {label}
       </span>
-      <span className="metric-value">{value}</span>
+      <span className="metric-value">{display}</span>
       {note ? <p className="metric-note">{note}</p> : null}
     </div>
   );

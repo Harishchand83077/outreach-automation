@@ -310,6 +310,7 @@
 /* ================================================================ card */
 
 .card {
+  position: relative;
   padding: var(--space-5);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -346,6 +347,18 @@
 .card[data-active='true'] {
   border-color: var(--accent);
   box-shadow: var(--ring);
+}
+
+/* A focused card's left border is a soft pointer, not just a colour. */
+.card[data-active='true']::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 16px;
+  bottom: 16px;
+  width: 3px;
+  border-radius: 0 var(--radius-full) var(--radius-full) 0;
+  background: var(--accent);
 }
 
 /* ================================================================ buttons */
@@ -610,11 +623,16 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
-  transition: border-color var(--fast) var(--ease);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
 }
 
 .stat:hover {
   border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+  transform: translateY(-2px);
 }
 
 .stat dt {
@@ -1065,6 +1083,114 @@ tbody tr:hover {
 .dropzone[data-over='true'] {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* ================================================================ screen transitions
+ *
+ * A page that fades in says "you arrived" rather than "something replaced something". One
+ * animation class, applied with a `key` prop so it re-runs on every route change. The
+ * transform is 5px rather than 20: a jump reads as a rebuild, a rise reads as a reveal.
+ */
+
+.screen-enter {
+  animation: screen-enter var(--normal) var(--ease-out) both;
+}
+
+@keyframes screen-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+
+/* ================================================================ sidebar collapse
+ *
+ * Icon-only rail when collapsed. `data-collapsed` toggles on the sidebar element;
+ * the shell's grid column is overridden inline to match.
+ */
+
+.sidebar[data-collapsed] {
+  width: var(--sidebar-collapsed);
+  padding: var(--space-4) var(--space-2);
+  overflow: hidden;
+}
+
+.sidebar[data-collapsed] .brand-name,
+.sidebar[data-collapsed] .sidebar-identity,
+.sidebar[data-collapsed] .nav-group-label {
+  display: none;
+}
+
+.sidebar[data-collapsed] .nav-item {
+  justify-content: center;
+  padding: 8px;
+  gap: 0;
+}
+
+/* Count badge hides text and becomes a dot when collapsed */
+.sidebar[data-collapsed] .count {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 8px;
+  padding: 0;
+  width: 8px;
+  height: 8px;
+  font-size: 0;
+  border-radius: var(--radius-full);
+}
+
+.sidebar[data-collapsed] .nav-icon {
+  flex: none;
+}
+
+.sidebar[data-collapsed] .sidebar-foot {
+  padding-top: var(--space-3);
+}
+
+.sidebar[data-collapsed] .sidebar-user {
+  justify-content: center;
+  padding: var(--space-2) 0;
+}
+
+.sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  flex: none;
+  transition:
+    background-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
+}
+
+.sidebar-collapse-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.sidebar[data-collapsed] .sidebar-collapse-btn {
+  margin: var(--space-2) auto 0;
+  transform: rotate(180deg);
+}
+
+/* ================================================================ card exit (review queue) */
+
+.card[data-dismissing='true'] {
+  animation: card-exit var(--normal) var(--ease) both;
+  pointer-events: none;
+}
+
+@keyframes card-exit {
+  to {
+    opacity: 0;
+    transform: translateX(18px) scale(0.985);
+  }
 }
 
 /* ================================================================ responsive */
