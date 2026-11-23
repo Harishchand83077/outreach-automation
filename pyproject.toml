@@ -55,7 +55,7 @@ dependencies = [
     # pypdf reads PDF text layers; python-docx reads .docx paragraph runs.
     # Bytes are stored in Postgres (ADR-016 precedent); these dependencies are only called
     # inside the parse_resume job, never in a request handler.
-    "pypdf==5.1.0",
+    "pypdf>=7.1.1",
     "python-docx==1.1.2",
 ]
 
