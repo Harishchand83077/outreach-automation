@@ -875,3 +875,34 @@ export function formatBytes(bytes) {
     ? `${mb.toFixed(1)} MB`
     : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
+
+/**
+ * Data-fetching hook used by screens that need to load and reload a resource.
+ *
+ * Returns `[data, ctrl]` where `ctrl.loading` is true during the initial fetch
+ * and after each reload, and `ctrl.reload()` triggers a fresh fetch.
+ *
+ * Usage:
+ *   const [items, load] = useLoad(() => getJson("/things"), [dep]);
+ *   if (load.loading) return <Skeleton />;
+ *   load.reload();   // call after a mutation
+ */
+export function useLoad(fetcher, deps = []) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tick, setTick] = useState(0);
+
+  const reload = useCallback(() => setTick((n) => n + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    fetcher()
+      .then((result) => { if (!cancelled) { setData(result); setLoading(false); } })
+      .catch(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...deps, tick]);
+
+  return [data, { loading, reload }];
+}
