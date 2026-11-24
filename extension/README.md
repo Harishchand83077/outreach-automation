@@ -36,6 +36,11 @@ Only the URL, title and employer domain are sent.
 under `activeTab` — a permission Chrome grants for one tab because you clicked this extension's
 own button. So the extension has no standing ability to read any page: not a policy, an absence.
 
+**Reading other pages is a grant you give on a click.** `activeTab` only covers the tab the icon
+was clicked on, so the panel offers an "Allow on websites" button that requests the optional
+`https://*/*` permission. It is off until pressed and revocable at `chrome://extensions`; the
+extension still reads a page only when you press a button.
+
 **No host permissions in the package.** The API origin is requested when you save its address.
 A packaged wildcard would be an install-time prompt covering the whole web.
 
