@@ -792,6 +792,28 @@ export function TextArea({ label, value, onChange, rows = 6, required, hint }) {
   );
 }
 
+/**
+ * Copies `text` and says so for two seconds. Used for secrets that are shown once, where selecting
+ * a long token by hand is the step people get wrong.
+ */
+export function CopyButton({ text, label = "Copy" }) {
+  const [done, setDone] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setDone(true);
+      setTimeout(() => setDone(false), 2000);
+    } catch {
+      setDone(false);
+    }
+  };
+  return (
+    <button type="button" className="btn" data-size="sm" onClick={copy}>
+      {done ? "Copied" : label}
+    </button>
+  );
+}
+
 export function Field({ label, value, onChange, required, hint, type = "text" }) {
   const id = `f-${label.replace(/\W+/g, "-").toLowerCase()}`;
   return (

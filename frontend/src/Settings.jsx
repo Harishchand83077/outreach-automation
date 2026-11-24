@@ -91,6 +91,23 @@ export default function Settings({ campaign, isOwner, onError, onToast, onChange
         permission.
       </PageHeader>
 
+      <nav className="jump" aria-label="Jump to a section">
+        {[
+          ["team", "Team"],
+          ["claude", "Your Claude"],
+          ["extension", "Browser extension"],
+          ["clients", "Applications"],
+          ["suppressions", "Suppressions"],
+        ].map(([id, label]) => (
+          <a key={id} href={`#${id}`} onClick={(event) => {
+            event.preventDefault();
+            document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
+          }}>
+            {label}
+          </a>
+        ))}
+      </nav>
+
       <h2 className="section-title">Sending</h2>
       <p className="muted">
         The send mode is the one setting that decides whether mail actually
@@ -312,19 +329,19 @@ export default function Settings({ campaign, isOwner, onError, onToast, onChange
         </form>
       ) : null}
 
-      <h2 className="section-title">Team</h2>
+      <h2 className="section-title" id="team">Team</h2>
       <Team onError={onError} onToast={onToast} />
 
-      <h2 className="section-title">Connect your own Claude</h2>
+      <h2 className="section-title" id="claude">Connect your own Claude</h2>
       <McpTokens onError={onError} onToast={onToast} />
 
-      <h2 className="section-title">Browser extension</h2>
+      <h2 className="section-title" id="extension">Browser extension</h2>
       <ExtensionToken onError={onError} onToast={onToast} />
 
-      <h2 className="section-title">Connected applications</h2>
+      <h2 className="section-title" id="clients">Connected applications</h2>
       <OAuthClients isOwner={isOwner} onError={onError} onToast={onToast} />
 
-      <h2 className="section-title">Suppression list</h2>
+      <h2 className="section-title" id="suppressions">Suppression list</h2>
       <Suppressions onError={onError} onToast={onToast} />
     </>
   );
