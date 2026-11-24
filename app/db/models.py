@@ -3028,3 +3028,10 @@ class InboxFlag(Base):
         UniqueConstraint("org_id", "lead_id", name="uq_inbox_flags_org_lead"),
         Index("ix_inbox_flags_org_snoozed", "org_id", "snoozed_until"),
     )
+
+
+# Indexes the migrations create, declared by explicit name: the naming convention would prefix
+# the schema onto an `index=True` column and the two would disagree.
+Index("ix_lead_notes_lead_id", LeadNote.lead_id)
+Index("ix_resume_versions_opportunity_id", ResumeVersion.opportunity_id)
+Index("ix_applications_opportunity_id", Application.opportunity_id)
