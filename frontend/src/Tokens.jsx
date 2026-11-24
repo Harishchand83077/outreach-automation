@@ -9,7 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { API, deleteJson, getJson, postJson } from "./api";
 import { useLoad } from "./useLoad";
-import { Field, SkeletonList, TextArea } from "./ui";
+import { CopyButton, Field, SkeletonList, TextArea } from "./ui";
 
 export function OAuthClients({ isOwner, onError, onToast }) {
   const clients = useLoad("/oauth/clients", onError);
@@ -255,9 +255,12 @@ export function McpTokens({ onError, onToast }) {
           <p className="mono" style={{ wordBreak: "break-all" }}>
             {minted.token}
           </p>
-          <button type="button" className="btn" onClick={() => setMinted(null)}>
-            I have copied it
-          </button>
+          <span className="row">
+            <CopyButton text={minted.token} label="Copy token" />
+            <button type="button" className="btn" onClick={() => setMinted(null)}>
+              I have copied it
+            </button>
+          </span>
         </div>
       ) : null}
 
@@ -429,7 +432,9 @@ export function ExtensionToken({ onError, onToast }) {
       </p>
       <dl className="kv">
         <dt>API address</dt>
-        <dd className="mono">{apiBase}</dd>
+        <dd className="mono">
+          {apiBase} <CopyButton text={apiBase} />
+        </dd>
         <dt>Install</dt>
         <dd>
           <span className="mono">cd extension &amp;&amp; npm ci &amp;&amp; npm run build</span>, then
@@ -444,9 +449,12 @@ export function ExtensionToken({ onError, onToast }) {
           <p className="mono" style={{ wordBreak: "break-all" }}>
             {minted.token}
           </p>
-          <button type="button" className="btn" onClick={() => setMinted(null)}>
-            I have copied it
-          </button>
+          <span className="row">
+            <CopyButton text={minted.token} label="Copy token" />
+            <button type="button" className="btn" onClick={() => setMinted(null)}>
+              I have copied it
+            </button>
+          </span>
         </div>
       ) : null}
       <form onSubmit={mint} className="field-row">

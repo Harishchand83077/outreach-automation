@@ -5329,3 +5329,16 @@ could mint an `ext:suggest` token (`for_extension`) and no screen asked for one.
 
 **Consequences.** No migration. 2 new extension tests, 3 new gateway tests. Needs-human: touches the
 token-minting screen.
+
+---
+
+## ADR-081 — UX polish: send-mode badge, copy buttons, Settings jump bar, extension retry
+
+**Decision.** (1) Admins see the send mode in the top bar (LIVE / allowlist / off), linking to
+Settings, read from the existing `GET /admin/sending-config`; real email being possible is the one
+fact that must not be three screens away. (2) A `CopyButton` on shown-once tokens and the API
+address. (3) A sticky jump bar on Settings. (4) The extension panel carries on with the last
+button pressed once site access is granted, and the Copy label resets.
+
+**Consequences.** No API or migration change; send behaviour untouched. The extension still
+contains no `.click()`: retry is a function call, not a synthetic click.

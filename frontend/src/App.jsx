@@ -293,6 +293,23 @@ function Dashboard({ session }) {
     };
   }, []);
   const mismatch = useMemo(() => buildMismatch(apiBuild), [apiBuild]);
+
+  // The send mode, in the frame rather than three screens deep: whether real email can leave is
+  // the one fact somebody should never have to go looking for. Admins only, because the endpoint
+  // is; failure is swallowed so a missing badge never becomes an error banner.
+  const [sendMode, setSendMode] = useState(null);
+  useEffect(() => {
+    if (!mayAdminister) return undefined;
+    let live = true;
+    getJson("/admin/sending-config")
+      .then((body) => {
+        if (live) setSendMode(body.send_mode);
+      })
+      .catch(NOTHING);
+    return () => {
+      live = false;
+    };
+  }, [mayAdminister]);
   const isOperator = me ? me.platform_operator === true : false;
 
   if (error && !me) {
@@ -579,6 +596,22 @@ function Dashboard({ session }) {
                 </span>
               )}
             </>
+          ) : null}
+          {sendMode ? (
+            <Link
+              to="/settings"
+              className="badge"
+              data-tone={
+                sendMode === "live" ? "bad" : sendMode === "allowlist" ? "warn" : "info"
+              }
+              title="Send mode. Click to change it in Settings."
+            >
+              {sendMode === "live"
+                ? "LIVE: real email"
+                : sendMode === "allowlist"
+                  ? "Send: allowlist only"
+                  : "Sending off"}
+            </Link>
           ) : null}
           {/* Where you are, in the frame rather than in the page. A title alone cannot say it
               when two screens one level apart are both called Settings. */}

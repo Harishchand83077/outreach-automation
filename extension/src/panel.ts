@@ -146,6 +146,8 @@ async function injectInto<T>(file: string): Promise<T> {
 const readActivePage = (): Promise<Collected> => injectInto<Collected>("collect.js");
 
 let pendingJob: JobInfo | null = null;
+/** What the person last pressed, so granting site access can carry on where they were. */
+let lastRun: (() => Promise<void>) | null = null;
 
 function closeJobPreview(): void {
   pendingJob = null;
@@ -153,7 +155,8 @@ function closeJobPreview(): void {
 }
 
 /** Two presses on purpose: the first reads and shows, the second is the only one that sends. */
-ui.saveJob.addEventListener("click", async () => {
+async function runSaveJob(): Promise<void> {
+  lastRun = runSaveJob;
   clearError();
   ui.jobDone.hidden = true;
   if (!client) {
@@ -173,12 +176,18 @@ ui.saveJob.addEventListener("click", async () => {
   } catch (error) {
     fail(error instanceof Error ? error.message : "Something went wrong reading this page.");
   }
-});
+}
+
+ui.saveJob.addEventListener("click", () => void runSaveJob());
 
 ui.grantSites.addEventListener("click", async () => {
   const granted = await chrome.permissions.request({ origins: ["https://*/*"] });
   ui.siteAccess.hidden = granted;
-  if (granted) clearError();
+  if (granted) {
+    clearError();
+    // Carry on with what they pressed rather than making them press it twice.
+    await lastRun?.();
+  }
 });
 
 ui.jobCancel.addEventListener("click", closeJobPreview);
@@ -228,6 +237,9 @@ function row(suggestion: Suggestion): HTMLLIElement {
   copy.addEventListener("click", async () => {
     await navigator.clipboard.writeText(box.value);
     copy.textContent = "Copied";
+    setTimeout(() => {
+      copy.textContent = "Copy";
+    }, 2000);
     // Recorded as accepted or edited depending on whether they changed it: an edit is the most
     // valuable of the three outcomes, because it says what the answer should have been.
     const changed = box.value.trim() !== (suggestion.answer ?? "").trim();
@@ -255,7 +267,8 @@ function row(suggestion: Suggestion): HTMLLIElement {
   return item;
 }
 
-ui.suggest.addEventListener("click", async () => {
+async function runSuggest(): Promise<void> {
+  lastRun = runSuggest;
   clearError();
   if (!client) {
     fail("Connect first.");
@@ -284,7 +297,9 @@ ui.suggest.addEventListener("click", async () => {
   } finally {
     ui.suggest.disabled = false;
   }
-});
+}
+
+ui.suggest.addEventListener("click", () => void runSuggest());
 
 void (async () => {
   const stored = await config.load();
