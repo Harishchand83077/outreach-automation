@@ -186,6 +186,7 @@ async def record_outcome(
 # Job capture (S19.4, ADR-070) — save a job link seen in the extension
 # ---------------------------------------------------------------------------
 
+
 @router.post("/jobs/capture", status_code=status.HTTP_201_CREATED)
 async def capture_job(
     session: SessionDep,

@@ -2588,9 +2588,7 @@ class Task(Base):
     updated_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending','done','dismissed')", name="ck_tasks_status"
-        ),
+        CheckConstraint("status IN ('pending','done','dismissed')", name="ck_tasks_status"),
         Index("ix_tasks_opportunity", "opportunity_id"),
         Index("ix_tasks_org_due", "org_id", "due_at"),
     )
@@ -2614,9 +2612,7 @@ class Note(Base):
     created_by: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
-    __table_args__ = (
-        Index("ix_notes_opportunity", "opportunity_id"),
-    )
+    __table_args__ = (Index("ix_notes_opportunity", "opportunity_id"),)
 
 
 #: A pool member's share of a campaign's sends, relative to the other members. 1 is the default

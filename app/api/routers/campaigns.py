@@ -439,24 +439,26 @@ async def campaigns_overview(
             bounced=bounced.get(c.id, 0),
             opted_out=opted_out.get(c.id, 0),
         )
-        result.append({
-            "id": str(c.id),
-            "name": c.name,
-            "status": c.status,
-            "created_at": c.created_at.isoformat(),
-            "leads_total": leads_by_campaign.get(c.id, 0),
-            "emails_sent": sent,
-            "replied": replied.get(c.id, 0),
-            "bounced": bounced.get(c.id, 0),
-            "opted_out": opted_out.get(c.id, 0),
-            "meetings_booked": meetings.get(c.id, 0),
-            "health": {
-                "grade": health.grade,
-                "reason": health.reason,
-                "reply_rate": health.reply_rate,
-                "bounce_rate": health.bounce_rate,
-            },
-        })
+        result.append(
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "status": c.status,
+                "created_at": c.created_at.isoformat(),
+                "leads_total": leads_by_campaign.get(c.id, 0),
+                "emails_sent": sent,
+                "replied": replied.get(c.id, 0),
+                "bounced": bounced.get(c.id, 0),
+                "opted_out": opted_out.get(c.id, 0),
+                "meetings_booked": meetings.get(c.id, 0),
+                "health": {
+                    "grade": health.grade,
+                    "reason": health.reason,
+                    "reply_rate": health.reply_rate,
+                    "bounce_rate": health.bounce_rate,
+                },
+            }
+        )
 
     return {"campaigns": result}
 

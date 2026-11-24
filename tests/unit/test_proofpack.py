@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain.proofpack import ClaritySuggestion, ProofPack, build, clarity_check
+from app.domain.proofpack import ClaritySuggestion, build, clarity_check
 
 
 class TestProofPack:
@@ -71,7 +71,6 @@ class TestProofPack:
     def test_no_io(self) -> None:
         """Module must not import httpx, asyncpg, or anything that opens a socket."""
         import importlib.util
-        import sys
 
         spec = importlib.util.find_spec("app.domain.proofpack")
         assert spec is not None
@@ -87,7 +86,11 @@ class TestClarityCheck:
         assert any("weasel" in r for r in reasons)
 
     def test_long_sentence_flagged(self) -> None:
-        long = "I have led many different teams across a variety of organizations in multiple industries over the past decade, and I have delivered a lot of important projects on time and under budget for clients. "
+        long = (
+            "I have led many different teams across a variety of organizations in m"
+            "ultiple industries over the past decade, and I have delivered a lot of "
+            "important projects on time and under budget for clients. "
+        )
         suggestions = clarity_check(long)
         reasons = [s.reason for s in suggestions]
         assert any("Sentence is" in r for r in reasons)

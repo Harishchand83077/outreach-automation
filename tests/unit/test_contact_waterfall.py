@@ -16,8 +16,6 @@ Three invariants:
 
 from __future__ import annotations
 
-import pytest
-
 from app.services.contacts.waterfall import ordered_providers
 
 
@@ -57,7 +55,6 @@ class TestOrderedProviders:
         assert result[0].provider == "snov"
 
     def test_revoked_key_is_excluded(self) -> None:
-        from datetime import UTC, datetime
         creds = [
             _cred("hunter", priority=10, revoked=True),
             _cred("snov", priority=20),
@@ -79,6 +76,7 @@ class TestButtonPressOnly:
         """The waterfall is a pure sort; it must not import httpx or any provider adapter."""
         import ast
         import pathlib
+
         source = pathlib.Path("app/services/contacts/waterfall.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -98,6 +96,7 @@ class TestButtonPressOnly:
         """The waterfall must not accept Settings — it cannot fall back to an env key."""
         import ast
         import pathlib
+
         source = pathlib.Path("app/services/contacts/waterfall.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -112,9 +111,13 @@ class TestButtonPressOnly:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _cred(provider: str, *, priority: int | None = None, invalid: bool = False, revoked: bool = False):
+
+def _cred(
+    provider: str, *, priority: int | None = None, invalid: bool = False, revoked: bool = False
+):
     from datetime import UTC, datetime
     from unittest.mock import MagicMock
+
     c = MagicMock()
     c.provider = provider
     c.priority = priority

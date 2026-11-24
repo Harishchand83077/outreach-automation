@@ -152,6 +152,7 @@ async def approve_answer(
 # Document upload and parse (S19.1, ADR-068)
 # ---------------------------------------------------------------------------
 
+
 def _doc(row: Document) -> dict[str, Any]:
     return {
         "id": str(row.id),
@@ -235,9 +236,7 @@ async def get_document(
 ) -> dict[str, Any]:
     row = (
         await session.execute(
-            select(Document).where(
-                Document.id == document_id, Document.org_id == user.org_id
-            )
+            select(Document).where(Document.id == document_id, Document.org_id == user.org_id)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -251,9 +250,7 @@ async def delete_document(
 ) -> None:
     row = (
         await session.execute(
-            select(Document).where(
-                Document.id == document_id, Document.org_id == user.org_id
-            )
+            select(Document).where(Document.id == document_id, Document.org_id == user.org_id)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -274,9 +271,7 @@ async def parse_document(
     """
     row = (
         await session.execute(
-            select(Document).where(
-                Document.id == document_id, Document.org_id == user.org_id
-            )
+            select(Document).where(Document.id == document_id, Document.org_id == user.org_id)
         )
     ).scalar_one_or_none()
     if row is None:
@@ -286,16 +281,13 @@ async def parse_document(
     row.text = text
 
     proposals = text_to_proposals(text)
-    proposed = await profile.propose_facts_from_resume(
-        session, user.ctx, proposals=proposals
-    )
+    proposed = await profile.propose_facts_from_resume(session, user.ctx, proposals=proposals)
     await session.commit()
 
     return {
         "document_id": str(document_id),
         "proposals": proposed,
         "note": (
-            "Proposals are unconfirmed. Confirm each one in the facts screen "
-            "before it can be used."
+            "Proposals are unconfirmed. Confirm each one in the facts screen before it can be used."
         ),
     }

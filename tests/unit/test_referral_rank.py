@@ -6,7 +6,12 @@ from app.domain.referral_rank import rank_for_company
 
 
 def _conn(full_name: str, company_norm: str, strength: int | None = None) -> dict[str, object]:
-    return {"id": "uuid", "full_name": full_name, "company_norm": company_norm, "strength": strength}
+    return {
+        "id": "uuid",
+        "full_name": full_name,
+        "company_norm": company_norm,
+        "strength": strength,
+    }
 
 
 class TestRankForCompany:
@@ -43,6 +48,7 @@ class TestRankForCompany:
 
     def test_no_io(self) -> None:
         import importlib.util
+
         spec = importlib.util.find_spec("app.domain.referral_rank")
         assert spec is not None
         source = open(spec.origin).read()

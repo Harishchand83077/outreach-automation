@@ -30,11 +30,17 @@ router = APIRouter(tags=["inbox"])
 # Helpers
 # ---------------------------------------------------------------------------
 
-_INBOX_STATES = frozenset({
-    "REPLIED", "IN_CONVERSATION", "MEETING_BOOKED",
-    "NOT_INTERESTED", "OPTED_OUT", "BOUNCED",
-    "AWAITING_APPROVAL",
-})
+_INBOX_STATES = frozenset(
+    {
+        "REPLIED",
+        "IN_CONVERSATION",
+        "MEETING_BOOKED",
+        "NOT_INTERESTED",
+        "OPTED_OUT",
+        "BOUNCED",
+        "AWAITING_APPROVAL",
+    }
+)
 
 
 def _flag_dict(flag: InboxFlag | None) -> dict[str, Any]:
@@ -53,10 +59,7 @@ def _thread(
     flag: InboxFlag | None,
     now: datetime,
 ) -> dict[str, Any]:
-    has_pending_draft = (
-        latest_draft is not None
-        and latest_draft.status == "pending_review"
-    )
+    has_pending_draft = latest_draft is not None and latest_draft.status == "pending_review"
     folder = inbox_domain.folder(
         lead_state=lead.state,
         latest_label=latest_label,
@@ -91,9 +94,7 @@ async def _get_lead(
     return row
 
 
-async def _latest_label(
-    lead_id: uuid.UUID, session: AsyncSession
-) -> str | None:
+async def _latest_label(lead_id: uuid.UUID, session: AsyncSession) -> str | None:
     result = await session.execute(
         select(Classification.label)
         .where(Classification.lead_id == lead_id)
@@ -103,9 +104,7 @@ async def _latest_label(
     return result.scalar_one_or_none()
 
 
-async def _latest_pending_draft(
-    lead_id: uuid.UUID, session: AsyncSession
-) -> Draft | None:
+async def _latest_pending_draft(lead_id: uuid.UUID, session: AsyncSession) -> Draft | None:
     result = await session.execute(
         select(Draft)
         .where(Draft.lead_id == lead_id, Draft.status == "pending_review")
@@ -119,9 +118,7 @@ async def _get_flag(
     lead_id: uuid.UUID, org_id: uuid.UUID, session: AsyncSession
 ) -> InboxFlag | None:
     result = await session.execute(
-        select(InboxFlag).where(
-            InboxFlag.org_id == org_id, InboxFlag.lead_id == lead_id
-        )
+        select(InboxFlag).where(InboxFlag.org_id == org_id, InboxFlag.lead_id == lead_id)
     )
     return result.scalar_one_or_none()
 
@@ -129,6 +126,7 @@ async def _get_flag(
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.get("/inbox/threads")
 async def list_threads(
@@ -194,9 +192,7 @@ async def list_threads(
     next_cursor: str | None = None
     if has_more and rows:
         last = rows[-1]
-        next_cursor = Cursor(
-            created_at=last.state_changed_at, row_id=last.id
-        ).encode()
+        next_cursor = Cursor(created_at=last.state_changed_at, row_id=last.id).encode()
 
     return {"threads": threads, "next_cursor": next_cursor}
 
@@ -216,9 +212,7 @@ async def get_thread(
 
     # All messages for this thread (newest last — conversation order)
     msgs_result = await session.execute(
-        select(Message)
-        .where(Message.lead_id == lead_id)
-        .order_by(Message.created_at)
+        select(Message).where(Message.lead_id == lead_id).order_by(Message.created_at)
     )
     messages = [
         {

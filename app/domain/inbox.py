@@ -39,8 +39,19 @@ _REPLY_NEEDED_LABELS = frozenset({"question", "objection", "not_now", "has_vendo
 
 #: Lead states that have never produced an inbound reply — excluded from the inbox.
 _PRE_REPLY_STATES = frozenset(
-    {"NEW", "ENRICHING", "RESEARCHED", "DRAFTED", "AWAITING_APPROVAL",
-     "APPROVED", "SENT", "FOLLOWUP_SENT", "NO_RESPONSE", "SKIPPED", "FAILED"}
+    {
+        "NEW",
+        "ENRICHING",
+        "RESEARCHED",
+        "DRAFTED",
+        "AWAITING_APPROVAL",
+        "APPROVED",
+        "SENT",
+        "FOLLOWUP_SENT",
+        "NO_RESPONSE",
+        "SKIPPED",
+        "FAILED",
+    }
 )
 
 

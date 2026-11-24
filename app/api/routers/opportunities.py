@@ -79,6 +79,7 @@ def _note(row: Note) -> dict[str, Any]:
 # Today — declared before /{opportunity_id} so the literal path is not eaten
 # ---------------------------------------------------------------------------
 
+
 @router.get("/opportunities/today")
 async def today(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
     """Tasks due today or overdue (and not done/dismissed), across all opportunities."""
@@ -102,6 +103,7 @@ async def today(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Opportunities CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.get("/opportunities")
 async def list_opportunities(
@@ -204,6 +206,7 @@ async def update_opportunity(
 # Status transition — the only writer of opportunities.status
 # ---------------------------------------------------------------------------
 
+
 @router.post("/opportunities/{opportunity_id}/status")
 async def change_status(
     opportunity_id: uuid.UUID,
@@ -249,6 +252,7 @@ async def change_status(
 # Timeline (read-only)
 # ---------------------------------------------------------------------------
 
+
 @router.get("/opportunities/{opportunity_id}/events")
 async def list_events(
     opportunity_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
@@ -278,6 +282,7 @@ async def list_events(
 # ---------------------------------------------------------------------------
 # Tasks
 # ---------------------------------------------------------------------------
+
 
 @router.get("/opportunities/{opportunity_id}/tasks")
 async def list_tasks(
@@ -348,9 +353,7 @@ async def update_task(
     title: Annotated[str | None, Body(embed=True)] = None,
 ) -> dict[str, Any]:
     row = (
-        await session.execute(
-            select(Task).where(Task.id == task_id, Task.org_id == user.org_id)
-        )
+        await session.execute(select(Task).where(Task.id == task_id, Task.org_id == user.org_id))
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found.")
@@ -372,6 +375,7 @@ async def update_task(
 # ---------------------------------------------------------------------------
 # Notes
 # ---------------------------------------------------------------------------
+
 
 @router.post("/opportunities/{opportunity_id}/notes", status_code=status.HTTP_201_CREATED)
 async def add_note(

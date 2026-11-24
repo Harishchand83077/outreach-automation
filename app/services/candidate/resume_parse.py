@@ -29,6 +29,7 @@ ALLOWED_CONTENT_TYPES: set[str] = {
 # Upload validation
 # ---------------------------------------------------------------------------
 
+
 def validate_upload(
     *,
     filename: str,
@@ -45,8 +46,7 @@ def validate_upload(
     _check_filename(filename)
     if content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError(
-            f"Unsupported file type: {content_type!r}. "
-            "Only PDF and DOCX files are accepted."
+            f"Unsupported file type: {content_type!r}. Only PDF and DOCX files are accepted."
         )
     if size > MAX_BYTES:
         raise ValueError(
@@ -74,6 +74,7 @@ def _check_filename(filename: str) -> None:
 # ---------------------------------------------------------------------------
 # Text extraction — offline, no network
 # ---------------------------------------------------------------------------
+
 
 def extract_text_from_pdf(data: bytes) -> str:
     """Extract plain text from PDF bytes using pypdf."""
@@ -114,9 +115,7 @@ def extract_text(data: bytes, content_type: str) -> str:
     """Dispatch to the right extractor based on content type."""
     if content_type == "application/pdf":
         return extract_text_from_pdf(data)
-    if content_type == (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    ):
+    if content_type == ("application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
         return extract_text_from_docx(data)
     raise ValueError(f"Cannot extract text from {content_type!r}")
 
@@ -154,22 +153,26 @@ def text_to_proposals(text: str) -> list[dict[str, object]]:
         employer = match.group(2).strip()
         start = match.group(3)
         end = match.group(4)
-        proposals.append({
-            "kind": "experience",
-            "statement": f"{role} at {employer} ({start}-{end})",
-            "confirmed": False,
-            "source": "resume",
-        })
+        proposals.append(
+            {
+                "kind": "experience",
+                "statement": f"{role} at {employer} ({start}-{end})",
+                "confirmed": False,
+                "source": "resume",
+            }
+        )
 
     for match in _SKILL_LINE_RE.finditer(text):
         skill = match.group(1).strip()
         if skill:
-            proposals.append({
-                "kind": "skill",
-                "statement": skill,
-                "confirmed": False,
-                "source": "resume",
-            })
+            proposals.append(
+                {
+                    "kind": "skill",
+                    "statement": skill,
+                    "confirmed": False,
+                    "source": "resume",
+                }
+            )
 
     return proposals
 
@@ -177,6 +180,7 @@ def text_to_proposals(text: str) -> list[dict[str, object]]:
 # ---------------------------------------------------------------------------
 # Sha-256 for deduplication
 # ---------------------------------------------------------------------------
+
 
 def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()

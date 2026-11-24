@@ -95,9 +95,7 @@ _CREDIT_NOTE: dict[str, str] = {
 
 
 @router.get("/contact-lookup/preview")
-async def lookup_waterfall_preview(
-    user: CurrentUserDep, session: SessionDep
-) -> dict[str, Any]:
+async def lookup_waterfall_preview(user: CurrentUserDep, session: SessionDep) -> dict[str, Any]:
     """The providers this workspace would try, in waterfall order.
 
     Returns only providers that have a live, non-invalid key.  ``credit_note`` is
@@ -105,11 +103,11 @@ async def lookup_waterfall_preview(
     Priority is set via ``PUT /provider-keys/{provider}`` (the ``priority`` field).
     """
     from sqlalchemy import select as _select
+
     rows = list(
         (
             await session.execute(
-                _select(ProviderCredential)
-                .where(
+                _select(ProviderCredential).where(
                     ProviderCredential.org_id == user.org_id,
                     ProviderCredential.revoked_at.is_(None),
                 )
