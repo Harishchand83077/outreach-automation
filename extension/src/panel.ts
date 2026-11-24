@@ -43,6 +43,8 @@ const ui = {
   jobConfirm: el<HTMLButtonElement>("job-confirm"),
   jobCancel: el<HTMLButtonElement>("job-cancel"),
   jobDone: el("job-done"),
+  siteAccess: el("site-access"),
+  grantSites: el<HTMLButtonElement>("grant-sites"),
   readAs: el("read-as"),
   partial: el("partial"),
   list: el<HTMLOListElement>("suggestions"),
@@ -121,10 +123,21 @@ ui.forget.addEventListener("click", async () => {
 async function injectInto<T>(file: string): Promise<T> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No page is open in this window.");
-  const [injected] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: [file],
-  });
+  let injected;
+  try {
+    [injected] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: [file],
+    });
+  } catch (error) {
+    // `activeTab` covers only the tab the toolbar icon was clicked on; a side panel outlives
+    // that. Offer the optional host grant, which the person gives on a click and can withdraw.
+    if (/permission|Cannot access/i.test(String(error))) {
+      ui.siteAccess.hidden = false;
+      throw new Error("Chrome needs your permission to read this page. Press Allow on websites, then try again.");
+    }
+    throw error;
+  }
   const result = injected?.result as T | undefined;
   if (!result) throw new Error("This page cannot be read. Chrome blocks extensions on it.");
   return result;
@@ -160,6 +173,12 @@ ui.saveJob.addEventListener("click", async () => {
   } catch (error) {
     fail(error instanceof Error ? error.message : "Something went wrong reading this page.");
   }
+});
+
+ui.grantSites.addEventListener("click", async () => {
+  const granted = await chrome.permissions.request({ origins: ["https://*/*"] });
+  ui.siteAccess.hidden = granted;
+  if (granted) clearError();
 });
 
 ui.jobCancel.addEventListener("click", closeJobPreview);
