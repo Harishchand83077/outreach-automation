@@ -353,3 +353,44 @@ class TestTheGatewayCannotAct:
     def test_an_unknown_scope_cannot_be_minted(self):
         assert "ext:submit" not in api_tokens.ALL_SCOPES
         assert "ext:fill" not in api_tokens.ALL_SCOPES
+
+
+class TestSavingAJob:
+    """`POST /ext/v1/jobs/capture`, and the dashboard minting the token that reaches it."""
+
+    async def test_a_saved_job_is_stored_once_per_url(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        body = {"url": "https://jobs.example.com/1", "title": "Backend Engineer"}
+
+        first = api.post(f"{EXT}/jobs/capture", json=body, headers=auth(token))
+        second = api.post(f"{EXT}/jobs/capture", json=body, headers=auth(token))
+
+        assert first.status_code == 201
+        assert first.json()["created"] is True
+        assert second.json()["created"] is False
+        assert second.json()["job_post_id"] == first.json()["job_post_id"]
+
+    async def test_a_non_http_link_or_blank_title_is_refused(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+
+        for body in (
+            {"url": "javascript:alert(1)", "title": "x"},
+            {"url": "https://jobs.example.com/2", "title": "  "},
+        ):
+            response = api.post(f"{EXT}/jobs/capture", json=body, headers=auth(token))
+            assert response.status_code == 422
+
+    async def test_the_dashboard_mints_an_extension_only_token(self, api, owner):
+        minted = api.post(
+            "/api/v1/mcp-tokens",
+            json={"name": "Chrome extension", "for_extension": True},
+            headers=owner,
+        )
+        assert minted.status_code == 201
+        assert minted.json()["scopes"] == [api_tokens.EXT_SUGGEST_SCOPE]
+        secret = minted.json()["token"]
+
+        assert api.get(f"{EXT}/whoami", headers=auth(secret)).status_code == 200
+        assert api.get("/api/v1/profile/facts", headers=auth(secret)).status_code == 401
+        listing = api.get("/api/v1/mcp-tokens", headers=owner).json()
+        assert listing["ext_scope"] == api_tokens.EXT_SUGGEST_SCOPE

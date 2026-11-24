@@ -200,6 +200,11 @@ async def capture_job(
     the person decides what to do with it on the dashboard.
     """
     bearer = await _bearer(session, authorization)
+    if not url.strip().lower().startswith(("http://", "https://")) or not title.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A job link needs an http(s) address and a title.",
+        )
     now = datetime.now(tz=UTC)
 
     # De-duplicate by URL — a posting seen before returns the existing id.

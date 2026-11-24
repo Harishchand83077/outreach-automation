@@ -78,6 +78,14 @@ export class Client {
     return this.call<SuggestResponse>("/suggest", { page_url: pageUrl, labels });
   }
 
+  captureJob(job: {
+    url: string;
+    title: string;
+    company_domain: string | null;
+  }): Promise<{ job_post_id: string; created: boolean }> {
+    return this.call<{ job_post_id: string; created: boolean }>("/jobs/capture", job);
+  }
+
   outcome(id: string, state: "accepted" | "edited" | "rejected"): Promise<{ recorded: boolean }> {
     return this.call<{ recorded: boolean }>(`/suggestions/${encodeURIComponent(id)}/outcome`, {
       state,

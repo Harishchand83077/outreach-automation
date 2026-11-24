@@ -15,7 +15,10 @@ Then in Chrome: `chrome://extensions` → **Developer mode** on → **Load unpac
 `extension/dist`. Pin the toolbar icon; clicking it opens the side panel.
 
 In the panel, paste **your workspace's API address** and an **extension token** (dashboard →
-Settings → the extension panel). Chrome will ask once for permission to reach that one address.
+Settings → Browser extension → Create extension token). Chrome will ask once for permission to reach that one address.
+
+**Save this job:** on a posting page, press it, check the title and link shown, then confirm.
+Only the URL, title and employer domain are sent.
 
 ## What it sends, and what it does not
 

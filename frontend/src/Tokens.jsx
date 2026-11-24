@@ -355,10 +355,13 @@ export function McpTokens({ onError, onToast }) {
                   <td className="muted">
                     {/* The scope the server actually issues, named by the server, so this
                         cannot label a row with a string it does not use. */}
-                    {data.propose_scope &&
-                    (row.scopes || []).includes(data.propose_scope)
-                      ? "read + propose drafts"
-                      : "read only"}
+                    {data.ext_scope &&
+                    (row.scopes || []).includes(data.ext_scope)
+                      ? "browser extension"
+                      : data.propose_scope &&
+                          (row.scopes || []).includes(data.propose_scope)
+                        ? "read + propose drafts"
+                        : "read only"}
                   </td>
                   <td className="muted">{row.created_at.slice(0, 10)}</td>
                   <td className="muted">
@@ -386,6 +389,79 @@ export function McpTokens({ onError, onToast }) {
       ) : (
         <p className="muted">No tokens yet.</p>
       )}
+    </>
+  );
+}
+
+// The browser extension's own credential. A separate door from the connector (ADR-039): this token
+// opens `/ext/v1` and nothing else, so it can be pasted into a browser without that browser being
+// able to read the workspace.
+export function ExtensionToken({ onError, onToast }) {
+  const [name, setName] = useState("Chrome extension");
+  const [busy, setBusy] = useState(false);
+  // Held in memory only and shown once, as for the connector tokens above.
+  const [minted, setMinted] = useState(null);
+  const apiBase = API.replace(/\/api\/v1$/, "");
+
+  const mint = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const created = await postJson("/mcp-tokens", {
+        json: { name, for_extension: true },
+      });
+      setMinted(created);
+      onToast("Extension token created. Copy it now — it is not shown again.", "success");
+    } catch (err) {
+      onError(err);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <p className="muted">
+        The Chrome side panel suggests answers to application questions from your confirmed
+        answer bank, and can save a job posting you are looking at. It never fills in or submits
+        a form. Its token opens one door only &mdash; it cannot read your campaigns, leads or
+        replies. Revoke it from the token list above.
+      </p>
+      <dl className="kv">
+        <dt>API address</dt>
+        <dd className="mono">{apiBase}</dd>
+        <dt>Install</dt>
+        <dd>
+          <span className="mono">cd extension &amp;&amp; npm ci &amp;&amp; npm run build</span>, then
+          chrome://extensions &rarr; Developer mode &rarr; Load unpacked &rarr; extension/dist.
+        </dd>
+      </dl>
+      {minted ? (
+        <div className="banner" data-tone="warn" role="alert">
+          <p>
+            <strong>Copy this now.</strong> It is not stored and cannot be shown again.
+          </p>
+          <p className="mono" style={{ wordBreak: "break-all" }}>
+            {minted.token}
+          </p>
+          <button type="button" className="btn" onClick={() => setMinted(null)}>
+            I have copied it
+          </button>
+        </div>
+      ) : null}
+      <form onSubmit={mint} className="field-row">
+        <label className="field">
+          <span>Name this token</span>
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            maxLength={80}
+          />
+        </label>
+        <button type="submit" className="btn" disabled={busy || !name.trim()}>
+          {busy ? "Creating…" : "Create extension token"}
+        </button>
+      </form>
     </>
   );
 }

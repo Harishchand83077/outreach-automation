@@ -2282,7 +2282,7 @@ class Connection(Base):
     #: Which upload this row came from, so a re-import can replace rather than accumulate and a
     #: person can delete one upload without losing the others.
     import_batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    #: 1–5 scale, user's own judgement. NULL = not rated. Never inferred (ADR-072).
+    #: 1-5 scale, user's own judgement. NULL = not rated. Never inferred (ADR-072).
     strength: Mapped[int | None] = mapped_column(SmallInteger())
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     relationship_note: Mapped[str | None] = mapped_column(Text)
