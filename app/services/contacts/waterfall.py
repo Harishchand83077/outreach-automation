@@ -16,7 +16,7 @@ from __future__ import annotations
 from app.db.models import ProviderCredential
 
 #: Sentinel for NULL priority so it sorts after any real integer.
-_NULL_PRIORITY = 2 ** 31
+_NULL_PRIORITY = 2**31
 
 
 def ordered_providers(
@@ -30,10 +30,7 @@ def ordered_providers(
     Returns:
         Filtered and sorted list — lower ``priority`` first, then ``provider`` name.
     """
-    usable = [
-        c for c in credentials
-        if c.invalid_reason is None and c.revoked_at is None
-    ]
+    usable = [c for c in credentials if c.invalid_reason is None and c.revoked_at is None]
     return sorted(
         usable,
         key=lambda c: (c.priority if c.priority is not None else _NULL_PRIORITY, c.provider),

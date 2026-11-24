@@ -11,7 +11,7 @@ import { getJson, patchJson } from "./api";
 import { Icons, PageHeader, modeExplanation, modeTone } from "./ui";
 import { SendAllowlist, SendModeControl, Suppressions } from "./SendControls";
 import Team from "./Team";
-import { McpTokens, OAuthClients } from "./Tokens";
+import { ExtensionToken, McpTokens, OAuthClients } from "./Tokens";
 
 //: Weekday 0 is Monday, matching `CampaignSettings.send_days`. Checkboxes rather than a text
 //: field precisely because the one production outage this screen prevents was a hand-written
@@ -317,6 +317,9 @@ export default function Settings({ campaign, isOwner, onError, onToast, onChange
 
       <h2 className="section-title">Connect your own Claude</h2>
       <McpTokens onError={onError} onToast={onToast} />
+
+      <h2 className="section-title">Browser extension</h2>
+      <ExtensionToken onError={onError} onToast={onToast} />
 
       <h2 className="section-title">Connected applications</h2>
       <OAuthClients isOwner={isOwner} onError={onError} onToast={onToast} />

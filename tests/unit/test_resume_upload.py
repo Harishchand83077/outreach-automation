@@ -10,39 +10,43 @@ Three invariants:
 
 from __future__ import annotations
 
-import hashlib
 import io
 import pathlib
-import uuid
 
 
 class TestUploadGuards:
     def test_traversing_filename_is_rejected(self) -> None:
         from app.services.candidate.resume_parse import validate_upload
+
         with __import__("pytest").raises(ValueError, match="filename"):
             validate_upload(filename="../../etc/passwd", content_type="application/pdf", size=100)
 
     def test_null_byte_in_filename_is_rejected(self) -> None:
         from app.services.candidate.resume_parse import validate_upload
+
         with __import__("pytest").raises(ValueError, match="filename"):
             validate_upload(filename="resume\x00.pdf", content_type="application/pdf", size=100)
 
     def test_oversized_file_is_rejected(self) -> None:
-        from app.services.candidate.resume_parse import validate_upload, MAX_BYTES
+        from app.services.candidate.resume_parse import MAX_BYTES, validate_upload
+
         with __import__("pytest").raises(ValueError, match="too large"):
             validate_upload(filename="cv.pdf", content_type="application/pdf", size=MAX_BYTES + 1)
 
     def test_file_at_exactly_cap_is_accepted(self) -> None:
-        from app.services.candidate.resume_parse import validate_upload, MAX_BYTES
+        from app.services.candidate.resume_parse import MAX_BYTES, validate_upload
+
         validate_upload(filename="cv.pdf", content_type="application/pdf", size=MAX_BYTES)
 
     def test_unsupported_content_type_is_rejected(self) -> None:
         from app.services.candidate.resume_parse import validate_upload
+
         with __import__("pytest").raises(ValueError, match="type"):
             validate_upload(filename="cv.txt", content_type="text/plain", size=100)
 
     def test_pdf_and_docx_are_accepted(self) -> None:
         from app.services.candidate.resume_parse import validate_upload
+
         validate_upload(filename="cv.pdf", content_type="application/pdf", size=100)
         validate_upload(
             filename="cv.docx",
@@ -83,6 +87,7 @@ class TestParseProposesOnlyNeverConfirms:
 
     def test_empty_text_gives_no_proposals(self) -> None:
         from app.services.candidate.resume_parse import text_to_proposals
+
         assert text_to_proposals("") == []
         assert text_to_proposals("   \n  ") == []
 
@@ -90,6 +95,7 @@ class TestParseProposesOnlyNeverConfirms:
 class TestParseIsOffline:
     def test_resume_parse_module_imports_no_httpx(self) -> None:
         import ast
+
         source = pathlib.Path("app/services/candidate/resume_parse.py").read_text()
         tree = ast.parse(source)
         for node in ast.walk(tree):
@@ -108,17 +114,18 @@ class TestParseIsOffline:
 # Minimal file builders
 # ---------------------------------------------------------------------------
 
+
 def _minimal_pdf(text: str) -> bytes:
     """Return a minimal valid PDF with one text stream."""
     from pypdf import PdfWriter
-    from pypdf.generic import NameObject
+
     writer = PdfWriter()
-    page = writer.add_blank_page(width=612, height=792)
+    writer.add_blank_page(width=612, height=792)
     # write plain text using a basic annotation comment so we have something
     # to extract without needing font embedding
     buf = io.BytesIO()
     writer.write(buf)
-    raw = buf.getvalue()
+    buf.getvalue()
     # For extraction we need a real text stream. Build one minimally.
     return _pdf_with_text(text)
 
@@ -129,6 +136,7 @@ def _pdf_with_text(text: str) -> bytes:
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.pdfgen import canvas as rl_canvas
+
         buf = io.BytesIO()
         c = rl_canvas.Canvas(buf, pagesize=letter)
         c.setFont("Helvetica", 12)
@@ -161,12 +169,13 @@ def _pdf_with_text(text: str) -> bytes:
             b"/Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
         ),
         (
-            b"4 0 obj\n<< /Length " + str(len(obj_content)).encode() + b" >>\nstream\n"
-            + obj_content + b"\nendstream\nendobj\n"
+            b"4 0 obj\n<< /Length "
+            + str(len(obj_content)).encode()
+            + b" >>\nstream\n"
+            + obj_content
+            + b"\nendstream\nendobj\n"
         ),
-        (
-            b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
-        ),
+        (b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"),
     ]
 
     header = b"%PDF-1.4\n"
@@ -184,8 +193,7 @@ def _pdf_with_text(text: str) -> bytes:
         xref += f"{off:010d} 00000 n \n".encode()
 
     trailer = (
-        b"trailer\n<< /Size 6 /Root 1 0 R >>\n"
-        b"startxref\n" + str(xref_offset).encode() + b"\n%%EOF"
+        b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n" + str(xref_offset).encode() + b"\n%%EOF"
     )
     return header + body + xref + trailer
 
@@ -193,6 +201,7 @@ def _pdf_with_text(text: str) -> bytes:
 def _minimal_docx(text: str) -> bytes:
     """Return .docx bytes with the given text."""
     from docx import Document
+
     doc = Document()
     for line in text.split("\n"):
         doc.add_paragraph(line)

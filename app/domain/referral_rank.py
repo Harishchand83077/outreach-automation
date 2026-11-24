@@ -56,8 +56,7 @@ def rank_for_company(
         Ranked list, most recommendable first. Empty if no match.
     """
     matching = [
-        c for c in connections
-        if _norm(str(c.get("company_norm") or "")) == _norm(company_norm)
+        c for c in connections if _norm(str(c.get("company_norm") or "")) == _norm(company_norm)
     ]
 
     ranked: list[RankedConnection] = []
@@ -93,9 +92,7 @@ def _reason(strength: int | None) -> str:
     if strength is None:
         return "Tie strength not rated. Rate it in Connections to improve ranking."
     if strength <= 2:
-        return (
-            f"Weak tie (strength {strength}/5) — research shows weak ties are most effective."
-        )
+        return f"Weak tie (strength {strength}/5) — research shows weak ties are most effective."
     if strength == 3:
         return f"Moderate tie (strength {strength}/5) — a good balance of rapport and reach."
     return f"Strong tie (strength {strength}/5) — high rapport; ask directly but expect less reach."

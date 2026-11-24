@@ -44,31 +44,43 @@ CLOSED_REASONS: tuple[str, ...] = (
 #: Allowed forward moves between non-terminal states, in addition to any → closed.
 #: A move not in this graph (and not → closed) is illegal.
 _FORWARD: dict[OpportunityStatus, frozenset[OpportunityStatus]] = {
-    OpportunityStatus.SAVED: frozenset({
-        OpportunityStatus.PREPARING,
-        OpportunityStatus.READY,
-        OpportunityStatus.APPLIED,
-        OpportunityStatus.IN_CONVERSATION,
-    }),
-    OpportunityStatus.PREPARING: frozenset({
-        OpportunityStatus.READY,
-        OpportunityStatus.APPLIED,
-        OpportunityStatus.IN_CONVERSATION,
-    }),
-    OpportunityStatus.READY: frozenset({
-        OpportunityStatus.APPLIED,
-        OpportunityStatus.IN_CONVERSATION,
-    }),
-    OpportunityStatus.APPLIED: frozenset({
-        OpportunityStatus.IN_CONVERSATION,
-        OpportunityStatus.INTERVIEWING,
-    }),
-    OpportunityStatus.IN_CONVERSATION: frozenset({
-        OpportunityStatus.INTERVIEWING,
-    }),
-    OpportunityStatus.INTERVIEWING: frozenset({
-        OpportunityStatus.OFFER,
-    }),
+    OpportunityStatus.SAVED: frozenset(
+        {
+            OpportunityStatus.PREPARING,
+            OpportunityStatus.READY,
+            OpportunityStatus.APPLIED,
+            OpportunityStatus.IN_CONVERSATION,
+        }
+    ),
+    OpportunityStatus.PREPARING: frozenset(
+        {
+            OpportunityStatus.READY,
+            OpportunityStatus.APPLIED,
+            OpportunityStatus.IN_CONVERSATION,
+        }
+    ),
+    OpportunityStatus.READY: frozenset(
+        {
+            OpportunityStatus.APPLIED,
+            OpportunityStatus.IN_CONVERSATION,
+        }
+    ),
+    OpportunityStatus.APPLIED: frozenset(
+        {
+            OpportunityStatus.IN_CONVERSATION,
+            OpportunityStatus.INTERVIEWING,
+        }
+    ),
+    OpportunityStatus.IN_CONVERSATION: frozenset(
+        {
+            OpportunityStatus.INTERVIEWING,
+        }
+    ),
+    OpportunityStatus.INTERVIEWING: frozenset(
+        {
+            OpportunityStatus.OFFER,
+        }
+    ),
     OpportunityStatus.OFFER: frozenset(),
     OpportunityStatus.CLOSED: frozenset(),
 }
@@ -82,9 +94,7 @@ class IllegalTransition(Exception):
     ) -> None:
         self.from_status = from_status
         self.to_status = to_status
-        super().__init__(
-            f"Cannot move opportunity from {from_status!r} to {to_status!r}"
-        )
+        super().__init__(f"Cannot move opportunity from {from_status!r} to {to_status!r}")
 
 
 def assert_allowed(

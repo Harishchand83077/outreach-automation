@@ -7,16 +7,15 @@ there is nothing to mock.  Run with:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
 from app.domain import inbox
 
-
-NOW = datetime(2026, 11, 21, 10, 0, 0, tzinfo=timezone.utc)
-LATER = datetime(2026, 11, 22, 10, 0, 0, tzinfo=timezone.utc)
-EARLIER = datetime(2026, 11, 20, 10, 0, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 21, 10, 0, 0, tzinfo=UTC)
+LATER = datetime(2026, 11, 22, 10, 0, 0, tzinfo=UTC)
+EARLIER = datetime(2026, 11, 20, 10, 0, 0, tzinfo=UTC)
 
 
 def _folder(

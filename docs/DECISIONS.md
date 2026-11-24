@@ -5306,3 +5306,26 @@ The keyboard shortcut row was helpful but invisible to new users.
    the existing keyboard row.
 
 **Consequences.** No migration, no API change. 38 frontend tests unchanged.
+
+---
+
+## ADR-080 — The extension becomes usable: a way to mint its token, and Save this job
+
+**Context.** The extension (ADR-040) was built and tested but could not be connected: the server
+could mint an `ext:suggest` token (`for_extension`) and no screen asked for one. S19.4's
+`POST /ext/v1/jobs/capture` existed with no caller, and the package had no icons.
+
+**Decision.**
+
+1. Settings gains a **Browser extension** section that mints an extension-only token, shown once.
+   `GET /mcp-tokens` names `ext_scope` so the token table labels those rows "browser extension"
+   instead of "read only".
+2. The extension gains **Save this job**: a second injected script (`job.js`, a classic script, never
+   in the manifest) reads URL, title and the employer's domain (JobPosting JSON-LD, else headline).
+   The panel shows exactly those three fields and sends only on a second press, through the one
+   existing `fetch` in `api.ts`.
+3. `jobs/capture` refuses a non-http(s) link or blank title (422).
+4. Icons added. **No manifest permission change**; every ADR-040 absence test still passes unchanged.
+
+**Consequences.** No migration. 2 new extension tests, 3 new gateway tests. Needs-human: touches the
+token-minting screen.

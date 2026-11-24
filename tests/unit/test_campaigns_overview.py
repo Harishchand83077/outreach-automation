@@ -63,6 +63,7 @@ class TestNoTrackingColumns:
         if not screen.exists():
             pytest.skip("Campaigns.jsx not yet written")
         import re
+
         source = screen.read_text()
         # Match property access (.opened / ?.opened) or string key ("opened" / 'opened')
         assert not re.search(r'[.?]opened\b|["\']opened["\']', source), (

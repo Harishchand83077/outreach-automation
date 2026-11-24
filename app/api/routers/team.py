@@ -426,6 +426,7 @@ async def list_mcp_tokens(user: CurrentUserDep, session: SessionDep) -> dict[str
         # Named rather than hard-coded in the dashboard, so the screen cannot label a row with a
         # scope string the server does not actually issue.
         "propose_scope": api_tokens.PROPOSE_SCOPE,
+        "ext_scope": api_tokens.EXT_SUGGEST_SCOPE,
     }
 
 

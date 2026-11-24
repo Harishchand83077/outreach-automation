@@ -253,9 +253,7 @@ async def propose_facts_from_resume(
     existing_statements: set[str] = {
         row.statement
         for row in (
-            await session.execute(
-                select(ProfileFact).where(ProfileFact.org_id == ctx.org_id)
-            )
+            await session.execute(select(ProfileFact).where(ProfileFact.org_id == ctx.org_id))
         ).scalars()
     }
 
@@ -273,11 +271,13 @@ async def propose_facts_from_resume(
             source="resume",
         )
         existing_statements.add(statement)
-        stored.append({
-            "id": str(row.id),
-            "fact_id": row.fact_id,
-            "kind": row.kind,
-            "statement": row.statement,
-            "confirmed": False,
-        })
+        stored.append(
+            {
+                "id": str(row.id),
+                "fact_id": row.fact_id,
+                "kind": row.kind,
+                "statement": row.statement,
+                "confirmed": False,
+            }
+        )
     return stored

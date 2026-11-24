@@ -291,6 +291,7 @@ async def update_application(
 # Resume workspace (S19.3) — resume versions linked to an opportunity
 # ---------------------------------------------------------------------------
 
+
 @router.get("/resume-versions/for-opportunity/{opportunity_id}")
 async def list_versions_for_opportunity(
     opportunity_id: uuid.UUID, user: CurrentUserDep, session: SessionDep

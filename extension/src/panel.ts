@@ -19,6 +19,7 @@
 import { ApiError, Client, type Suggestion } from "./api";
 import * as config from "./config";
 import type { Collected } from "./form";
+import type { JobInfo } from "./jobinfo";
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -35,6 +36,13 @@ const ui = {
   connect: el<HTMLButtonElement>("connect"),
   forget: el<HTMLButtonElement>("forget"),
   suggest: el<HTMLButtonElement>("suggest"),
+  saveJob: el<HTMLButtonElement>("save-job"),
+  jobPreview: el("job-preview"),
+  jobTitle: el("job-title"),
+  jobUrl: el("job-url"),
+  jobConfirm: el<HTMLButtonElement>("job-confirm"),
+  jobCancel: el<HTMLButtonElement>("job-cancel"),
+  jobDone: el("job-done"),
   readAs: el("read-as"),
   partial: el("partial"),
   list: el<HTMLOListElement>("suggestions"),
@@ -110,17 +118,68 @@ ui.forget.addEventListener("click", async () => {
  * those rather than returning nothing. The refusal is reported as the page being unreadable,
  * because from the user's side that is what happened.
  */
-async function readActivePage(): Promise<Collected> {
+async function injectInto<T>(file: string): Promise<T> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error("No page is open in this window.");
   const [injected] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    files: ["collect.js"],
+    files: [file],
   });
-  const result = injected?.result as Collected | undefined;
+  const result = injected?.result as T | undefined;
   if (!result) throw new Error("This page cannot be read. Chrome blocks extensions on it.");
   return result;
 }
+
+const readActivePage = (): Promise<Collected> => injectInto<Collected>("collect.js");
+
+let pendingJob: JobInfo | null = null;
+
+function closeJobPreview(): void {
+  pendingJob = null;
+  ui.jobPreview.hidden = true;
+}
+
+/** Two presses on purpose: the first reads and shows, the second is the only one that sends. */
+ui.saveJob.addEventListener("click", async () => {
+  clearError();
+  ui.jobDone.hidden = true;
+  if (!client) {
+    fail("Connect first.");
+    return;
+  }
+  try {
+    const job = await injectInto<JobInfo>("job.js");
+    if (!/^https?:/i.test(job.url) || !job.title) {
+      fail("This page does not look like a job posting I can read a title from.");
+      return;
+    }
+    pendingJob = job;
+    ui.jobTitle.textContent = job.company_domain ? `${job.title} (${job.company_domain})` : job.title;
+    ui.jobUrl.textContent = job.url;
+    ui.jobPreview.hidden = false;
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Something went wrong reading this page.");
+  }
+});
+
+ui.jobCancel.addEventListener("click", closeJobPreview);
+
+ui.jobConfirm.addEventListener("click", async () => {
+  if (!client || !pendingJob) return;
+  ui.jobConfirm.disabled = true;
+  try {
+    const saved = await client.captureJob(pendingJob);
+    ui.jobDone.textContent = saved.created
+      ? "Saved. Find it under Jobs in the dashboard."
+      : "You had already saved this posting; it is refreshed.";
+    ui.jobDone.hidden = false;
+    closeJobPreview();
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not save this job.");
+  } finally {
+    ui.jobConfirm.disabled = false;
+  }
+});
 
 function row(suggestion: Suggestion): HTMLLIElement {
   const item = document.createElement("li");

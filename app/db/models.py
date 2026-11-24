@@ -2282,7 +2282,7 @@ class Connection(Base):
     #: Which upload this row came from, so a re-import can replace rather than accumulate and a
     #: person can delete one upload without losing the others.
     import_batch_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
-    #: 1–5 scale, user's own judgement. NULL = not rated. Never inferred (ADR-072).
+    #: 1-5 scale, user's own judgement. NULL = not rated. Never inferred (ADR-072).
     strength: Mapped[int | None] = mapped_column(SmallInteger())
     tags: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
     relationship_note: Mapped[str | None] = mapped_column(Text)
@@ -2588,9 +2588,7 @@ class Task(Base):
     updated_at: Mapped[datetime] = _now_col(nullable=False)
 
     __table_args__ = (
-        CheckConstraint(
-            "status IN ('pending','done','dismissed')", name="ck_tasks_status"
-        ),
+        CheckConstraint("status IN ('pending','done','dismissed')", name="ck_tasks_status"),
         Index("ix_tasks_opportunity", "opportunity_id"),
         Index("ix_tasks_org_due", "org_id", "due_at"),
     )
@@ -2614,9 +2612,7 @@ class Note(Base):
     created_by: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = _now_col(nullable=False)
 
-    __table_args__ = (
-        Index("ix_notes_opportunity", "opportunity_id"),
-    )
+    __table_args__ = (Index("ix_notes_opportunity", "opportunity_id"),)
 
 
 #: A pool member's share of a campaign's sends, relative to the other members. 1 is the default
@@ -3029,3 +3025,10 @@ class InboxFlag(Base):
         UniqueConstraint("org_id", "lead_id", name="uq_inbox_flags_org_lead"),
         Index("ix_inbox_flags_org_snoozed", "org_id", "snoozed_until"),
     )
+
+
+# Indexes the migrations create, declared by explicit name: the naming convention would prefix
+# the schema onto an `index=True` column and the two would disagree.
+Index("ix_lead_notes_lead_id", LeadNote.lead_id)
+Index("ix_resume_versions_opportunity_id", ResumeVersion.opportunity_id)
+Index("ix_applications_opportunity_id", Application.opportunity_id)

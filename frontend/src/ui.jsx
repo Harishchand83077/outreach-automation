@@ -883,7 +883,7 @@ export function formatBytes(bytes) {
  * and after each reload, and `ctrl.reload()` triggers a fresh fetch.
  *
  * Usage:
- *   const [items, load] = useLoad(() => getJson("/things"), [dep]);
+ *   const [items, load] = useLoad(() => getJson("/campaigns"), [dep]);
  *   if (load.loading) return <Skeleton />;
  *   load.reload();   // call after a mutation
  */

@@ -25,6 +25,7 @@ export default defineConfig({
         panel: resolve(here, "panel.html"),
         background: resolve(here, "src/background.ts"),
         collect: resolve(here, "src/collect.ts"),
+        job: resolve(here, "src/job.ts"),
       },
       output: {
         entryFileNames: "[name].js",

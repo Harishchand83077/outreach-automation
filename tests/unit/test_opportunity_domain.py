@@ -102,7 +102,6 @@ class TestOneWriterStructural:
             pathlib.Path("app/domain/opportunity.py"),
             pathlib.Path("app/db/opportunity.py"),
         }
-        pattern = ast.parse  # just used to verify imports below
 
         offenders: list[str] = []
         for path in pathlib.Path("app").rglob("*.py"):

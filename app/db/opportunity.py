@@ -76,9 +76,7 @@ async def transition(
         if not closed_reason:
             raise MissingClosedReason("closing an opportunity requires a closed_reason")
         if closed_reason not in CLOSED_REASONS:
-            raise ValueError(
-                f"closed_reason must be one of: {', '.join(CLOSED_REASONS)}"
-            )
+            raise ValueError(f"closed_reason must be one of: {', '.join(CLOSED_REASONS)}")
 
     _now = now or datetime.now(tz=UTC)
     opp = await lock_opportunity(session, org_id, opportunity_id)
