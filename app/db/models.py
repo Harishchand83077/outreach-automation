@@ -2325,7 +2325,6 @@ class LeadNote(Base):
         UUID(as_uuid=True),
         ForeignKey(f"{SCHEMA}.leads.id", ondelete="CASCADE"),
         nullable=False,
-        index=True,
     )
     author_id: Mapped[str] = mapped_column(Text, nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
@@ -2379,7 +2378,6 @@ class ResumeVersion(Base):
         UUID(as_uuid=True),
         ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     base_document_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
@@ -2466,7 +2464,6 @@ class Application(Base):
         UUID(as_uuid=True),
         ForeignKey(f"{SCHEMA}.opportunities.id", ondelete="SET NULL"),
         nullable=True,
-        index=True,
     )
     channel: Mapped[str | None] = mapped_column(String(40))
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="planned")
