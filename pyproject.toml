@@ -7,10 +7,10 @@ requires-python = "==3.12.*"
 # Pinned to exact versions. The prototype used `>=` throughout with no lockfile, so two
 # installs a week apart were different programs (issue E6). `uv.lock` pins the full graph.
 dependencies = [
-    "fastapi==0.163.0",
+    "fastapi==0.165.0",
     "uvicorn[standard]==0.54.0",
-    "python-multipart==0.0.33",
-    "pydantic==2.14.3",
+    "python-multipart==0.0.34",
+    "pydantic==2.14.4",
     "pydantic-settings==2.16.3",
     "python-dotenv==1.2.4",
     "openpyxl==3.1.5",
@@ -21,7 +21,7 @@ dependencies = [
     # logs are structured JSON on stdout (`app/core/logging.py`), and the database is Postgres.
     # They are listed here only as a note, because an image that still carried four unused
     # dependency trees would carry their vulnerabilities too (§19).
-    "sqlalchemy[asyncio]==2.1.8",
+    "sqlalchemy[asyncio]==2.1.9",
     "asyncpg==0.32.0",
     "alembic==1.20.1",
     # Windows ships no tz database, and scheduling is defined in Asia/Kolkata, so ZoneInfo
@@ -56,7 +56,7 @@ dependencies = [
     # Bytes are stored in Postgres (ADR-016 precedent); these dependencies are only called
     # inside the parse_resume job, never in a request handler.
     "pypdf>=7.1.1",
-    "python-docx==1.1.2",
+    "python-docx==1.2.0",
 ]
 
 [dependency-groups]
