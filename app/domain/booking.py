@@ -26,6 +26,16 @@ def opens_own_calendar(url: str) -> bool:
     return any(shape in lowered for shape in OWN_CALENDAR_SHAPES)
 
 
+def contains_booking_webhook(text: str) -> bool:
+    """Whether an email's text carries this system's inbound booking webhook URL.
+
+    That URL embeds the workspace's secret: in an email it hands every recipient the credential
+    that can mark a lead booked (ADR-074). Checked at approval, so a persona saved before the
+    save-time check existed cannot still put it in front of a recipient.
+    """
+    return WEBHOOK_PATH in (text or "").lower()
+
+
 def is_the_booking_webhook(url: str) -> bool:
     """Whether this is the *inbound* webhook URL rather than a page a person can book on.
 

@@ -503,6 +503,17 @@ export default function ReviewQueue({ campaignId, onError, onToast, onChanged })
               </label>
             ) : null}
 
+            {/* The webhook URL looks like any booking link and is a secret; the server refuses
+                to approve it, and this says why before somebody presses the button. */}
+            {`${edits[item.draft_id]?.body ?? item.body}`.includes("/hooks/booking/") ? (
+              <div className="banner" data-tone="bad" role="alert" style={{ marginTop: 10 }}>
+                <span>
+                  The link in this email is your booking <strong>webhook</strong> URL, which is a
+                  secret and cannot be sent. Replace it with your real booking page, and fix the
+                  campaign's booking link.
+                </span>
+              </div>
+            ) : null}
             <div className="btn-row">
               <button
                 type="button"

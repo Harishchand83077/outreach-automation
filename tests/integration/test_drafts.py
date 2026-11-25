@@ -165,6 +165,22 @@ class TestApproval:
         assert approved.approved_at is not None
         assert lead.state == "APPROVED"
 
+    async def test_a_draft_carrying_the_booking_webhook_cannot_be_approved(
+        self, db, ctx, lead_factory
+    ):
+        """The webhook URL is a secret (ADR-074); approval refuses it, edited or not."""
+        lead = await lead_factory(state="AWAITING_APPROVAL")
+        row = await drafts_repo.save_draft(
+            db, ctx, lead=lead, kind="initial", result=passing_result()
+        )
+        await db.commit()
+        leaked = "Book here: https://api.example.com/hooks/booking/abc.def"
+
+        with pytest.raises(ValueError, match="webhook"):
+            await drafts_repo.approve(
+                db, ctx, draft_id=row.id, approved_by="r@example.com", edited_body=leaked
+            )
+
     async def test_approving_does_not_send(self, db, ctx, lead_factory):
         """It only makes the lead eligible; the send loop re-checks everything (§9.1)."""
         from app.db.models import Message
