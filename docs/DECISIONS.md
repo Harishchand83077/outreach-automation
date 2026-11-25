@@ -5342,3 +5342,18 @@ button pressed once site access is granted, and the Copy label resets.
 
 **Consequences.** No API or migration change; send behaviour untouched. The extension still
 contains no `.click()`: retry is a function call, not a synthetic click.
+
+---
+
+## ADR-082 — Approval refuses an email that carries the booking webhook URL
+
+**Context.** ADR-074 stopped the webhook URL being *saved* as a booking link, but a persona stored
+earlier still drafts it into emails (seen in the live review queue), and a reviewer cannot tell it
+from a booking page. Send mode is `live`.
+
+**Decision.** `draft_store.approve` (the single approval path, used by the A shortcut and bulk
+approval) raises when the final subject/body contains `/hooks/booking/`; bulk approval skips such
+drafts with a reason; the review card shows why. No other sending behaviour changes.
+
+**Consequences.** A draft with that link cannot be approved until it is edited. **needs-human**
+(approval/sending path). The owner still has to rotate the exposed secret and fix the persona.

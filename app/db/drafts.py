@@ -29,6 +29,7 @@ from app.db.models import Attachment, Campaign, Draft, Lead, Research
 from app.db.repo import OrgContext, _page_size
 from app.db.state import record_event, transition
 from app.domain.attachment import should_attach
+from app.domain.booking import contains_booking_webhook
 from app.domain.campaign import CampaignSettings
 from app.domain.state import LeadState
 from app.services.drafting.generator import DraftResult
@@ -312,6 +313,20 @@ async def approve(
     edited = (edited_subject is not None and edited_subject != draft.subject) or (
         edited_body is not None and edited_body != draft.body
     )
+
+    # **The webhook URL is a secret, and no reviewer can be expected to recognise it.** It looks
+    # like any booking link; in an email it gives the recipient the credential that marks a lead
+    # booked (ADR-074). Refused here, the one place every approval passes through, so the
+    # keyboard shortcut and bulk approval cannot route around it.
+    final_subject = edited_subject if edited_subject is not None else draft.subject
+    final_body = edited_body if edited_body is not None else draft.body
+    final_text = final_subject + " " + final_body
+    if contains_booking_webhook(final_text):
+        raise ValueError(
+            "this email contains your booking webhook URL, which is a secret and must never be "
+            "sent to a recipient. Replace it with your real booking page link (edit the text), "
+            "and correct the campaign's booking link."
+        )
 
     # **A draft that failed validation may be approved only after somebody changes it.** Not
     # because a human needs permission -- `review_all` already means a person decides, and an
@@ -686,6 +701,9 @@ async def bulk_approve(
             continue
         if item.draft.status == "validation_failed":
             skipped[str(draft_id)] = "validation failed; read this one"
+            continue
+        if contains_booking_webhook(item.draft.subject + " " + item.draft.body):
+            skipped[str(draft_id)] = "contains the booking webhook URL (a secret); edit it out"
             continue
         if item.thin_research:
             skipped[str(draft_id)] = "research was thin; read this one"
