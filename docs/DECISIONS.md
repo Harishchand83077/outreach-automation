@@ -5403,3 +5403,17 @@ unchanged. No manifest change, no new permission.
 the content area rendered nothing (no request, no error). Moved into the unscoped group; empty
 states fixed; `test_each_screen_is_drawn_in_the_group_its_route_sends_it_to` guards the class.
 No API or data change.
+
+---
+
+## ADR-086 — Retrieval is keyword search for the user's own Claude; no vector store, no in-app agents
+
+**Decision.** Full reasoning in `docs/AI_STRATEGY.md`. Add workspace search as Postgres full-text
+(`websearch_to_tsquery`, read time, no index yet, every branch filtered on `org_id`) behind
+`GET /api/v1/search`, the dashboard command palette, and an MCP tool `search_workspace`
+(read-only, no spend; text from replies, postings and research is wrapped as untrusted and left
+out of the structured copy). Do not add pgvector or an embedding provider, an in-app autonomous
+agent, or fuzzy answer-bank matching.
+
+**Consequences.** No migration, no deploy-config change, no new dependency. Needs an API redeploy
+for the route and the MCP tool. A GIN index is a later migration if measurement asks for it.

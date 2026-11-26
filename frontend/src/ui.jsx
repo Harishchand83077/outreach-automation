@@ -426,8 +426,10 @@ export function Drawer({ title, badges, onClose, children }) {
  * ranks badly on short lists — with eight commands and a handful of campaigns, typing "cam"
  * should show the campaigns, not a scored permutation of every item in the app.
  */
-export function CommandPalette({ open, onClose, commands }) {
+export function CommandPalette({ open, onClose, commands, onSearch }) {
   const [query, setQuery] = useState("");
+  // Hits from the workspace itself (leads, notes, replies, postings), fetched as you type.
+  const [found, setFound] = useState([]);
   const [active, setActive] = useState(0);
   const input = useRef(null);
 
@@ -440,15 +442,39 @@ export function CommandPalette({ open, onClose, commands }) {
     }
   }, [open]);
 
+  useEffect(() => {
+    const needle = query.trim();
+    if (!open || !onSearch || needle.length < 3) {
+      setFound([]);
+      return undefined;
+    }
+    let live = true;
+    // Debounced: one request per pause in typing, and a late answer to an old query is dropped.
+    const timer = setTimeout(async () => {
+      try {
+        const hits = await onSearch(needle);
+        if (live) setFound(hits);
+      } catch {
+        if (live) setFound([]);
+      }
+    }, 250);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [open, query, onSearch]);
+
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return commands;
-    return commands.filter((command) =>
-      `${command.group} ${command.label} ${command.hint || ""}`
-        .toLowerCase()
-        .includes(needle),
-    );
-  }, [commands, query]);
+    const local = !needle
+      ? commands
+      : commands.filter((command) =>
+          `${command.group} ${command.label} ${command.hint || ""}`
+            .toLowerCase()
+            .includes(needle),
+        );
+    return [...local, ...found];
+  }, [commands, query, found]);
 
   useEffect(() => {
     setActive((current) => Math.min(current, Math.max(matches.length - 1, 0)));

@@ -45,6 +45,7 @@ from app.services.brief import build as brief_build
 from app.services.candidate import fit_store, profile
 from app.services.graph import store as graph
 from app.services.mcp import proposals, protocol
+from app.services.search import workspace as workspace_search
 
 #: `tools/list` is cached by the client. Five minutes is long enough to matter and short enough
 #: that a catalogue change lands without anybody restarting anything.
@@ -805,6 +806,37 @@ async def _propose_company_note(
     )
 
 
+async def _search_workspace(
+    session: AsyncSession, ctx: OrgContext, args: dict[str, Any]
+) -> tuple[str, Any]:
+    """Keyword search over everything this workspace holds (ADR-086).
+
+    Database only: no model runs and nothing is spent. A snippet taken from text a third party
+    wrote (a reply, a posting, a researched page) crosses the boundary wrapped, and is left out of
+    the structured copy so the unwrapped words are never the only thing a client reads.
+    """
+    query = args.get("query")
+    if not isinstance(query, str) or len(workspace_search.clean_query(query)) < 2:
+        return "Give a search query of at least two characters.", None
+    hits = await workspace_search.search(session, ctx, query)
+    if not hits:
+        return f"Nothing in this workspace matches {query!r}.", {"hits": []}
+    lines = [f"{len(hits)} match(es) for {query!r}:"]
+    for hit in hits:
+        head = f"- [{hit.kind}] {hit.title} (id {hit.id}" + (
+            f", lead {hit.lead_id})" if hit.lead_id else ")"
+        )
+        if hit.untrusted:
+            lines.append(head + "\n" + protocol.untrusted(hit.snippet, source=hit.kind, id=hit.id))
+        else:
+            lines.append(f"{head}: {hit.snippet}")
+    structured = [
+        {k: v for k, v in hit.as_dict().items() if not (hit.untrusted and k == "snippet")}
+        for hit in hits
+    ]
+    return "\n".join(lines), {"hits": structured}
+
+
 CATALOGUE: tuple[Tool, ...] = (
     Tool(
         name="list_campaigns",
@@ -1104,6 +1136,29 @@ CATALOGUE: tuple[Tool, ...] = (
         },
         handler=proposals.propose_reply,
         read_only=False,
+        returns_untrusted_text=True,
+    ),
+    Tool(
+        name="search_workspace",
+        title="Search this workspace",
+        description=(
+            "Keyword search across this workspace's leads, notes, inbound replies, research, "
+            "job postings and saved people, ranked, with a snippet and the id to open each hit. "
+            "Use it to find what is already known before researching or drafting. It reads the "
+            f"database only and spends nothing. {UNTRUSTED_NOTE}"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Words to look for. Quotes, OR and -word work.",
+                }
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        handler=_search_workspace,
         returns_untrusted_text=True,
     ),
 )
