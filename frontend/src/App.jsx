@@ -730,6 +730,10 @@ function Dashboard({ session }) {
                 <Admin onError={handle} onToast={toast} />
               ) : view === "platform" ? (
                 <Platform onError={handle} />
+              ) : view === "opportunities" ? (
+                <Opportunities />
+              ) : view === "today" ? (
+                <Today />
               ) : null
             ) : !campaign && !campaignsLoaded ? (
               <>
@@ -811,10 +815,6 @@ function Dashboard({ session }) {
                 onToast={toast}
                 onChanged={refreshCampaigns}
               />
-            ) : view === "opportunities" ? (
-              <Opportunities />
-            ) : view === "today" ? (
-              <Today />
             ) : null}
             </div>
           </ErrorBoundary>
