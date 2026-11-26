@@ -18,7 +18,13 @@ from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, CurrentUserDep, SessionDep, SettingsDep, require_role
-from app.db.models import CONTACT_PROVIDERS, Campaign, ContactCandidate, ProviderCredential
+from app.db.models import (
+    CONTACT_PROVIDERS,
+    Campaign,
+    ContactCandidate,
+    ProviderCredential,
+    SavedPerson,
+)
 from app.db.queue import QueueFull
 from app.domain import connections
 from app.services.contacts import keys, lookup
@@ -418,3 +424,71 @@ async def import_a_candidate(
     row.lead_id = leads[0].id
     await session.commit()
     return {"lead_id": str(leads[0].id), "campaign_id": str(campaign_id)}
+
+
+# ---------------------------------------------------------------------------
+# ADR-084 -- people the user saved from a page, waiting for an address
+# ---------------------------------------------------------------------------
+
+
+def _person(row: SavedPerson) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "full_name": row.full_name,
+        "headline": row.headline,
+        "company_name": row.company_name,
+        "profile_url": row.profile_url,
+        "email": row.email,
+        "state": row.state,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@router.get("/people")
+async def list_saved_people(
+    user: CurrentUserDep, session: SessionDep, state: str | None = None
+) -> dict[str, Any]:
+    """People saved from the extension, newest first. Listing never fetches a profile."""
+    query = select(SavedPerson).where(SavedPerson.org_id == user.org_id)
+    if state:
+        query = query.where(SavedPerson.state == state)
+    rows = (await session.scalars(query.order_by(SavedPerson.created_at.desc()).limit(200))).all()
+    return {"people": [_person(row) for row in rows]}
+
+
+async def _own_person(session: SessionDep, user: CurrentUser, person_id: uuid.UUID) -> SavedPerson:
+    row = await session.get(SavedPerson, person_id)
+    if row is None or row.org_id != user.org_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found.")
+    return row
+
+
+@router.post("/people/{person_id}/found")
+async def record_found_address(
+    person_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    email: Annotated[str, Body(embed=True)],
+) -> dict[str, Any]:
+    """Record an address the user found. It still needs the ordinary import to become a lead."""
+    row = await _own_person(session, user, person_id)
+    address = email.strip()
+    local, _, domain = address.partition("@")
+    if not local or "." not in domain or " " in address:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="That is not an email address."
+        )
+    row.email = address[:320]
+    row.state = "found"
+    await session.commit()
+    return _person(row)
+
+
+@router.post("/people/{person_id}/dismiss")
+async def dismiss_saved_person(
+    person_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> dict[str, Any]:
+    row = await _own_person(session, user, person_id)
+    row.state = "dismissed"
+    await session.commit()
+    return _person(row)

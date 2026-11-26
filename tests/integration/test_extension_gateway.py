@@ -464,3 +464,60 @@ class TestRememberLookupRecent:
             )
         ).scalar_one()
         assert row.body_text == "Kubernetes."
+
+
+class TestSavingAPerson:
+    """`POST /ext/v1/people` (ADR-084): one page, one click, nothing fetched."""
+
+    async def test_a_person_is_stored_once_per_profile_and_the_query_is_dropped(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        body = {
+            "url": "https://www.linkedin.com/in/asha-rao?trk=abc#top",
+            "full_name": "Asha Rao",
+            "headline": "CTO at Acme",
+        }
+
+        first = api.post(f"{EXT}/people", json=body, headers=auth(token))
+        second = api.post(
+            f"{EXT}/people",
+            json={**body, "url": "https://www.linkedin.com/in/asha-rao"},
+            headers=auth(token),
+        )
+
+        assert first.status_code == 201
+        assert first.json()["created"] is True
+        assert second.json()["created"] is False
+        assert second.json()["person_id"] == first.json()["person_id"]
+
+    async def test_a_bad_link_or_blank_name_is_refused(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        for body in (
+            {"url": "javascript:alert(1)", "full_name": "x"},
+            {"url": "https://example.com/in/x", "full_name": " "},
+        ):
+            assert api.post(f"{EXT}/people", json=body, headers=auth(token)).status_code == 422
+
+    async def test_the_dashboard_lists_records_an_address_and_dismisses(self, api, db, org, owner):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        saved = api.post(
+            f"{EXT}/people",
+            json={"url": "https://www.linkedin.com/in/b", "full_name": "B"},
+            headers=auth(token),
+        ).json()
+
+        listed = api.get("/api/v1/people", headers=owner).json()["people"]
+        assert [p["full_name"] for p in listed] == ["B"]
+        assert listed[0]["state"] == "to_look_up"
+
+        bad = api.post(
+            f"/api/v1/people/{saved['person_id']}/found", json={"email": "nope"}, headers=owner
+        )
+        assert bad.status_code == 422
+        found = api.post(
+            f"/api/v1/people/{saved['person_id']}/found",
+            json={"email": "b@example.com"},
+            headers=owner,
+        )
+        assert found.json()["state"] == "found"
+        gone = api.post(f"/api/v1/people/{saved['person_id']}/dismiss", headers=owner)
+        assert gone.json()["state"] == "dismissed"
