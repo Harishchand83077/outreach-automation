@@ -5394,3 +5394,12 @@ it may not (LinkedIn, anything that sends).
 
 **Consequences.** Additive migration `f94b2c67d8a1`, no existing data touched. Rule 4 is
 unchanged. No manifest change, no new permission.
+
+---
+
+## ADR-085 — Opportunities and Today were drawn in the wrong render group
+
+**Decision.** Both routes are unscoped but their `view ===` branches sat after the campaign gate, so
+the content area rendered nothing (no request, no error). Moved into the unscoped group; empty
+states fixed; `test_each_screen_is_drawn_in_the_group_its_route_sends_it_to` guards the class.
+No API or data change.

@@ -122,3 +122,27 @@ def test_the_guard_is_looking_at_something() -> None:
     assert len(_routes(source)) >= 10
     assert len(_BRANCH.findall(source)) >= 10
     assert _NAV_ID.findall(_nav_block(source))
+
+
+def test_each_screen_is_drawn_in_the_group_its_route_sends_it_to() -> None:
+    """A route without `scoped: true` is drawn before the campaign gate; a scoped one after it.
+
+    `/opportunities` and `/today` had a `view ===` branch, so the guards above passed, but the
+    branch sat after the campaign gate while the route was unscoped: the screen rendered nothing.
+    """
+    source = _source()
+    scoped: dict[str, bool] = {}
+    start = source.index("const ROUTES = [")
+    for line in source[start : source.index("\n];", start)].splitlines():
+        found = _ROUTE.search(line)
+        if found:
+            scoped[found.group(2)] = scoped.get(found.group(2), False) or "scoped: true" in line
+    gate = source.index("!campaign && !campaignsLoaded")
+    misplaced = []
+    for route_id, is_scoped in scoped.items():
+        for match in re.finditer(rf"""view\s*===\s*["']{route_id}["']""", source):
+            if (match.start() > gate) != is_scoped:
+                misplaced.append(route_id)
+    assert not misplaced, (
+        f"drawn in the wrong group, so they render nothing: {sorted(set(misplaced))}"
+    )

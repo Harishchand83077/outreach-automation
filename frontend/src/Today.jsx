@@ -18,7 +18,7 @@ export default function Today() {
       {load.loading ? (
         <Skeleton rows={3} />
       ) : pending.length === 0 ? (
-        <Empty message="Nothing due today. Check back tomorrow." />
+        <Empty title="Nothing due today">Tasks from your opportunities appear here when they are due.</Empty>
       ) : (
         <div>
           {pending.map((t) => (

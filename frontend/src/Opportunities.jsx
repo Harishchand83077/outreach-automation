@@ -250,7 +250,7 @@ export default function Opportunities() {
           onRefresh={refresh}
         />
       ) : list.length === 0 ? (
-        <Empty message="No opportunities yet. Save a job post to get started." />
+        <Empty title="No opportunities yet">Save a job post from Job hunt or the extension to start tracking it.</Empty>
       ) : view === "board" ? (
         <PipelineBoard opps={list} onSelect={setSelected} />
       ) : (
