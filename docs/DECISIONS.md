@@ -5357,3 +5357,19 @@ drafts with a reason; the review card shows why. No other sending behaviour chan
 
 **Consequences.** A draft with that link cannot be approved until it is edited. **needs-human**
 (approval/sending path). The owner still has to rotate the exposed secret and fix the persona.
+
+---
+
+## ADR-083 — The extension grows three opt-in abilities, still suggest-only
+
+**Decision.** (1) `POST /ext/v1/answers` writes an **unapproved** answer-bank row and never
+overwrites an existing one; approval stays a dashboard action. (2) `POST /ext/v1/jobs/lookup` and
+`GET /ext/v1/jobs/recent` report saved postings and any **already stored** fit score (no model
+call). (3) `jobs/capture` accepts optional `body_text`; the panel offers "Save with posting text"
+as a separate button after showing the character count, so page text leaves the browser only on
+that press. Form-field contents are excluded by construction and tested. The text lets the
+dashboard score a posting and lets the connected Claude (MCP `list_job_posts`, `get_fit_score`)
+read it.
+
+**Consequences.** No migration, no manifest change. The ADR-040 absence tests still pass. The
+extension still cannot fill, submit, mark applied or read leads.

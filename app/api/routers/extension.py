@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Request, status
 from sqlalchemy import select
 
 from app.api.deps import SessionDep
-from app.db.models import Capture, JobPost, Suggestion
+from app.db.models import Capture, FitScoreRow, JobPost, Suggestion
 from app.db.repo import OrgContext
 from app.services import api_tokens
 from app.services.candidate import profile
@@ -193,6 +193,7 @@ async def capture_job(
     url: Annotated[str, Body(embed=True)],
     title: Annotated[str, Body(embed=True)],
     company_domain: Annotated[str | None, Body(embed=True)] = None,
+    body_text: Annotated[str | None, Body(embed=True)] = None,
     authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     """Save a job posting link the extension sees.
@@ -223,6 +224,9 @@ async def capture_job(
 
     if existing is not None:
         # Update the title and verification timestamp if the posting is still open.
+        # Text sent on a later save fills a link-only one in, so it can then be scored.
+        if body_text and body_text.strip() and not existing.body_text:
+            existing.body_text = body_text.strip()[:MAX_PAGE_CHARS]
         if existing.status == "open":
             existing.last_verified_at = now
         await session.commit()
@@ -234,6 +238,7 @@ async def capture_job(
         external_id=url_hash,
         company_domain=company_domain,
         title=title.strip()[:500],
+        body_text=(body_text.strip()[:MAX_PAGE_CHARS] if body_text and body_text.strip() else None),
         apply_url=url[:2000],
         first_seen_at=now,
         fetched_at=now,
@@ -243,3 +248,106 @@ async def capture_job(
     await session.commit()
     await session.refresh(post)
     return {"job_post_id": str(post.id), "created": True}
+
+
+# ---------------------------------------------------------------------------
+# S22 — remember an answer, know a job is already saved, see recent saves (ADR-083)
+# ---------------------------------------------------------------------------
+
+
+@router.post("/answers", status_code=status.HTTP_201_CREATED)
+async def propose_answer(
+    session: SessionDep,
+    question: Annotated[str, Body(embed=True)],
+    answer: Annotated[str, Body(embed=True)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """Offer an answer for the person to approve later. **It is never offered back until they do.**
+
+    The extension can write an *unapproved* row and nothing else: approval is a dashboard action,
+    so a leaked extension token cannot make the bank say something the person never read. An
+    existing entry for the same question is **left alone** -- `add_answer` would reset an
+    approved answer to unapproved, which a button in a side panel must not do silently.
+    """
+    bearer = await _bearer(session, authorization)
+    ctx = OrgContext(org_id=bearer.org_id, actor_id=f"ext:{bearer.user_id}")
+    pattern = " ".join(question.split())[:MAX_LABEL_CHARS].lower()
+    text = answer.strip()[:4000]
+    if not pattern or not text:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="An answer needs both the question and the answer.",
+        )
+    existing = {row.question_pattern for row in await profile.list_answers(session, ctx)}
+    if pattern in existing:
+        return {"saved": False, "reason": "You already have an answer for this question."}
+    await profile.add_answer(session, ctx, question_pattern=pattern, answer=text, approve=False)
+    await session.commit()
+    return {"saved": True, "reason": "Saved for your approval in the dashboard."}
+
+
+@router.post("/jobs/lookup")
+async def lookup_job(
+    session: SessionDep,
+    url: Annotated[str, Body(embed=True)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """Whether this exact link was already saved. POST so the URL stays out of access logs."""
+    bearer = await _bearer(session, authorization)
+    url_hash = hashlib.sha256(url.encode()).hexdigest()[:64]
+    row = (
+        await session.execute(
+            select(JobPost).where(
+                JobPost.org_id == bearer.org_id,
+                JobPost.source == "pasted",
+                JobPost.external_id == url_hash,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return {"saved": False}
+    return {"saved": True, "job_post_id": str(row.id), "title": row.title, "status": row.status}
+
+
+@router.get("/jobs/recent")
+async def recent_jobs(
+    session: SessionDep,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """The last few saved postings, with a fit score **only if one was already computed**.
+
+    Read-only and model-free: a score is computed in the dashboard on an explicit press, and
+    this just reports the stored row, so the panel and the dashboard cannot disagree.
+    """
+    bearer = await _bearer(session, authorization)
+    rows = (
+        await session.execute(
+            select(JobPost, FitScoreRow)
+            .outerjoin(
+                FitScoreRow,
+                (FitScoreRow.job_post_id == JobPost.id) & (FitScoreRow.org_id == JobPost.org_id),
+            )
+            .where(JobPost.org_id == bearer.org_id, JobPost.source == "pasted")
+            .order_by(JobPost.created_at.desc())
+            .limit(8)
+        )
+    ).all()
+    return {
+        "jobs": [
+            {
+                "id": str(post.id),
+                "title": post.title,
+                "company_domain": post.company_domain,
+                "status": post.status,
+                "saved_at": post.created_at.isoformat() if post.created_at else None,
+                "fit": None
+                if fit is None
+                else {
+                    "score": fit.score,
+                    "matched": len(fit.matched or []),
+                    "requirements": len(fit.requirements or []),
+                },
+            }
+            for post, fit in rows
+        ]
+    }

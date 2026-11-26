@@ -167,3 +167,13 @@ li.needs-user {
   color: var(--error-fg);
   background: var(--error-bg);
 }
+
+.recent {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+}
+.recent li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}

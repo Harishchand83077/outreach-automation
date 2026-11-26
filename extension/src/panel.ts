@@ -16,7 +16,7 @@
  *   else wrote, and this panel is an extension page with the extension's own privileges.
  */
 
-import { ApiError, Client, type Suggestion } from "./api";
+import { ApiError, Client, type RecentJob, type Suggestion } from "./api";
 import * as config from "./config";
 import type { Collected } from "./form";
 import type { JobInfo } from "./jobinfo";
@@ -43,7 +43,11 @@ const ui = {
   jobConfirm: el<HTMLButtonElement>("job-confirm"),
   jobCancel: el<HTMLButtonElement>("job-cancel"),
   jobDone: el("job-done"),
+  jobNote: el("job-note"),
+  jobSize: el("job-size"),
+  jobConfirmText: el<HTMLButtonElement>("job-confirm-text"),
   siteAccess: el("site-access"),
+  recent: el<HTMLUListElement>("recent"),
   grantSites: el<HTMLButtonElement>("grant-sites"),
   readAs: el("read-as"),
   partial: el("partial"),
@@ -63,12 +67,46 @@ function clearError(): void {
   ui.error.hidden = true;
 }
 
+function recentRow(job: RecentJob): HTMLLIElement {
+  const item = document.createElement("li");
+  const title = document.createElement("div");
+  // `textContent`: a title is text from somebody else's page.
+  title.textContent = job.company_domain ? `${job.title} (${job.company_domain})` : job.title;
+  item.append(title);
+  const meta = document.createElement("div");
+  meta.className = "muted";
+  const saved = job.saved_at ? job.saved_at.slice(0, 10) : "";
+  meta.textContent = job.fit
+    ? `Saved ${saved}. Fit ${Math.round(job.fit.score * 100)}%: ${job.fit.matched} of ${job.fit.requirements} requirements matched your confirmed facts.`
+    : `Saved ${saved}. Not scored yet; score it in the dashboard.`;
+  item.append(meta);
+  return item;
+}
+
+async function loadRecent(): Promise<void> {
+  if (!client) return;
+  try {
+    const { jobs } = await client.recentJobs();
+    if (!jobs.length) {
+      const empty = document.createElement("li");
+      empty.className = "muted";
+      empty.textContent = "Nothing saved yet.";
+      ui.recent.replaceChildren(empty);
+      return;
+    }
+    ui.recent.replaceChildren(...jobs.map(recentRow));
+  } catch {
+    // A list that fails to load is not worth an error banner; the buttons above still work.
+  }
+}
+
 async function connect(apiUrl: string, token: string): Promise<void> {
   const next = new Client(apiUrl, token);
   const who = await next.whoami();
   client = next;
   ui.status.textContent = `Connected as ${who.role}.`;
   ui.work.hidden = false;
+  void loadRecent();
   // The setup form stays reachable -- a token lapses and the panel must not become a dead end.
   ui.setup.hidden = false;
 }
@@ -169,7 +207,15 @@ async function runSaveJob(): Promise<void> {
       fail("This page does not look like a job posting I can read a title from.");
       return;
     }
+    const known = await client.lookupJob(job.url).catch(() => ({ saved: false }));
+    ui.jobNote.textContent = known.saved
+      ? "You already saved this posting. Saving again only refreshes it."
+      : "";
     pendingJob = job;
+    ui.jobSize.textContent = job.text
+      ? `"Save with posting text" also sends ${job.text.length.toLocaleString()} characters of this page's text, so it can be scored against your confirmed facts and read by your connected Claude. Form fields are never read.`
+      : "";
+    ui.jobConfirmText.hidden = !job.text;
     ui.jobTitle.textContent = job.company_domain ? `${job.title} (${job.company_domain})` : job.title;
     ui.jobUrl.textContent = job.url;
     ui.jobPreview.hidden = false;
@@ -192,22 +238,29 @@ ui.grantSites.addEventListener("click", async () => {
 
 ui.jobCancel.addEventListener("click", closeJobPreview);
 
-ui.jobConfirm.addEventListener("click", async () => {
+async function confirmJob(withText: boolean): Promise<void> {
   if (!client || !pendingJob) return;
   ui.jobConfirm.disabled = true;
+  ui.jobConfirmText.disabled = true;
   try {
-    const saved = await client.captureJob(pendingJob);
+    const { text, ...rest } = pendingJob;
+    const saved = await client.captureJob(withText ? { ...rest, body_text: text } : rest);
     ui.jobDone.textContent = saved.created
       ? "Saved. Find it under Jobs in the dashboard."
       : "You had already saved this posting; it is refreshed.";
     ui.jobDone.hidden = false;
     closeJobPreview();
+    void loadRecent();
   } catch (error) {
     fail(error instanceof Error ? error.message : "Could not save this job.");
   } finally {
     ui.jobConfirm.disabled = false;
+    ui.jobConfirmText.disabled = false;
   }
-});
+}
+
+ui.jobConfirm.addEventListener("click", () => void confirmJob(false));
+ui.jobConfirmText.addEventListener("click", () => void confirmJob(true));
 
 function row(suggestion: Suggestion): HTMLLIElement {
   const item = document.createElement("li");
@@ -256,6 +309,29 @@ function row(suggestion: Suggestion): HTMLLIElement {
   });
 
   actions.append(copy, reject);
+
+  // Only where there was no approved answer, or the person rewrote it: the useful case is
+  // "I just wrote this for the first time", and the bank only ever receives it unapproved.
+  const remember = document.createElement("button");
+  remember.type = "button";
+  remember.className = "secondary";
+  remember.textContent = "Remember for later";
+  remember.addEventListener("click", async () => {
+    const text = box.value.trim();
+    if (!text) {
+      remember.textContent = "Write an answer first";
+      return;
+    }
+    remember.disabled = true;
+    try {
+      const result = await client?.proposeAnswer(suggestion.field_key, text);
+      remember.textContent = result?.saved ? "Sent for your approval" : "Already in your bank";
+    } catch {
+      remember.disabled = false;
+      remember.textContent = "Could not save; try again";
+    }
+  });
+  if (suggestion.state === "needs_user") actions.append(remember);
   item.append(actions);
 
   if (suggestion.fact_ids.length) {
