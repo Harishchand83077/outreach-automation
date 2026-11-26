@@ -394,3 +394,73 @@ class TestSavingAJob:
         assert api.get("/api/v1/profile/facts", headers=auth(secret)).status_code == 401
         listing = api.get("/api/v1/mcp-tokens", headers=owner).json()
         assert listing["ext_scope"] == api_tokens.EXT_SUGGEST_SCOPE
+
+
+class TestRememberLookupRecent:
+    """S22 (ADR-083): the extension proposes answers, knows what is saved, lists recent saves."""
+
+    async def test_a_proposed_answer_is_unapproved_and_never_offered_back(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+
+        saved = api.post(
+            f"{EXT}/answers",
+            json={"question": "Notice period", "answer": "30 days"},
+            headers=auth(token),
+        )
+        offered = api.post(
+            f"{EXT}/suggest",
+            json={"page_url": "https://jobs.example.com/a", "labels": ["Notice period"]},
+            headers=auth(token),
+        )
+
+        assert saved.json()["saved"] is True
+        assert offered.json()["suggestions"][0]["state"] == "needs_user"
+        assert offered.json()["suggestions"][0]["answer"] is None
+
+    async def test_an_existing_answer_is_left_alone(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        body = {"question": "Current CTC", "answer": "x"}
+
+        first = api.post(f"{EXT}/answers", json=body, headers=auth(token))
+        second = api.post(
+            f"{EXT}/answers", json={**body, "answer": "overwritten"}, headers=auth(token)
+        )
+
+        assert first.json()["saved"] is True
+        assert second.json()["saved"] is False
+
+    async def test_lookup_and_recent_follow_a_save(self, api, db, org):
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        url = "https://jobs.example.com/lookup-1"
+        assert api.post(f"{EXT}/jobs/lookup", json={"url": url}, headers=auth(token)).json() == {
+            "saved": False
+        }
+
+        api.post(
+            f"{EXT}/jobs/capture",
+            json={"url": url, "title": "Data Engineer", "body_text": "Requires Python."},
+            headers=auth(token),
+        )
+        found = api.post(f"{EXT}/jobs/lookup", json={"url": url}, headers=auth(token)).json()
+        recent = api.get(f"{EXT}/jobs/recent", headers=auth(token)).json()["jobs"]
+
+        assert found["saved"] is True
+        assert any(job["title"] == "Data Engineer" and job["fit"] is None for job in recent)
+
+    async def test_a_link_only_save_is_filled_in_by_a_later_save_with_text(self, api, db, org):
+        from app.db.models import JobPost
+
+        token = await mint(db, org, scopes=[api_tokens.EXT_SUGGEST_SCOPE])
+        body = {"url": "https://jobs.example.com/text-1", "title": "SRE"}
+
+        api.post(f"{EXT}/jobs/capture", json=body, headers=auth(token))
+        api.post(
+            f"{EXT}/jobs/capture", json={**body, "body_text": "Kubernetes."}, headers=auth(token)
+        )
+
+        row = (
+            await db.execute(
+                select(JobPost).where(JobPost.org_id == org.id, JobPost.title == "SRE")
+            )
+        ).scalar_one()
+        assert row.body_text == "Kubernetes."

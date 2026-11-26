@@ -35,8 +35,11 @@
         <p class="muted">This is all that will be sent:</p>
         <p id="job-title"></p>
         <p id="job-url" class="muted"></p>
+        <p id="job-note" class="warn"></p>
+        <p id="job-size" class="muted"></p>
         <div class="row">
-          <button id="job-confirm" type="button">Save to my workspace</button>
+          <button id="job-confirm" type="button">Save link only</button>
+          <button id="job-confirm-text" type="button">Save with posting text</button>
           <button id="job-cancel" type="button" class="secondary">Cancel</button>
         </div>
       </div>
@@ -46,6 +49,8 @@
         <button id="grant-sites" type="button">Allow on websites</button>
       </div>
       <p id="job-done" class="muted" hidden></p>
+      <h2>Recently saved</h2>
+      <ul id="recent" class="recent"></ul>
       <p id="read-as" class="muted"></p>
       <p id="partial" class="warn" hidden></p>
       <ol id="suggestions"></ol>

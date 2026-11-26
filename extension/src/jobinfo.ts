@@ -13,6 +13,22 @@ export interface JobInfo {
   url: string;
   title: string;
   company_domain: string | null;
+  /** The posting's visible text, capped. Sent only if the person chooses "with posting text". */
+  text: string;
+}
+
+const MAX_TEXT = 20000;
+
+/** Visible text of the main content, with scripts and every form control left out. */
+function postingText(doc: Document): string {
+  const root = (doc.querySelector("main, article, [role=main]") ?? doc.body)?.cloneNode(true) as
+    | HTMLElement
+    | undefined;
+  if (!root) return "";
+  root.querySelectorAll("script, style, noscript, input, textarea, select, nav, footer").forEach((n) => n.remove());
+  // textContent glues block elements together ("Dev" + "Build"); a space after each keeps words apart.
+  root.querySelectorAll("h1, h2, h3, h4, p, li, br, div, tr, td").forEach((n) => n.append(" "));
+  return (root.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, MAX_TEXT);
 }
 
 function jsonLdPostings(doc: Document): Array<Record<string, unknown>> {
@@ -70,5 +86,6 @@ export function readJob(doc: Document, href: string): JobInfo {
     url,
     title: (fromLd || headline).slice(0, 500),
     company_domain: domainOf(organisation?.["sameAs"] ?? organisation?.["url"]),
+    text: postingText(doc),
   };
 }

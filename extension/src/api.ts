@@ -21,6 +21,15 @@ export interface SuggestResponse {
   note: string;
 }
 
+export interface RecentJob {
+  id: string;
+  title: string;
+  company_domain: string | null;
+  status: string;
+  saved_at: string | null;
+  fit: { score: number; matched: number; requirements: number } | null;
+}
+
 export interface WhoAmI {
   connected: boolean;
   role: string;
@@ -82,8 +91,21 @@ export class Client {
     url: string;
     title: string;
     company_domain: string | null;
+    body_text?: string;
   }): Promise<{ job_post_id: string; created: boolean }> {
     return this.call<{ job_post_id: string; created: boolean }>("/jobs/capture", job);
+  }
+
+  proposeAnswer(question: string, answer: string): Promise<{ saved: boolean; reason: string }> {
+    return this.call<{ saved: boolean; reason: string }>("/answers", { question, answer });
+  }
+
+  lookupJob(url: string): Promise<{ saved: boolean; title?: string; status?: string }> {
+    return this.call<{ saved: boolean; title?: string; status?: string }>("/jobs/lookup", { url });
+  }
+
+  recentJobs(): Promise<{ jobs: RecentJob[] }> {
+    return this.call<{ jobs: RecentJob[] }>("/jobs/recent");
   }
 
   outcome(id: string, state: "accepted" | "edited" | "rejected"): Promise<{ recorded: boolean }> {
