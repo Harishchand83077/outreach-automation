@@ -96,6 +96,15 @@ export class Client {
     return this.call<{ job_post_id: string; created: boolean }>("/jobs/capture", job);
   }
 
+  savePerson(person: {
+    url: string;
+    full_name: string;
+    headline: string | null;
+    company_name: string | null;
+  }): Promise<{ person_id: string; created: boolean; state: string }> {
+    return this.call<{ person_id: string; created: boolean; state: string }>("/people", person);
+  }
+
   proposeAnswer(question: string, answer: string): Promise<{ saved: boolean; reason: string }> {
     return this.call<{ saved: boolean; reason: string }>("/answers", { question, answer });
   }

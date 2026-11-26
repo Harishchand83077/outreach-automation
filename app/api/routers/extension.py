@@ -25,7 +25,7 @@ from fastapi import APIRouter, Body, Header, HTTPException, Request, status
 from sqlalchemy import select
 
 from app.api.deps import SessionDep
-from app.db.models import Capture, FitScoreRow, JobPost, Suggestion
+from app.db.models import Capture, FitScoreRow, JobPost, SavedPerson, Suggestion
 from app.db.repo import OrgContext
 from app.services import api_tokens
 from app.services.candidate import profile
@@ -351,3 +351,53 @@ async def recent_jobs(
             for post, fit in rows
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# ADR-084 -- save the one person whose page the user is looking at
+# ---------------------------------------------------------------------------
+
+
+@router.post("/people", status_code=status.HTTP_201_CREATED)
+async def save_person(
+    session: SessionDep,
+    url: Annotated[str, Body(embed=True)],
+    full_name: Annotated[str, Body(embed=True)],
+    headline: Annotated[str | None, Body(embed=True)] = None,
+    company_name: Annotated[str | None, Body(embed=True)] = None,
+    authorization: Annotated[str | None, Header()] = None,
+) -> dict[str, Any]:
+    """Remember a person the user pressed a button on. **Nothing is fetched** from the address.
+
+    The address is stored for the user to open themselves (hard rule 4). It is not a lead and
+    has no email; the dashboard's "People to look up" is where an address gets recorded.
+    """
+    bearer = await _bearer(session, authorization)
+    url = url.strip()
+    if not url.lower().startswith(("http://", "https://")) or not full_name.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="A person needs an http(s) address and a name.",
+        )
+    url = url.split("#", 1)[0].split("?", 1)[0][:2000]
+    existing = (
+        await session.execute(
+            select(SavedPerson).where(
+                SavedPerson.org_id == bearer.org_id, SavedPerson.profile_url == url
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        return {"person_id": str(existing.id), "created": False, "state": existing.state}
+    person = SavedPerson(
+        org_id=bearer.org_id,
+        full_name=full_name.strip()[:300],
+        headline=(headline.strip()[:500] if headline and headline.strip() else None),
+        company_name=(
+            company_name.strip()[:300] if company_name and company_name.strip() else None
+        ),
+        profile_url=url,
+    )
+    session.add(person)
+    await session.commit()
+    return {"person_id": str(person.id), "created": True, "state": person.state}

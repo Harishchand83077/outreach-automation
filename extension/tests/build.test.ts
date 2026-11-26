@@ -32,6 +32,7 @@ describe.skipIf(!built)("the built package", () => {
     expect(names).toContain("background.js");
     expect(names).toContain("collect.js");
     expect(names).toContain("job.js");
+    expect(names).toContain("person.js");
   });
 
   it("emits no shared chunk", () => {
@@ -41,7 +42,7 @@ describe.skipIf(!built)("the built package", () => {
   });
 
   it("builds the content script as a classic script", () => {
-    for (const file of ["collect.js", "job.js"]) {
+    for (const file of ["collect.js", "job.js", "person.js"]) {
       const script = readFileSync(join(DIST, file), "utf8");
 
       expect(script).not.toMatch(/^\s*export\s/m);

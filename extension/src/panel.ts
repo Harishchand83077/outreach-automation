@@ -20,6 +20,7 @@ import { ApiError, Client, type RecentJob, type Suggestion } from "./api";
 import * as config from "./config";
 import type { Collected } from "./form";
 import type { JobInfo } from "./jobinfo";
+import type { PersonInfo } from "./personinfo";
 
 const el = <T extends HTMLElement>(id: string): T => {
   const node = document.getElementById(id);
@@ -37,6 +38,13 @@ const ui = {
   forget: el<HTMLButtonElement>("forget"),
   suggest: el<HTMLButtonElement>("suggest"),
   saveJob: el<HTMLButtonElement>("save-job"),
+  savePerson: el<HTMLButtonElement>("save-person"),
+  personPreview: el("person-preview"),
+  personName: el("person-name"),
+  personHeadline: el("person-headline"),
+  personUrl: el("person-url"),
+  personConfirm: el<HTMLButtonElement>("person-confirm"),
+  personCancel: el<HTMLButtonElement>("person-cancel"),
   jobPreview: el("job-preview"),
   jobTitle: el("job-title"),
   jobUrl: el("job-url"),
@@ -225,6 +233,57 @@ async function runSaveJob(): Promise<void> {
 }
 
 ui.saveJob.addEventListener("click", () => void runSaveJob());
+
+let pendingPerson: PersonInfo | null = null;
+
+function closePersonPreview(): void {
+  pendingPerson = null;
+  ui.personPreview.hidden = true;
+}
+
+/** Same two presses as a job: read and show, then send only on the second. */
+async function runSavePerson(): Promise<void> {
+  lastRun = runSavePerson;
+  clearError();
+  ui.jobDone.hidden = true;
+  if (!client) {
+    fail("Connect first.");
+    return;
+  }
+  try {
+    const person = await injectInto<PersonInfo>("person.js");
+    if (!/^https?:/i.test(person.url) || !person.full_name) {
+      fail("I could not read a person's name from this page.");
+      return;
+    }
+    pendingPerson = person;
+    ui.personName.textContent = person.full_name;
+    ui.personHeadline.textContent = [person.headline, person.company_name].filter(Boolean).join(" / ");
+    ui.personUrl.textContent = person.url;
+    ui.personPreview.hidden = false;
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Something went wrong reading this page.");
+  }
+}
+
+ui.savePerson.addEventListener("click", () => void runSavePerson());
+ui.personCancel.addEventListener("click", closePersonPreview);
+ui.personConfirm.addEventListener("click", async () => {
+  if (!client || !pendingPerson) return;
+  ui.personConfirm.disabled = true;
+  try {
+    const saved = await client.savePerson(pendingPerson);
+    ui.jobDone.textContent = saved.created
+      ? "Saved. Find them under People to look up in the dashboard."
+      : "You had already saved this person.";
+    ui.jobDone.hidden = false;
+    closePersonPreview();
+  } catch (error) {
+    fail(error instanceof Error ? error.message : "Could not save this person.");
+  } finally {
+    ui.personConfirm.disabled = false;
+  }
+});
 
 ui.grantSites.addEventListener("click", async () => {
   const granted = await chrome.permissions.request({ origins: ["https://*/*"] });

@@ -60,6 +60,7 @@ import ReviewQueue from "./Review";
 import Sending from "./Sending";
 import Settings from "./Settings";
 import Setup from "./Setup";
+import People from "./People";
 import Signals from "./Signals";
 import "./app.css";
 import "./chrome.css";
@@ -141,6 +142,7 @@ const ROUTES = [
   { path: "/today", id: "today" },
   { path: "/campaigns/:campaignId", id: "campaign", scoped: true },
   { path: "/signals", id: "signals" },
+  { path: "/people", id: "people" },
   { path: "/sending", id: "sending", scoped: true },
   { path: "/job-hunt", id: "jobhunt" },
   { path: "/opportunities/:opportunityId/resume", id: "resume-workspace" },
@@ -364,6 +366,7 @@ function Dashboard({ session }) {
       to: campaignId ? `/campaigns/${campaignId}` : "/campaigns/new",
     },
     { id: "signals", label: "Signals", icon: Icons.signal, to: "/signals" },
+    { id: "people", label: "People to look up", icon: Icons.leads, to: "/people" },
     { id: "sending", label: "Sending", icon: Icons.send, to: "/sending" },
     // The candidate half of the product (F5, F6, F9, F10, F20). Shown to everybody rather than
     // gated on the campaign's kind: the facts, the connections and the answer bank are the
@@ -698,6 +701,8 @@ function Dashboard({ session }) {
                 <Inbox onError={handle} onToast={toast} />
               ) : view === "campaigns" ? (
                 <Campaigns onError={handle} onToast={toast} />
+              ) : view === "people" ? (
+                <People onError={handle} onToast={toast} />
               ) : view === "signals" ? (
                 <Signals
                   mayAdminister={mayAdminister}

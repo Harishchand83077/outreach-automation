@@ -63,6 +63,8 @@ _AUTH_IN_BODY = frozenset(
         ("POST", "/ext/v1/answers"),
         ("POST", "/ext/v1/jobs/lookup"),
         ("GET", "/ext/v1/jobs/recent"),
+        # ADR-084: save the one person whose page the user is viewing
+        ("POST", "/ext/v1/people"),
     }
 )
 

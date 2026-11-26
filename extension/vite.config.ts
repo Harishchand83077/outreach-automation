@@ -26,6 +26,7 @@ export default defineConfig({
         background: resolve(here, "src/background.ts"),
         collect: resolve(here, "src/collect.ts"),
         job: resolve(here, "src/job.ts"),
+        person: resolve(here, "src/person.ts"),
       },
       output: {
         entryFileNames: "[name].js",

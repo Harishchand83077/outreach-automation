@@ -5373,3 +5373,24 @@ read it.
 
 **Consequences.** No migration, no manifest change. The ADR-040 absence tests still pass. The
 extension still cannot fill, submit, mark applied or read leads.
+
+---
+
+## ADR-084 — Save one person from a page; Claude in Chrome for the open web only
+
+**Context.** Some research cannot go through an API. LinkedIn in particular cannot be scraped
+(hard rule 4) and its terms forbid automated browsing, including a browser agent opening
+profiles for the user, so the owner's account would be at risk for data that cannot be cited.
+
+**Decision.** (1) The extension gains **Save this person**, the same two-press pattern as Save
+this job: it reads only the single open page's title, first heading and social-card meta tag,
+shows exactly what will be sent, and sends on the second press. `POST /ext/v1/people` stores a
+`saved_people` row (new table; the address has its query and fragment stripped). The address is
+stored and shown for the person to open themselves; nothing fetches it. (2) The dashboard gains
+**People to look up**: record an address the user found, or dismiss. A person becomes a lead only
+through Import, with suppression and approval unchanged. (3) `docs/CLAUDE_IN_CHROME.md` records
+which tasks a connected Claude may do in the browser (open-web research, reply triage) and which
+it may not (LinkedIn, anything that sends).
+
+**Consequences.** Additive migration `f94b2c67d8a1`, no existing data touched. Rule 4 is
+unchanged. No manifest change, no new permission.

@@ -3029,6 +3029,44 @@ class InboxFlag(Base):
 
 # Indexes the migrations create, declared by explicit name: the naming convention would prefix
 # the schema onto an `index=True` column and the two would disagree.
+
+
+class SavedPerson(Base):
+    """One person the user chose to save from a page they were looking at (ADR-084).
+
+    **Saved by a click, from one page, by the person.** The extension reads the title and headline
+    of the single page in front of the user and sends them when the user presses a button. Nothing
+    here is fetched: `profile_url` is stored and shown for the user to open themselves, which is
+    hard rule 4 unchanged. It is not a lead and cannot be mailed -- a person becomes a lead only
+    through the ordinary import path once a real address has been found.
+    """
+
+    __tablename__ = "saved_people"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey(f"{SCHEMA}.orgs.id", ondelete="CASCADE"), nullable=False
+    )
+    full_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    headline: Mapped[str | None] = mapped_column(String(500))
+    company_name: Mapped[str | None] = mapped_column(String(300))
+    profile_url: Mapped[str] = mapped_column(String(2000), nullable=False)
+    #: Typed by the user once they have found one. Never filled by anything automatic.
+    email: Mapped[str | None] = mapped_column(String(320))
+    #: `to_look_up` -> `found` (an address was recorded) or `dismissed`.
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="to_look_up", server_default="to_look_up"
+    )
+    created_at: Mapped[datetime] = _now_col(nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('to_look_up', 'found', 'dismissed')", name="ck_saved_people_state"
+        ),
+        UniqueConstraint("org_id", "profile_url", name="uq_saved_people_org_url"),
+    )
+
+
 Index("ix_lead_notes_lead_id", LeadNote.lead_id)
 Index("ix_resume_versions_opportunity_id", ResumeVersion.opportunity_id)
 Index("ix_applications_opportunity_id", Application.opportunity_id)
