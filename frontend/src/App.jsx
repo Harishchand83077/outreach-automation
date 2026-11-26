@@ -419,6 +419,31 @@ function Dashboard({ session }) {
 
   // Every screen and every campaign, two keystrokes away. Built from the same `nav` list the
   // sidebar draws, so a screen added later appears here without anybody remembering to add it.
+  // Where a search hit opens. Replies live in the Inbox, postings under Job hunt.
+  const hitDestination = (hit) =>
+    hit.kind === "reply"
+      ? "/inbox"
+      : hit.kind === "job_post"
+        ? "/job-hunt"
+        : hit.kind === "person"
+          ? "/people"
+          : hit.lead_id
+            ? `/leads/${hit.lead_id}`
+            : "/leads";
+  const searchWorkspace = useCallback(
+    async (needle) => {
+      const body = await getJson("/search?q=" + encodeURIComponent(needle));
+      return body.hits.map((hit) => ({
+        id: `hit:${hit.kind}:${hit.id}`,
+        group: "In your workspace",
+        label: hit.title,
+        hint: hit.kind.replace("_", " "),
+        run: () => navigate(hitDestination(hit)),
+      }));
+    },
+    [navigate],
+  );
+
   const commands = [
     ...nav
       .filter((item) => item.to)
@@ -825,6 +850,7 @@ function Dashboard({ session }) {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         commands={commands}
+        onSearch={searchWorkspace}
       />
 
       <div className="toast-host">
